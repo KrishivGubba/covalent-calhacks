@@ -26,3 +26,6 @@ dist-ssr
 
 CLAUDE.md 
 
+# ignore the database
+*.db
+

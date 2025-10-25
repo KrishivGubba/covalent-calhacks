@@ -1,14 +1,8 @@
-from flask import Flask, render_template, request, jsonify, flash, redirect
-from werkzeug.security import check_password_hash, generate_password_hash
+from flask import Flask, request, jsonify
 import sqlite3
-import numpy as np
-from spotipy import Spotify
-from spotipy.oauth2 import SpotifyOAuth
-from spotifylogic import SpotifyActions
 
-from LLM import ImageMoodClassifier
 from flask_cors import CORS
-from PIL import Image
+from graph_dao import GraphDAO
 
 app = Flask(__name__)
 CORS(app)
