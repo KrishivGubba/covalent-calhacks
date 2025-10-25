@@ -32,7 +32,7 @@ pub mod contextCollector;
 // Re-export main types for easier access
 pub use context_data::*;
 pub use context_type::*;
-pub use enhanced_context_collector::EnhancedContextCollector;
+pub use enhanced_context_collector::{EnhancedContextCollector, SystemReadiness};
 pub use screen_capture::ScreenCapture;
 pub use chromium_bridge::{ChromiumBridge, DOMChangeAnalysis};
 pub use region_analyzer::{RegionAnalyzer, RegionChangeAnalysis};
