@@ -1,6 +1,4 @@
-use anyhow::{Context as AnyhowContext, Result};
-use async_trait::async_trait;
-use osascript::JavaScript;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Command;

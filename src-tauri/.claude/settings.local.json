@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(grep:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(npm run tauri:*)",
+      "Bash(sed:*)"
     ],
     "deny": []
   }

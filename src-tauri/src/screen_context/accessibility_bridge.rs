@@ -2,8 +2,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 
 use crate::screen_context::context_data::{
-    AccessibilityData, AccessibleElement, ElementBounds, MenuStructure, MenuItem, UIElement,
-    UIElementRef, UITree, WindowInfo,
+    AccessibilityData, AccessibleElement, ElementBounds, UIElement, UITree, WindowInfo,
 };
 
 // Simplified accessibility bridge for compilation

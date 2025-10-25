@@ -1,15 +1,9 @@
-use anyhow::{Context as AnyhowContext, Result};
-use cocoa::appkit::{NSApplication, NSApplicationActivationPolicy, NSRunningApplication};
-use cocoa::base::{id, nil, NO, YES};
-use cocoa::foundation::{NSArray, NSAutoreleasePool, NSDictionary, NSString};
-use core_foundation::string::CFString;
-use objc::runtime::Object;
+use anyhow::Result;
+use cocoa::base::{id, nil};
+use cocoa::foundation::{NSAutoreleasePool, NSString};
 use objc::{class, msg_send, sel, sel_impl};
-use objc_foundation::NSObject;
-use core_foundation::base::TCFType;
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::path::PathBuf;
 use std::process::Command;
 
 use crate::screen_context::context_data::{AppInfo, BrowserType, IDEType};
