@@ -159,30 +159,34 @@ impl ContextType {
         let bundle_id = bundle_id.to_lowercase();
         
         // Development tools
-        if bundle_id.contains("vscode") || bundle_id.contains("code") {
-            return (Self::Development(DevelopmentType::Frontend), 0.7);
-        } else if bundle_id.contains("xcode") {
+        if bundle_id.contains("vscode") || bundle_id.contains("com.microsoft.vscode") 
+            || bundle_id == "com.exafunction.windsurf" {
+            return (Self::Development(DevelopmentType::Frontend), 0.8);
+        } else if bundle_id.contains("xcode") || bundle_id.contains("com.apple.dt.xcode") {
             return (Self::Development(DevelopmentType::Frontend), 0.75);
         } else if bundle_id.contains("intellij") || bundle_id.contains("pycharm") 
-            || bundle_id.contains("webstorm") {
+            || bundle_id.contains("webstorm") || bundle_id.contains("jetbrains") {
             return (Self::Development(DevelopmentType::Backend), 0.75);
         } else if bundle_id.contains("datagrip") || bundle_id.contains("sequel") 
-            || bundle_id.contains("postico") {
+            || bundle_id.contains("postico") || bundle_id.contains("tableplus") {
             return (Self::Development(DevelopmentType::Database), 0.85);
-        } else if bundle_id.contains("docker") || bundle_id.contains("terminal") {
-            return (Self::Development(DevelopmentType::DevOps), 0.6);
+        } else if bundle_id.contains("docker") || bundle_id.contains("terminal") 
+            || bundle_id == "com.apple.terminal" || bundle_id == "com.mitchellh.ghostty"
+            || bundle_id.contains("sourcetree") || bundle_id.contains("com.torusknot.sourcetreenotmas") {
+            return (Self::Development(DevelopmentType::DevOps), 0.7);
         }
         
         // Communication tools
         if bundle_id.contains("zoom") || bundle_id.contains("meet") 
-            || bundle_id.contains("teams") {
+            || bundle_id.contains("teams") || bundle_id.contains("us.zoom.xos") {
             return (Self::Communication(CommunicationType::VideoMeeting), 0.9);
-        } else if bundle_id.contains("slack") {
+        } else if bundle_id.contains("slack") || bundle_id == "com.tinyspeck.slackmacgap" {
             return (Self::Communication(CommunicationType::SlackDiscussion), 0.9);
-        } else if bundle_id.contains("mail") || bundle_id.contains("outlook") {
+        } else if bundle_id.contains("mail") || bundle_id.contains("outlook") 
+            || bundle_id == "com.apple.mail" {
             return (Self::Communication(CommunicationType::EmailDrafting), 0.8);
         } else if bundle_id.contains("messages") || bundle_id.contains("telegram") 
-            || bundle_id.contains("whatsapp") {
+            || bundle_id.contains("whatsapp") || bundle_id == "com.apple.mobilesms" {
             return (Self::Communication(CommunicationType::InstantMessaging), 0.85);
         }
         
@@ -207,21 +211,33 @@ impl ContextType {
         
         // Administration tools
         if bundle_id.contains("notion") || bundle_id.contains("trello") 
-            || bundle_id.contains("asana") || bundle_id.contains("jira") {
+            || bundle_id.contains("asana") || bundle_id.contains("jira")
+            || bundle_id == "notion.id" {
             return (Self::Administration(AdministrationType::TaskManagement), 0.85);
-        } else if bundle_id.contains("calendar") || bundle_id.contains("fantastical") {
+        } else if bundle_id.contains("calendar") || bundle_id.contains("fantastical")
+            || bundle_id == "com.apple.ical" {
             return (Self::Administration(AdministrationType::Calendar), 0.9);
         } else if bundle_id.contains("1password") || bundle_id.contains("lastpass") 
             || bundle_id.contains("bitwarden") {
             return (Self::Administration(AdministrationType::PasswordManager), 0.95);
-        } else if bundle_id.contains("settings") || bundle_id.contains("preferences") {
+        } else if bundle_id.contains("settings") || bundle_id.contains("preferences")
+            || bundle_id == "com.apple.systempreferences" {
             return (Self::Administration(AdministrationType::SystemSettings), 0.9);
         }
         
         // Research contexts (browsers need window title for better classification)
         if bundle_id.contains("safari") || bundle_id.contains("chrome") 
-            || bundle_id.contains("firefox") {
+            || bundle_id.contains("firefox") || bundle_id == "com.brave.browser"
+            || bundle_id == "com.google.chrome" || bundle_id == "com.apple.safari"
+            || bundle_id == "org.mozilla.firefox" || bundle_id.contains("com.todesktop") {
             return (Self::Research(ResearchType::TechnicalResearch), 0.4);
+        }
+        
+        // Media/Entertainment apps (classify as Unknown for now since no media category exists)
+        if bundle_id.contains("spotify") || bundle_id == "com.spotify.client"
+            || bundle_id.contains("music") || bundle_id.contains("netflix")
+            || bundle_id.contains("youtube") {
+            return (Self::Unknown, 0.2); // Low confidence since no proper category
         }
         
         (Self::Unknown, 0.0)
