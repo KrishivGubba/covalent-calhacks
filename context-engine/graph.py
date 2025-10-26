@@ -273,10 +273,14 @@ class Tree:
             data_type (str): Type of data being stored (default: "text")
             
         Returns:
-            tuple: (node, data_uuid) - The node where data was inserted and the data UUID
+            tuple: (suggested_action, action_uuid) - The suggested action text and its UUID in the database
         """
         # Find the most relevant node using traverse
         node = self.traverse(summary)
+
+        # Initialize variables for return
+        suggested_action = None
+        action_uuid = None
 
         # take the summary of what's going on 
         mtd = self.get_parent_metadata(node)
@@ -329,9 +333,11 @@ class Tree:
                     print(f"Successfully inserted action into database with UUID: {action_uuid}")
                 except Exception as action_error:
                     print(f"Error inserting action into database: {action_error}")
+                    action_uuid = None
         except Exception as e:
             print(f"Error calling Claude API: {e}")
             suggested_action = None
+            action_uuid = None
         
         if node is None:
             print("Warning: Could not find suitable node, using root")
@@ -359,10 +365,10 @@ class Tree:
             )
             print(f"Successfully inserted data into node '{node.metadata}' (UUID: {node.node_uuid})")
             print(f"Data UUID: {data_uuid}")
-            return node.node_uuid, data_str
+            return suggested_action, action_uuid
         except Exception as e:
             print(f"Error inserting data: {e}")
-            return node.node_uuid, None
+            return suggested_action, action_uuid
         
 
     
@@ -629,8 +635,9 @@ Ritesh Neela
         "status": "resolved",
         "follow_up_date": "2025-11-20"
     }
-    node_uuid7, written_data7 = tree.learn(summary7, data7, key="conflict_resolution_042")
-    print(f"Data inserted into node UUID: {node_uuid7}")
+    action, actionID = tree.learn(summary7, data7, key="conflict_resolution_042")
+    print(f"Action: {action}")
+    print(f"Action UUID: {actionID}")
     
     print("\n" + "="*50)
     print("All learn() test cases completed!")
