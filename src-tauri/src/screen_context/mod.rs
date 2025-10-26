@@ -2,6 +2,7 @@
 
 pub mod context_type;
 pub mod context_data;
+pub mod context_api;
 //pub mod context_examples;
 pub mod demo;
 pub mod ocr_tesseract;
@@ -31,7 +32,11 @@ pub mod contextCollector;
 
 // Re-export main types for easier access
 pub use context_data::*;
-pub use context_type::*;
+pub use context_type::{
+    ContextType, DevelopmentType, CommunicationType, ResearchType, 
+    CreativeType, DataWorkType, AdministrationType, IntentAnalysis, DeltaAnalysis
+};
+pub use context_api::{ContextApiClient, ContextPayload, ContextResponse};
 pub use enhanced_context_collector::{EnhancedContextCollector, SystemReadiness};
 pub use screen_capture::ScreenCapture;
 pub use chromium_bridge::{ChromiumBridge, DOMChangeAnalysis};
