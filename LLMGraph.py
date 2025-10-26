@@ -179,78 +179,9 @@ async def gsuite(state : State):
 
 def screen_controller(state : State):
     tasks = state['sc_tasks']
+    from executor.main import thingy
+    thingy(tasks[0])
 
-
-# Worker nodes get assigned explicitly
-# async def drive_worker(state: State):
-#     input_text = search_task("drive", state['mcp_tasks'])
-#     # from client import main
-#     # result = await main(prompt=input_text, server="drive")
-#     toolset = composio.tools.get(user_id=user_uuid, toolkits=["DRIVE"])
-#     docs_model = llm.with_structured_output(Task).with_config(toolset)
-#     result = docs_model.ainvoke(input=input_text)
-#     return {"mcp_outputs": state['mcp_outputs'] + [Output(server="drive", result=result)]}
-#
-#
-# async def docs_worker(state: State):
-#     input_text = search_task("docs", state['mcp_tasks'])
-#     # from client import main
-#     # result = await main(prompt=input_text, server="docs")
-#     toolset = composio.tools.get(user_id=user_uuid, toolkits=["DOCS"])
-#     docs_model = llm.with_structured_output(Task).with_config(toolset)
-#     result = docs_model.ainvoke(input=input_text)
-#     return {"mcp_outputs": state['mcp_outputs'] + [Output(server="docs", result=result)]}
-#
-#
-# async def calendar_worker(state: State):
-#     input_text = search_task("calendar", state['mcp_tasks'])
-#     # from client import main
-#     # result = await main(prompt=input_text, server="calendar")
-#     toolset = composio.tools.get(user_id=user_uuid, toolkits=["CALENDAR"])
-#     docs_model = llm.with_config(toolset)
-#     result = docs_model.ainvoke(input=input_text)
-#     return {"mcp_outputs": state['mcp_outputs'] + [Output(server="calendar", result=result)]}
-#
-#
-# async def sheets_worker(state: State):
-#     input_text = search_task("sheets", state['mcp_tasks'])
-#     # from client import main
-#     # result = await main(prompt=input_text, server="sheets")
-#     toolset = composio.tools.get(user_id=user_uuid, toolkits=["SHEETS"])
-#     docs_model = llm.with_structured_output(Task).with_config(toolset)
-#     result = docs_model.ainvoke(input=input_text)
-#     return {"mcp_outputs": state['mcp_outputs'] + [Output(server="sheets", result=result)]}
-#
-#
-# async def slides_worker(state: State):
-#     input_text = search_task("slides", state['mcp_tasks'])
-#     # from client import main
-#     # result = await main(prompt=input_text, server="slides")
-#     toolset = composio.tools.get(user_id=user_uuid, toolkits=["SLILDES"])
-#     docs_model = llm.with_structured_output(Task).with_config(toolset)
-#     result = docs_model.ainvoke(input=input_text)
-#     return {"mcp_outputs": state['mcp_outputs'] + [Output(server="slides", result=result)]}
-#
-#
-# async def mail_worker(state: State):
-#     input_text = search_task("mail", state['mcp_tasks'])
-#     # from client import main
-#     # result = await main(prompt=input_text, server="mail")
-#     toolset = composio.tools.get(user_id=user_uuid, toolkits=["GMAIL"])
-#     docs_model = llm.with_structured_output(Task).with_config(toolset)
-#     result = docs_model.ainvoke(input=input_text)
-#     return {"mcp_outputs": state['mcp_outputs'] + [Output(server="mail", result=result)]}
-#
-#
-# def synthesizer(state: State):
-#     results = []
-#     outputs = state['mcp_outputs']
-#     for output in outputs:
-#         results.append(output.result)
-#     combined = " | ".join(results) if results else ""
-#     return {"combined_result": combined}
-#
-#
 def assign_workers(state: State):
     sends = []
     tasks = state['mcp_tasks']
