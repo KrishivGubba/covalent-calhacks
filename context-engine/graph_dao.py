@@ -85,6 +85,26 @@ class GraphDAO:
         self.execute_query(query, (data_uuid, node_uuid, key, data_type, info))
         return data_uuid
 
+    def add_action(self, node_uuid, action_name):
+        '''
+        Insert an action into the action_table associated with a specific node.
+        
+        Args:
+            node_uuid (str): UUID of the node to associate this action with
+            action_name (str): Name/description of the action
+            
+        Returns:
+            str: UUID of the inserted action record
+        '''
+        import uuid
+        action_uuid = str(uuid.uuid4())
+        query = """
+            INSERT INTO action_table (UUID, Action_name, Node_UUID)
+            VALUES (?, ?, ?)
+        """
+        self.execute_query(query, (action_uuid, action_name, node_uuid))
+        return action_uuid
+
     def close(self):
         '''Close the database connection.'''
         self.conn.close()
