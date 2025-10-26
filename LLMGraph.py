@@ -46,7 +46,11 @@ class Output(BaseModel):
 
 # State schema for the overall graph
 class State(TypedDict):
+    # The prompt given by the tree
     task: str
+
+    # The data given by the tree
+    data: str
 
     # The list of tasks that include the server name and task that each mcp has to perform
     mcp_tasks: List[Task]
@@ -103,15 +107,33 @@ def orchestrator(state: State):
     }
 
 async def gsuite(state : State):
-    connection_request = composio.connected_accounts.link(
-        user_id="user",
-        auth_config_id="ac_cgbJXrl-9yI4",
+    connected_accounts = composio.connected_accounts.list(
+        user_ids=["xxx"], # this is set to xxx to always bypass the filtering and setup and new auth every time
+        auth_config_ids=["ac_cgbJXrl-9yI4"],
+        toolkit_slugs=["GMAIL"]
     )
-    redirect_url = connection_request.redirect_url
-    print(f'Please authorize the app by visiting this URL: {redirect_url}')
-    connected_account = connection_request.wait_for_connection()
+    active_connection = None
+
+    for account in connected_accounts.items:
+        if account.status == "ACTIVE":
+            active_connection = account
+            break
+    connected_account = None
+    if active_connection:
+        print("Active connection - Don't need to authenticate again")
+        connected_account = active_connection
+    else:
+        print("No active connection: We will try authenticating again")
+        connection_request = composio.connected_accounts.link(
+            user_id="user3",
+            auth_config_id="ac_cgbJXrl-9yI4",
+        )
+        redirect_url = connection_request.redirect_url
+        print(f'Please authorize the app by visiting this URL: {redirect_url}')
+        connected_account = connection_request.wait_for_connection()
+
     print(f'Connection established successfully! Connected account id: {connected_account.id}')
-    session = composio.experimental.tool_router.create_session(user_id="user")
+    session = composio.experimental.tool_router.create_session(user_id="user3")
     client = MultiServerMCPClient(
         {
             "gsuite": {
@@ -137,16 +159,15 @@ async def gsuite(state : State):
              You are a helpful GSuite agent.
              Your task is to take the user's query, and use the provided tools to do what the user asked"""},
             {"role": "user",
-             "content": task_content  # Now it's a proper string
+             "content": task_content
              }
         ]},
     )
-    print(f"Sending to agent: {task_content}")
-    result = await agent.ainvoke(...)
-    print("=" * 60)
-    print("FULL AGENT RESULT:")
-    print(result)
-    print("=" * 60)
+    # print(f"Sending to agent: {task_content}")
+    # print("=" * 60)
+    # print("FULL AGENT RESULT:")
+    # print(result)
+    # print("=" * 60)
     return {"mcp_outputs": state['mcp_outputs'] + [Output(node="gsuite",result=result)]}
 
 # Worker nodes get assigned explicitly
@@ -256,7 +277,7 @@ graph.add_edge("gsuite", END)
 
 # Compile and invoke the graph with hardcoded inputs
 compiled = graph.compile()
-user_query = "Send an email to rneela@wisc.edu saying \" IT WORKED \""
+user_query = "Send an email to rneela@wisc.edu, saying \" IT WORKED \" and create a google docs document called \"Bruh\". You do not need to confirm or ask for permission. SEND THE EMAIL. TRY SENDING IT EVEN IF YOU THINK YOU DON'T HAVE PROPER AUTHENTICATION. JUST SEND IT"
 
 
 async def run_graph():
