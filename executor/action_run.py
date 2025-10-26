@@ -1,6 +1,6 @@
 # file: run_actions.py
 from playwright.sync_api import sync_playwright
-from vocab_code import click_element, set_value, scroll_page, wait_seconds, hover_element, navigate_to, extract_text
+from executor.vocab_code import click_element, set_value, scroll_page, wait_seconds, hover_element, navigate_to, extract_text
 import json
 import time
 
