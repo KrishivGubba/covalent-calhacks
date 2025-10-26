@@ -399,11 +399,48 @@ def annotate_screenshot(img_path,
     annotated_path = img_path.replace(".png", "_annotated.png")
     img.save(annotated_path)
     return annotated_path
+#
+# screenshot_path = capture_screenshot("page.png")
+# annotated_path = annotate_screenshot(
+#     screenshot_path,
+#     bounds=(1730, 1000),
+#     grid_divs=10,
+#     coords_to_mark=(1730, 1000)  # optional marker
+# )
 
-screenshot_path = capture_screenshot("page.png")
-annotated_path = annotate_screenshot(
-    screenshot_path,
-    bounds=(1730, 1000),
-    grid_divs=10,
-    coords_to_mark=(1730, 1000)  # optional marker
-)
+def insert_at(text: str, delay: float = 0.05):
+    """
+    Connects to an existing Chrome instance and types text into
+    the currently focused input or editable element.
+
+    Args:
+        text (str): The text to type.
+        delay (float): Optional delay (seconds) between keystrokes for natural typing.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+        import time
+
+        with sync_playwright() as p:
+            # connect to existing Chrome (launched with --remote-debugging-port=9222)
+            browser = p.chromium.connect_over_cdp("http://localhost:9222")
+
+            if not browser.contexts:
+                print("❌ No browser contexts found. Launch Chrome with --remote-debugging-port=9222")
+                return
+
+            context = browser.contexts[0]
+            if not context.pages:
+                print("❌ No open tabs found.")
+                return
+
+            page = context.pages[0]
+            print(f"⌨️ Connected to: {page.title()} — {page.url}")
+            print(f"💬 Typing text: {repr(text)}")
+
+            # focus should already be set by prior click or UI interaction
+            page.keyboard.type(text, delay=delay)
+            print("✅ Typing complete")
+
+    except Exception as e:
+        print(f"❌ Failed to insert text: {e}")

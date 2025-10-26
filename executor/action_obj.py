@@ -1,7 +1,7 @@
 import json
-from action_run import parse_and_run, get_simplified_dom  # reuse your executor
+from executor.action_run import parse_and_run, get_simplified_dom  # reuse your executor
 import time
-from llm_client_obj import LLM_Client
+from executor.llm_client_obj import LLM_Client
 
 class Action:
     def __init__(self, contextJson):
@@ -37,13 +37,11 @@ You must output exactly ONE JSON object describing the next action to take on th
 The JSON must follow this schema:
 
 {{
-    "type": "click" | "set_value" | "scroll" | "wait" | "hover" | "navigate" | "extract" | "done",
+    "type": "click" | "set_value" | "scroll" | "done",
     "selector": "CSS selector or text id to target (omit if not applicable)",
     "value": "string (required only for 'set_value')",
-    "url": "string (required only for 'navigate')",
     "direction": "down" | "up" (optional, for scroll),
     "amount": 800 (integer, optional, for scroll),
-    "duration": number (optional, for wait)
 }}
 
 ⚠️ RULES
@@ -63,7 +61,7 @@ The JSON must follow this schema:
 - DO NOT EVER REPEAT PREVIOUS ACTIONS
 
 🧭 CONTEXT
-Goal: {self.context['goal']}
+Goal: {self.context['goal'] if 'goal' in self.context else self.context['action']}
 Details: {self.context['details']}
 Previous action: {self.prev_action}
 Last DOM change: {self.last_change}
@@ -134,25 +132,25 @@ Return only the JSON action now.
 # with open("/Users/krishivgubba/Dev/covalent-calhacks/executor/testscroll.json", "r") as data:
 #     time.sleep(4)
 #     thing = Action("", "", "")
-#     thing.execute(json.load(data))
-for i in range(10):
-    contextJson = {
-        "goal" : "the user is trying to apply for a job",
-        "details" : """
-user details:
-first name: krishiv
-last name: gubba
-phone number: 8476682616
-email: kgubba@wisc.edu
-                    """
-    }
-    first = Action(contextJson=contextJson)
-    client = LLM_Client()
-    output = first.query_llm(client)
-    first.execute(output)
-    newDom = first.update_dom_change(get_simplified_dom())
-    with open("/Users/krishivgubba/Dev/covalent-calhacks/executor/something.json", "w") as file:
-        file.write(json.dumps(first.dom_snapshot))
+# #     thing.execute(json.load(data))
+# for i in range(10):
+#     contextJson = {
+#         "goal" : "the user is trying to apply for a job",
+#         "details" : """
+# user details:
+# first name: krishiv
+# last name: gubba
+# phone number: 8476682616
+# email: kgubba@wisc.edu
+#                     """
+#     }
+#     first = Action(contextJson=contextJson)
+#     client = LLM_Client()
+#     output = first.query_llm(client)
+#     first.execute(output)
+#     newDom = first.update_dom_change(get_simplified_dom())
+#     with open("/Users/krishivgubba/Dev/covalent-calhacks/executor/something.json", "w") as file:
+#         file.write(json.dumps(first.dom_snapshot))
 
-#TODO: terminate when the LLM wants you to scroll on a page where you've already reached the bottom
+# #TODO: terminate when the LLM wants you to scroll on a page where you've already reached the bottom
 
