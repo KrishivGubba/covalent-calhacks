@@ -399,14 +399,14 @@ def annotate_screenshot(img_path,
     annotated_path = img_path.replace(".png", "_annotated.png")
     img.save(annotated_path)
     return annotated_path
-
-screenshot_path = capture_screenshot("page.png")
-annotated_path = annotate_screenshot(
-    screenshot_path,
-    bounds=(1730, 1000),
-    grid_divs=10,
-    coords_to_mark=(1730, 1000)  # optional marker
-)
+#
+# screenshot_path = capture_screenshot("page.png")
+# annotated_path = annotate_screenshot(
+#     screenshot_path,
+#     bounds=(1730, 1000),
+#     grid_divs=10,
+#     coords_to_mark=(1730, 1000)  # optional marker
+# )
 
 def insert_at(text: str, delay: float = 0.05):
     """

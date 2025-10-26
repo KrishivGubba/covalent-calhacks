@@ -1,7 +1,7 @@
 import json
-from action_run import parse_and_run, get_simplified_dom  # reuse your executor
+from executor.action_run import parse_and_run, get_simplified_dom  # reuse your executor
 import time
-from llm_client_obj import LLM_Client
+from executor.llm_client_obj import LLM_Client
 
 class Action:
     def __init__(self, contextJson):
