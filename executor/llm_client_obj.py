@@ -3,7 +3,7 @@ import json
 from dotenv import load_dotenv
 from anthropic import Anthropic
 import base64
-from vocab_code import capture_screenshot
+from executor.vocab_code import capture_screenshot
 
 class LLM_Client:
 

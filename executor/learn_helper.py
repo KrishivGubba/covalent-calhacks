@@ -1,7 +1,7 @@
 import requests
 from playwright.sync_api import sync_playwright
 from urllib.parse import quote_plus
-from llm_client_obj import LLM_Client
+from executor.llm_client_obj import LLM_Client
 
 class LearnObject:
     def __init__(self, ws_endpoint=None):

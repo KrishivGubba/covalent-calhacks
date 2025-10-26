@@ -1,8 +1,9 @@
 from llm_client_obj import LLM_Client
 import json
-from learn_helper import LearnObject
-from vocab_code import click_at, insert_at
-
+from executor.learn_helper import LearnObject
+from executor.vocab_code import click_at, insert_at
+from executor.action_obj import Action
+from executor.action_run import get_simplified_dom
 
 def decide(context_json):
     """
@@ -67,6 +68,8 @@ You will be given a JSON object called `context_json` describing what the user i
 Your task is to decide if the user’s intent involves **sending, writing, or preparing a message or communication** 
 to another person or group.
 
+LOOK AT THE PREVIOUS MESSAGES IN THE CHAT BEFORE REPLYING PLEASE, MAKE YOUR REPLY RELEVANT TO THE PREVIOUS CHATS
+
 This includes:
 - typing in a chat box or DM window (Slack, Discord, LinkedIn, Gmail, Messenger, etc.)
 - replying to a message or email
@@ -78,6 +81,8 @@ It does **not** include:
 - reading messages without replying,
 - searching for information,
 - performing unrelated tasks (coding, browsing, buying, learning, watching videos, etc.).
+- just being on someone's linkedin page
+- applying to a job
 
 Respond **only** with a JSON object in this exact format:
 {{ "res": "True" }} or {{ "res": "False" }}
@@ -100,6 +105,57 @@ context_json:
         return "true" in response.lower()
     return False
 
+def decideIsConnectionRequesting(context_json):
+    """
+    Determines whether the user is trying to send or prepare a LinkedIn-style
+    connection request (or similar action such as adding, following, or networking).
+
+    Returns True or False.
+    """
+    prompt = f"""
+You are an intent classifier.
+
+You will be given a JSON object called `context_json` describing what the user is currently doing.
+
+Your task is to decide if the user's intent is to **connect or network** with another person
+— typically by sending a LinkedIn connection request, following someone, or initiating contact.
+
+This includes:
+- THIS INCLUDES BEING ON ANOTHER PERSON'S LINNKEDIN PAGE DO NOT FORGET THIS!!!!
+- hovering near or viewing a “Connect”, “Follow”, or “Add” button,
+- opening a modal to add a note to a connection request,
+- searching for people to connect with,
+- or otherwise indicating an intent to start a new professional connection.
+
+It does **not** include:
+- sending a chat message to someone already connected,
+- viewing random content feeds,
+- learning or researching a topic,
+- editing your own profile,
+- browsing unrelated websites.
+
+Respond **only** with a JSON object in this exact format:
+{{ "res": "True" }} or {{ "res": "False" }}
+
+context_json:
+{json.dumps(context_json, indent=4)}
+    """
+
+    response = LLM_Client.generate(
+        prompt=prompt.strip(),
+        sys_prompt="You are a precise intent classifier that decides if the user is trying to send a LinkedIn connection request or connect with a new person.",
+        model="claude-3-opus-latest"
+    )
+
+    # handle both dict or string return
+    if isinstance(response, dict):
+        val = response.get("res")
+        return str(val).lower() == "true"
+    if isinstance(response, str):
+        return "true" in response.lower()
+    return False
+
+
 
 def thingy(contextJson):
     #somehow the context has to be passed to us, maybe we can hit an endpoint
@@ -119,28 +175,75 @@ def thingy(contextJson):
         lo.youtubeSearchUp(allQueries[0])
         lo.switchToTabByIndex(0)
     else:
-        if decideIsMessageSending(context_json=contextJson):
+        if decideIsConnectionRequesting(context_json=contextJson):
+            print("we are connection request")
+            click_at(358, 504)
+            click_at(838, 232)
+            click_at(664, 224)
+            action, details = contextJson["action"], contextJson["details"]
+            messageToBeSent = LLM_Client.queryForMessage(action, details)
+            insert_at(messageToBeSent)
+        elif decideIsMessageSending(context_json=contextJson):
             click_at(642, 767)
             action, details = contextJson["action"], contextJson["details"]
             messageToBeSent = LLM_Client.queryForMessage(action, details)
             insert_at(messageToBeSent)
             click_at(1007, 884)
-        else:
-            print("not sending a message")
+        else: #is going to apply for a job lmao
+            for j in range(5):
+                for i in range(7):
+                    print("this is i", i)
+                #     contextJson = {
+                #         "goal" : "the user is trying to apply for a job",
+                #         "details" : """
+                # user details:
+                # first name: Krishiv
+                # last name: Gubba
+                # phone number: 8476682616
+                # email: kgubba@wisc.edu
+                #                     """
+                # }
+                    first = Action(contextJson=contextJson)
+                    client = LLM_Client()
+                    output = first.query_llm(client)
+                    first.execute(output)
+                    newDom = first.update_dom_change(get_simplified_dom())
+                    with open("/Users/krishivgubba/Dev/covalent-calhacks/executor/something.json", "w") as file:
+                        file.write(json.dumps(first.dom_snapshot))
+                    if i == 9:
+                        first.execute({
+                            "type" : "scroll",
+                            "direction" : "down",
+                            "amount" : 500
+                        })
+
 
 if __name__ == "__main__":
-    samples = [
         # {"action": "the user seems to have a question", "details": "what is the difference between supervised and unsupervised learning"},
         # {"action": "the user is searching something up", "details": "looking for a place to eat near San Francisco"},
         # {"action": "the user is debugging some code", "details": "trying to fix a syntax error in my Python script"},
-        # {"action": "the user is reading an article", "details": "reading about how blockchain consensus algorithms work"},
-        {"action": "the user is texting someone on linkedin", "details": "the user is dming ritesh neela"},
-    ]
+#         # {"action": "the user is reading an article", "details": "reading about how blockchain consensus algorithms work"},
+#         {"action": "the user is applying to a job", "details": """
+#                 user details:
+#                 first name: Krishiv
+#                 last name: Gubba
+#                 phone number: 8476682616
+#                 email: kgubba@wisc.edu
+# """},
+#     ]
 
-    print("=== Intent Classification Test ===")
-    for i, ctx in enumerate(samples, 1):
-        result = thingy(ctx)
-        print(f"Sample {i}:")
-        print(f"  action  = {ctx['action']}")
-        print(f"  details = {ctx['details']}")
-        print(f"  → messaging someone? {result}\n")
+    # print("=== Intent Classification Test ===")
+    # for i, ctx in enumerate(samples, 1):
+    #     result = thingy(ctx)
+    #     print(f"Sample {i}:")
+    #     print(f"  action  = {ctx['action']}")
+    #     print(f"  details = {ctx['details']}")
+    #     print(f"  → messaging someone? {result}\n")
+    bro = {"action": "the user is applying to a job", "details": """
+                user details:
+                first name: Krishiv
+                last name: Gubba
+                phone number: 8476682616
+                email: kgubba@wisc.edu
+"""}
+    thingy(bro)

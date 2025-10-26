@@ -1,8 +1,8 @@
 import os
 import json
 from dotenv import load_dotenv
-from vocab_code import capture_screenshot, click_at, annotate_screenshot
-from llm_client_obj import LLM_Client
+from executor.vocab_code import capture_screenshot, click_at, annotate_screenshot
+from executor.llm_client_obj import LLM_Client
 
 class ShowUIClaudeAdapter:
     """
@@ -113,8 +113,8 @@ class ShowUIClaudeAdapter:
 
 
 
-agent = ShowUIClaudeAdapter()
+# agent = ShowUIClaudeAdapter()
 
-# single step test
-action = agent("click on the message input box to ritesh neela.")
-agent.execute_action(action)
+# # single step test
+# action = agent("click on the message input box to ritesh neela.")
+# agent.execute_action(action)
