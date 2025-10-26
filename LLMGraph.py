@@ -107,8 +107,9 @@ def orchestrator(state: State):
     }
 
 async def gsuite(state : State):
+    user_id = os.getenv("USER_ID")
     connected_accounts = composio.connected_accounts.list(
-        user_ids=["xxx"], # this is set to xxx to always bypass the filtering and setup and new auth every time
+        user_ids=[user_id], # this is set to xxx to always bypass the filtering and setup and new auth every time
         auth_config_ids=["ac_cgbJXrl-9yI4"],
         toolkit_slugs=["GMAIL"]
     )
@@ -125,7 +126,7 @@ async def gsuite(state : State):
     else:
         print("No active connection: We will try authenticating again")
         connection_request = composio.connected_accounts.link(
-            user_id="user3",
+            user_id=user_id,
             auth_config_id="ac_cgbJXrl-9yI4",
         )
         redirect_url = connection_request.redirect_url
@@ -133,7 +134,7 @@ async def gsuite(state : State):
         connected_account = connection_request.wait_for_connection()
 
     print(f'Connection established successfully! Connected account id: {connected_account.id}')
-    session = composio.experimental.tool_router.create_session(user_id="user3")
+    session = composio.experimental.tool_router.create_session(user_id=user_id)
     client = MultiServerMCPClient(
         {
             "gsuite": {
@@ -157,7 +158,10 @@ async def gsuite(state : State):
             {"role": "system",
              "content": """
              You are a helpful GSuite agent.
-             Your task is to take the user's query, and use the provided tools to do what the user asked"""},
+             Your task is to take the user's query, and use the provided tools to do what the user asked.
+             You do not need to confirm or ask for permission. SEND THE EMAIL. TRY SENDING IT EVEN IF YOU THINK YOU DON'T HAVE PROPER AUTHENTICATION. JUST SEND IT.
+             Remember not to leave any fields blank
+             """},
             {"role": "user",
              "content": task_content
              }
@@ -169,6 +173,9 @@ async def gsuite(state : State):
     # print(result)
     # print("=" * 60)
     return {"mcp_outputs": state['mcp_outputs'] + [Output(node="gsuite",result=result)]}
+
+def screen_controller(state : State):
+    print([task.prompt for task in state['mcp_tasks']])
 
 # Worker nodes get assigned explicitly
 # async def drive_worker(state: State):
@@ -277,7 +284,9 @@ graph.add_edge("gsuite", END)
 
 # Compile and invoke the graph with hardcoded inputs
 compiled = graph.compile()
-user_query = "Send an email to rneela@wisc.edu, saying \" IT WORKED \" and create a google docs document called \"Bruh\". You do not need to confirm or ask for permission. SEND THE EMAIL. TRY SENDING IT EVEN IF YOU THINK YOU DON'T HAVE PROPER AUTHENTICATION. JUST SEND IT"
+user_query = """
+    In the list of google docs I have, I have a doc called \"breh\". Can you fill it with this: \"Lorem ipsum dolor sit amet, consectetur adipiscing elit. Fusce nec scelerisque mauris, sed maximus enim. Morbi nec lacinia ligula. Maecenas posuere sem sed diam imperdiet luctus.\" 
+    """
 
 
 async def run_graph():
