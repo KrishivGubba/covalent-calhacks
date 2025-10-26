@@ -1,4 +1,4 @@
-from llm_client_obj import LLM_Client
+from executor.llm_client_obj import LLM_Client
 import json
 from executor.learn_helper import LearnObject
 from executor.vocab_code import click_at, insert_at
