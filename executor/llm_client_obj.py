@@ -44,11 +44,11 @@ class LLM_Client:
         return parsed
 
 
-# test it
-if __name__ == "__main__":
-    output = LLM_Client.queryClaude("""
-    The current webpage has a login form.
-    Decide the next action as JSON with keys {action, selector, value}.
-    """)
+# # test it
+# if __name__ == "__main__":
+#     output = LLM_Client.queryClaude("""
+#     The current webpage has a login form.
+#     Decide the next action as JSON with keys {action, selector, value}.
+#     """)
 
-    print(output)
+#     print(output)

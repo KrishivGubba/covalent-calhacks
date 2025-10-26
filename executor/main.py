@@ -1,5 +1,6 @@
 from llm_client_obj import LLM_Client
 import json
+from learn_helper import LearnObject
 
 def decide(context_json):
     """
@@ -50,19 +51,39 @@ model="claude-3-opus-latest"
 
 
 
-if __name__ == "__main__":
-    samples = [
-        {"action": "the user seems to have a question", "details": "what is the difference between supervised and unsupervised learning"},
-        {"action": "the user is searching something up", "details": "looking for a place to eat near San Francisco"},
-        {"action": "the user is debugging some code", "details": "trying to fix a syntax error in my Python script"},
-        {"action": "the user is reading an article", "details": "reading about how blockchain consensus algorithms work"},
-        {"action": "the user is composing an email", "details": "writing a follow-up to the recruiter about interview scheduling"},
-    ]
+# if __name__ == "__main__":
+#     samples = [
+#         {"action": "the user seems to have a question", "details": "what is the difference between supervised and unsupervised learning"},
+#         {"action": "the user is searching something up", "details": "looking for a place to eat near San Francisco"},
+#         {"action": "the user is debugging some code", "details": "trying to fix a syntax error in my Python script"},
+#         {"action": "the user is reading an article", "details": "reading about how blockchain consensus algorithms work"},
+#         {"action": "the user is composing an email", "details": "writing a follow-up to the recruiter about interview scheduling"},
+#     ]
 
-    print("=== Intent Classification Test ===")
-    for i, ctx in enumerate(samples, 1):
-        result = decide(ctx)
-        print(f"Sample {i}:")
-        print(f"  action  = {ctx['action']}")
-        print(f"  details = {ctx['details']}")
-        print(f"  → learning intent? {result}\n")
+#     print("=== Intent Classification Test ===")
+#     for i, ctx in enumerate(samples, 1):
+#         result = decide(ctx)
+#         print(f"Sample {i}:")
+#         print(f"  action  = {ctx['action']}")
+#         print(f"  details = {ctx['details']}")
+#         print(f"  → learning intent? {result}\n")
+
+if __name__=="__main__":
+    #somehow the context has to be passed to us, maybe we can hit an endpoint
+    contextJson = {
+        "action" : "the user is searching things up about spiders",
+        "details" : "the user seems to want to learn more about spiders and how they mate"
+    }
+    if decide(context_json = contextJson): #learning intention has been detected
+        action = contextJson.get("action", "")
+        details = contextJson.get("details", "")
+        if not action and  not details:
+            raise Exception("Need to provide action and/or details for a search to take place")
+        allQueries = LearnObject.generateQueries(action, details)
+        lo = LearnObject()
+        for query in allQueries:
+            lo.googleSearchAndClick(query)
+        lo.youtubeSearchUp(allQueries[0])
+        lo.switchToTabByIndex(0)
+    else:
+        pass
