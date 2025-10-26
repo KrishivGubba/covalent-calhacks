@@ -11,6 +11,7 @@ from langgraph.graph import StateGraph
 from anthropic import Anthropic
 from langchain.chat_models import init_chat_model
 from langchain.agents import create_agent
+from langgraph.types import Send
 from pydantic import BaseModel, Field
 import dotenv
 dotenv.load_dotenv()
@@ -155,6 +156,8 @@ async def gsuite(state : State):
     )
 
     gsuite_tasks = [task.prompt for task in state['mcp_tasks'] if task.node == "gsuite"]
+    if len(gsuite_tasks) == 0:
+        return {"mcp_outputs" : state["mcp_outputs"]}
     task_content = " ".join(gsuite_tasks) if gsuite_tasks else ""
 
     result = await agent.ainvoke(
@@ -247,39 +250,31 @@ def screen_controller(state : State):
 #     return {"combined_result": combined}
 #
 #
-# def assign_workers(state: State):
-#     sends = []
-#     tasks = state['mcp_tasks']
-#     for task in tasks:
-#         if task.server == "docs":
-#             if task.task != "n/a":
-#                 sends.append(Send("docs_worker", state))
-#         if task.server == "sheets":
-#             if task.task != "n/a":
-#                 sends.append(Send("sheets_worker", state))
-#         if task.server == "slides":
-#             if task.task != "n/a":
-#                 sends.append(Send("slides_worker", state))
-#         if task.server == "mail":
-#             if task.task != "n/a":
-#                 sends.append(Send("mail_worker", state))
-#         if task.server == "drive":
-#             if task.task != "n/a":
-#                 sends.append(Send("drive_worker", state))
-#         if task.server == "calendar":
-#             if task.task != "n/a":
-#                 sends.append(Send("calendar_worker", state))
-#     return sends
+def assign_workers(state: State):
+    sends = []
+    tasks = state['mcp_tasks']
+    for task in tasks:
+        if task.server == "gsuite":
+            if task.task != "n/a":
+                sends.append(Send("gsuite", state))
+        if task.server == "screen controller":
+            if task.task != "n/a":
+                sends.append(Send("screen controller", state))
+    return sends
 
 
 # Build the workflow graph
+
 graph = StateGraph(State)
 
 graph.add_node("gsuite", gsuite)
 graph.add_node("orchestrator", orchestrator)
+graph.add_node("screen controller", screen_controller)
 
 graph.add_edge(START, "orchestrator")
 graph.add_edge("orchestrator", "gsuite")
+graph.add_edge("orchestrator", "screen controller")
+graph.add_edge("screen controller", END)
 graph.add_edge("gsuite", END)
 
 # Compile and invoke the graph with hardcoded inputs
@@ -289,9 +284,9 @@ user_query = """
     """
 data = ""
 
-async def run_graph(user_query : str = "", data : str = ""):
+async def run_graph(user_query : str = "No task provided", data : str = "No data provided"):
     final_output = await compiled.ainvoke({"task": user_query, "data" : data})
     print(final_output["mcp_outputs"])
 
 
-asyncio.run(run_graph())
+asyncio.run(run_graph(user_query, data))
