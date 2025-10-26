@@ -5,12 +5,6 @@ Data Access Object for Graph operations. Used to load graph data from SQlite DB
 import os
 import sqlite3
 
-<<<<<<< HEAD
-
-import sqlite3
-
-=======
->>>>>>> hem-screen
 class GraphDAO:
     def __init__(self, db_path):
         '''
@@ -69,8 +63,6 @@ class GraphDAO:
             params.append(data)
         return self.execute_query(query, tuple(params))
 
-<<<<<<< HEAD
-=======
     def add_data(self, node_uuid, key, data_type, info):
         '''
         Insert data into the data_table associated with a specific node.
@@ -93,7 +85,6 @@ class GraphDAO:
         self.execute_query(query, (data_uuid, node_uuid, key, data_type, info))
         return data_uuid
 
->>>>>>> hem-screen
     def close(self):
         '''Close the database connection.'''
         self.conn.close()
@@ -239,8 +230,6 @@ class TestGraphDAO:
         (node_uuid, metadata, created, last_modified, parent_uuid, children_uuid_arr, actions)
         '''
         return self.nodes_data
-<<<<<<< HEAD
-=======
 
 if __name__ == "__main__":
     # Initialize test data
@@ -301,4 +290,3 @@ if __name__ == "__main__":
     # Close connection
     conn.close()
     print("Database connection closed.")
->>>>>>> hem-screen
