@@ -10,7 +10,7 @@ class LLM_Client:
     @staticmethod
     def generate(prompt: str, 
                  sys_prompt = "You are an automation agent. Respond ONLY with strict JSON for the action to execute.",
-                 model = "claude-3-7-sonnet-20250219") -> dict:
+                 model = "claude-sonnet-4-5-20250929") -> dict:
         """
         Sends a prompt to Claude and returns parsed JSON.
         Expects Claude to respond with *only* JSON (no prose).

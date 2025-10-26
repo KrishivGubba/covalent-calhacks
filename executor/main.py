@@ -40,8 +40,7 @@ context_json:
     response = LLM_Client.generate(
         prompt=prompt.strip(),
         sys_prompt="You are a precise intent classifier that decides if the user is trying to learn or understand something new.",
-model="claude-3-opus-latest"
-
+        model="claude-sonnet-4-5-20250929"
     )
 
     # handle both dict or string return
@@ -94,7 +93,7 @@ context_json:
     response = LLM_Client.generate(
         prompt=prompt.strip(),
         sys_prompt="You are a precise intent classifier that decides if the user is composing or sending a message to someone.",
-        model="claude-3-opus-latest"  # haiku or sonnet are both fine here
+        model="claude-sonnet-4-5-20250929"  # haiku or sonnet are both fine here
     )
 
     # handle both dict or string return
@@ -144,7 +143,7 @@ context_json:
     response = LLM_Client.generate(
         prompt=prompt.strip(),
         sys_prompt="You are a precise intent classifier that decides if the user is trying to send a LinkedIn connection request or connect with a new person.",
-        model="claude-3-opus-latest"
+        model="claude-sonnet-4-5-20250929"
     )
 
     # handle both dict or string return
