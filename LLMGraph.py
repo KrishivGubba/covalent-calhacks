@@ -17,15 +17,11 @@ dotenv.load_dotenv()
 
 from composio import Composio
 composio = Composio(
-    api_key=os.getenv("COMPOSIO_API_KEY")
+    api_key=os.getenv("COMPOSIO_API_KEY"),
+
 )
 
 gmail_auth_config_id = os.getenv("GOOGLE_AUTH_CONFIG_ID")
-
-# connection_id = authenticate_toolkit(user_uuid, gmail_auth_config_id) # highlight : Important user connection id for use in tool servers
-# # You can also verify the connection status using:
-# connected_account = composio.connected_accounts.get(connection_id)
-# print(f"Connected account: {connected_account}")
 
 llm = init_chat_model(
     model_provider="anthropic",
@@ -44,8 +40,8 @@ class Task(BaseModel):
     )
 
 class Output(BaseModel):
-    server: Literal["gsuite", "screen controller"]
-    result: str
+    node: Literal["gsuite", "screen controller"]
+    result: dict
 
 
 # State schema for the overall graph
@@ -107,6 +103,14 @@ def orchestrator(state: State):
     }
 
 async def gsuite(state : State):
+    connection_request = composio.connected_accounts.link(
+        user_id="user",
+        auth_config_id="ac_cgbJXrl-9yI4",
+    )
+    redirect_url = connection_request.redirect_url
+    print(f'Please authorize the app by visiting this URL: {redirect_url}')
+    connected_account = connection_request.wait_for_connection()
+    print(f'Connection established successfully! Connected account id: {connected_account.id}')
     session = composio.experimental.tool_router.create_session(user_id="user")
     client = MultiServerMCPClient(
         {
@@ -123,19 +127,19 @@ async def gsuite(state : State):
         tools
     )
 
-    result = await agent.invoke(
+    result = await agent.ainvoke(
         input={"messages": [
             {"role": "system",
              "content": """
              You are a helpful GSuite agent.
              Your task is to take the user's query, and use the provided tools to do what the user asked"""},
             {"role": "user",
-             "content": [task.prompt if task.node == "gsuite" else Task.node for task in state['mcp_tasks']]
+             "content": [task.prompt if task.node == "gsuite" else task.node for task in state['mcp_tasks']]
              }
         ]},
-        response_format=Output,
     )
-    return {"mcp_outputs": state['mcp_outputs'] + [Output(server="slides", result=result)]}
+    print(result)
+    return {"mcp_outputs": state['mcp_outputs'] + [Output(node="gsuite",result=result)]}
 
 # Worker nodes get assigned explicitly
 # async def drive_worker(state: State):
@@ -235,31 +239,12 @@ async def gsuite(state : State):
 # Build the workflow graph
 graph = StateGraph(State)
 
-# graph.add_node("orchestrator", orchestrator)
-# graph.add_node("drive_worker", drive_worker)
-# graph.add_node("docs_worker", docs_worker)
-# graph.add_node("calendar_worker", calendar_worker)
-# graph.add_node("sheets_worker", sheets_worker)
-# graph.add_node("slides_worker", slides_worker)
-# graph.add_node("mail_worker", mail_worker)
-# graph.add_node("synthesizer", synthesizer)
 graph.add_node("gsuite", gsuite)
 graph.add_node("orchestrator", orchestrator)
 
 graph.add_edge(START, "orchestrator")
 graph.add_edge("orchestrator", "gsuite")
 graph.add_edge("gsuite", END)
-
-# graph.add_conditional_edges("orchestrator", assign_workers)
-
-# graph.add_edge("drive_worker", "synthesizer")
-# graph.add_edge("docs_worker", "synthesizer")
-# graph.add_edge("calendar_worker", "synthesizer")
-# graph.add_edge("sheets_worker", "synthesizer")
-# graph.add_edge("slides_worker", "synthesizer")
-# graph.add_edge("mail_worker", "synthesizer")
-
-# graph.add_edge("synthesizer", END)
 
 # Compile and invoke the graph with hardcoded inputs
 compiled = graph.compile()
