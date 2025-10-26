@@ -93,10 +93,10 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = ({
             handleActionClick(actionId);
           }}
           onMouseEnter={(e) => {
-            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(147, 197, 253, 0.25)';
+            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(255, 255, 255, 1)';
           }}
           onMouseLeave={(e) => {
-            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(147, 197, 253, 0.15)';
+            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(245, 245, 248, 0.9)';
           }}
         >
           ▶
@@ -228,7 +228,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = ({
               }}
               onClick={handleLearningToggle}
             >
-              {isRunning ? 'Stop Learning' : 'Start Learning'}
+              {isRunning ? 'Stop Learning' : 'Restart Learning'}
             </button>
           </div>
           <div style={styles.actionsList}>
@@ -253,11 +253,11 @@ const styles = {
     position: 'fixed' as const,
     top: '20px',
     left: '20px',
-    backgroundColor: 'rgba(147, 197, 253, 0.08)',
-    backdropFilter: 'blur(40px) saturate(180%)',
-    WebkitBackdropFilter: 'blur(40px) saturate(180%)',
-    border: '1px solid rgba(147, 197, 253, 0.25)',
-    boxShadow: '0 8px 32px rgba(59, 130, 246, 0.1)',
+    backgroundColor: 'rgba(242, 242, 247, 0.78)',
+    backdropFilter: 'blur(60px) saturate(180%)',
+    WebkitBackdropFilter: 'blur(60px) saturate(180%)',
+    border: '1px solid rgba(255, 255, 255, 0.6)',
+    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.15)',
     overflow: 'hidden',
     zIndex: 999,
   },
@@ -286,8 +286,7 @@ const styles = {
   promptText: {
     fontSize: '1rem',
     fontWeight: '600',
-    color: 'rgba(0, 0, 0, 0.8)',
-    textShadow: '0 1px 2px rgba(255, 255, 255, 0.3)',
+    color: 'rgba(0, 0, 0, 0.95)',
     flex: 1,
   },
   promptButtons: {
@@ -340,9 +339,8 @@ const styles = {
   expandedTitle: {
     fontSize: '1.2rem',
     fontWeight: '600',
-    color: 'rgba(0, 0, 0, 0.8)',
+    color: 'rgba(0, 0, 0, 0.95)',
     margin: 0,
-    textShadow: '0 1px 2px rgba(255, 255, 255, 0.3)',
   },
   learningButton: {
     padding: '0.5rem 1.2rem',
@@ -375,11 +373,11 @@ const styles = {
     justifyContent: 'space-between',
     gap: '0.75rem',
     padding: '1rem',
-    backgroundColor: 'rgba(147, 197, 253, 0.08)',
-    backdropFilter: 'blur(20px)',
-    WebkitBackdropFilter: 'blur(20px)',
+    backgroundColor: 'rgba(250, 250, 252, 0.6)',
+    backdropFilter: 'blur(40px)',
+    WebkitBackdropFilter: 'blur(40px)',
     borderRadius: '16px',
-    border: '1px solid rgba(147, 197, 253, 0.2)',
+    border: '1px solid rgba(255, 255, 255, 0.4)',
   },
   actionText: {
     flex: 1,
@@ -387,24 +385,22 @@ const styles = {
   actionTitle: {
     fontSize: '0.95rem',
     fontWeight: '600',
-    color: 'rgba(0, 0, 0, 0.8)',
+    color: 'rgba(0, 0, 0, 0.95)',
     margin: '0 0 0.25rem 0',
-    textShadow: '0 1px 2px rgba(255, 255, 255, 0.3)',
   },
   actionDescription: {
     fontSize: '0.8rem',
-    color: 'rgba(30, 41, 59, 0.8)',
+    color: 'rgba(0, 0, 0, 0.7)',
     margin: 0,
     lineHeight: '1.4',
-    textShadow: '0 1px 2px rgba(255, 255, 255, 0.2)',
   },
   playButton: {
     width: '36px',
     height: '36px',
     borderRadius: '50%',
-    border: '2px solid rgba(96, 165, 250, 0.4)',
-    backgroundColor: 'rgba(147, 197, 253, 0.15)',
-    color: '#3b82f6',
+    border: '1px solid rgba(0, 0, 0, 0.1)',
+    backgroundColor: 'rgba(245, 245, 248, 0.9)',
+    color: '#000000',
     fontSize: '0.8rem',
     cursor: 'pointer',
     transition: 'all 0.2s ease',

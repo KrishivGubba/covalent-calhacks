@@ -109,9 +109,8 @@ const styles = {
     left: 0,
     right: 0,
     bottom: 0,
-    background: 'radial-gradient(circle at 20% 20%, rgba(59, 130, 246, 0.08) 0%, transparent 50%), radial-gradient(circle at 40% 40%, rgba(147, 197, 253, 0.08) 0%, transparent 50%)',
+    background: 'transparent',
     pointerEvents: 'none' as const,
-    animation: 'float 20s ease-in-out infinite',
   },
 };
 

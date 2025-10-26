@@ -43,10 +43,10 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
           style={styles.playButton}
           onClick={() => handleActionClick(actionId)}
           onMouseEnter={(e) => {
-            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(59, 130, 246, 0.25)';
+            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(255, 255, 255, 0.35)';
           }}
           onMouseLeave={(e) => {
-            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(59, 130, 246, 0.15)';
+            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(255, 255, 255, 0.25)';
           }}
         >
           ▶
@@ -178,9 +178,9 @@ const styles = {
     width: '40px',
     height: '40px',
     borderRadius: '50%',
-    border: '2px solid rgba(59, 130, 246, 0.4)',
-    backgroundColor: 'rgba(59, 130, 246, 0.15)',
-    color: '#3b82f6',
+    border: '2px solid rgba(100, 100, 100, 0.4)',
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    color: '#000000',
     fontSize: '0.9rem',
     cursor: 'pointer',
     transition: 'all 0.2s ease',
