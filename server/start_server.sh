@@ -29,3 +29,8 @@ echo $! > flask_server.pid
 echo "Flask server started with PID $(cat flask_server.pid)"
 echo "Logs available at: $SCRIPT_DIR/flask_server.log"
 
+## setup DB ## 
+python3 ../context-engine/init_db.py
+python3 ../context-engine/graph_dao.py
+###############
+
