@@ -160,21 +160,28 @@ class LearnObject:
         queryGenerator = LLM_Client()
 
         PROMPT = f"""
-You are a smart query generator.
-Given a user's current goal or action and some background context,
-generate exactly 3 short, relevant Google search queries the user would likely want to run next.
+        You are a precise query generator.
 
-- Each query should be phrased naturally as if typed into Google.
-- Avoid duplicates or overly similar queries.
-- Keep them concise (max ~10 words each).
-- Return ONLY a valid JSON array of strings.
+        Your ONLY task is to output **exactly 3** short Google-style search queries,
+        based on the user's goal and context below.
 
-Example:
-["what is the chrome devtools protocol", "playwright connect_over_cdp example", "how to automate browser tabs with python"]
+        🧠 Rules:
+        - The output MUST be a **valid JSON array of strings**, with no trailing commas.
+        - The array MUST contain exactly 3 elements.
+        - Do NOT include any explanations, markdown, code fences, or text before/after the array.
+        - Do NOT add newlines outside the JSON itself.
+        - Each element MUST be a double-quoted string (using standard JSON quoting).
+        - Each query MUST be concise (≤10 words) and distinct in meaning.
 
-User action: {action}
-Context details: {details}
-        """
+        Example of correct output:
+        ["chrome devtools protocol overview", "python playwright connect_over_cdp", "open new tab via cdp"]
+
+        Now generate your response using the information below:
+
+        User action: {action}
+        Context details: {details}
+"""
+
 
         SYS_PROMPT = "You are a precise query generator that outputs only a JSON array of 3 search queries."
 
@@ -182,7 +189,7 @@ Context details: {details}
             prompt=PROMPT.strip(),
             sys_prompt=SYS_PROMPT
         )
-
+        print(response, "is hte response for search queries")
         # ensure we return a parsed Python list
         try:
             import json
@@ -194,4 +201,5 @@ Context details: {details}
         except Exception:
             print("⚠️ Could not parse response from LLM, returning fallback.")
             return [f"{action} {details}".strip(), f"how to {action}", f"{action} tutorial"]
+
 

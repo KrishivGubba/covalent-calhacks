@@ -82,6 +82,7 @@ Return only the JSON action now.
         """Validate/parse LLM JSON output."""
         try:
             action = json.loads(raw)
+            return action
         except Exception:
             pass
             # raise ValueError(f"❌ Bad LLM output (not JSON): {raw}")
@@ -141,7 +142,7 @@ for i in range(10):
 user details:
 first name: krishiv
 last name: gubba
-phone number: 8476682
+phone number: 8476682616
 email: kgubba@wisc.edu
                     """
     }
