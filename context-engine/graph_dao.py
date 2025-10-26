@@ -17,7 +17,7 @@ class GraphDAO:
         '''Retrieve all nodes from the database with their associated actions.'''
         query = """
         SELECT 
-            n.Node_UUID as node_uuid,
+            n.UUID as node_uuid,
             n.Metadata,
             n.created,
             n.last_modified,
@@ -62,6 +62,28 @@ class GraphDAO:
             query += " AND data = ?"
             params.append(data)
         return self.execute_query(query, tuple(params))
+
+    def add_data(self, node_uuid, key, data_type, info):
+        '''
+        Insert data into the data_table associated with a specific node.
+        
+        Args:
+            node_uuid (str): UUID of the node to associate this data with
+            key (str): Key/name for this piece of data
+            data_type (str): Type of data (e.g., 'text', 'json', 'url', etc.)
+            info (str): The actual data content
+            
+        Returns:
+            str: UUID of the inserted data record
+        '''
+        import uuid
+        data_uuid = str(uuid.uuid4())
+        query = """
+            INSERT INTO data_table (UUID, Node_UUID, key, type, info)
+            VALUES (?, ?, ?, ?, ?)
+        """
+        self.execute_query(query, (data_uuid, node_uuid, key, data_type, info))
+        return data_uuid
 
     def close(self):
         '''Close the database connection.'''

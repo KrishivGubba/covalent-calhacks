@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 import sqlite3
 
 from flask_cors import CORS
-from graph_dao import GraphDAO
+from graph import Tree
 
 app = Flask(__name__)
 CORS(app)
@@ -16,8 +16,12 @@ db1 = conn.cursor()
 def screen():
     body = request.get_json()
     description = body.get("description", "")
+    data = body.get("data", "")
     
+    tree = Tree("graph.db")
+    
+    node_uuid, data = tree.learn(description, data)
 
 
     # Use the description field as needed
-    return jsonify({"message": "Screen data received", "description": description}), 200
+    return jsonify({"message": "Screen data received", "written": node_uuid}), 200
