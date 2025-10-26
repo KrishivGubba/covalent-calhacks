@@ -191,16 +191,9 @@ impl LLMAnalyzer {
             metadata
         );
         
-        // Try text-only Claude first
-        match claude_client.generate_description(system_prompt, &user_prompt).await {
-            Ok(description) => return Ok(description),
-            Err(e) => {
-                eprintln!("⚠️  Text-based Claude failed: {}, trying with screenshot...", e);
-                
-                // Fallback to screenshot + Claude
-                return self.generate_with_screenshot(claude_client, &metadata).await;
-            }
-        }
+        // Always use screenshot for MVP
+        eprintln!("📸 Using screenshot + Claude for richer context...");
+        return self.generate_with_screenshot(claude_client, &metadata).await;
     }
     
     /// Generate description with screenshot using Claude vision
@@ -227,7 +220,7 @@ impl LLMAnalyzer {
         
         let user_prompt = format!(
             "Here is the user's screen. Analyze both the screenshot and this metadata:\n\n{}\n\n\
-            Generate a concise description of what the user is doing.",
+            Generate a concise yet detailed description of what the user is doing.",
             metadata
         );
         

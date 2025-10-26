@@ -3,6 +3,8 @@ use crossbeam::channel::{self, Receiver, Sender};
 use futures::future::{join_all, select_all};
 use futures::FutureExt;
 use std::collections::{BinaryHeap, HashMap};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -496,6 +498,24 @@ impl SmartCollector {
         if let Some(result) = results.get(&DataSourceType::Accessibility) {
             if let Some(CachedData::AccessibilityData(acc_data)) = &result.data {
                 context.accessibility_data = Some(acc_data.clone());
+            }
+        }
+        
+        // Extract screenshot data and create visual data
+        if let Some(result) = results.get(&DataSourceType::Screenshot) {
+            if let Some(CachedData::Screenshot(screenshot)) = &result.data {
+                // Create basic visual data with screenshot hash
+                let mut hasher = DefaultHasher::new();
+                screenshot.as_bytes().hash(&mut hasher);
+                let screenshot_hash = format!("{:x}", hasher.finish());
+                
+                context.visual_data = Some(crate::screen_context::context_data::VisualData {
+                    screenshot_hash,
+                    changed_regions: Vec::new(),
+                    dominant_colors: Vec::new(),
+                    text_regions: Vec::new(),
+                    ui_elements_detected: Vec::new(),
+                });
             }
         }
         

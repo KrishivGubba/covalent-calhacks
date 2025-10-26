@@ -1,49 +1,43 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import FloatingAssistant from './components/FloatingAssistant';
 import type { Action } from './components/SuggestedActions';
+import { enableContextCollection, disableContextCollection, getContextCollectionStatus } from './utils/contextControl';
 import './styles.css';
 
-// API function placeholder to fetch suggested actions
+// Fetch suggested actions from Tauri backend
 async function fetchSuggestedActions(): Promise<Action[]> {
-  // TODO: Replace with actual API call
-  // Example: const response = await fetch('/api/actions');
-  // return await response.json();
-  
-  // Mock data for demonstration
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve([
-        {
-          id: '1',
-          title: 'Review Pull Request #123',
-          description: 'A new pull request has been submitted for the authentication module. Please review the changes and provide feedback on the implementation.',
-        },
-        {
-          id: '2',
-          title: 'Update Dependencies',
-          description: 'Several npm packages have new versions available. Consider updating to get the latest security patches and features.',
-        },
-        {
-          id: '3',
-          title: 'Fix Linting Issues',
-          description: 'There are 5 linting warnings in the codebase. Review and fix these issues to maintain code quality standards.',
-        },
-      ]);
-    }, 1000);
-  });
+  try {
+    const actions = await invoke<Action[]>('get_suggested_actions');
+    console.log(`📋 Fetched ${actions.length} actions from Tauri`);
+    return actions;
+  } catch (error) {
+    console.error('Failed to fetch actions:', error);
+    return [];
+  }
 }
 
 // Handler functions for start and stop buttons
-function handleStart(): void {
-  console.log('Start button pressed');
-  // TODO: Implement start logic
-  // Example: Start a process, begin monitoring, etc.
+async function handleStart(): Promise<void> {
+  console.log('Start Learning button pressed');
+  try {
+    // Enable context collection when learning starts
+    await enableContextCollection();
+    console.log('✅ Context collection enabled - learning active');
+  } catch (error) {
+    console.error('Failed to enable context collection:', error);
+  }
 }
 
-function handleStop(): void {
-  console.log('Stop button pressed');
-  // TODO: Implement stop logic
-  // Example: Stop a process, pause monitoring, etc.
+async function handleStop(): Promise<void> {
+  console.log('Stop Learning button pressed');
+  try {
+    // Disable context collection when learning stops
+    await disableContextCollection();
+    console.log('⏸️  Context collection disabled - learning paused');
+  } catch (error) {
+    console.error('Failed to disable context collection:', error);
+  }
 }
 
 function App() {
@@ -51,29 +45,48 @@ function App() {
   const [isRunning, setIsRunning] = useState(true);
   const [loading, setLoading] = useState(true);
 
-  // Fetch actions on component mount
+  // Fetch actions and sync context collection status on component mount
   useEffect(() => {
-    const loadActions = async () => {
+    const initialize = async () => {
       try {
+        // Load suggested actions
         const fetchedActions = await fetchSuggestedActions();
         setActions(fetchedActions);
+
+        // Sync UI state with actual context collection status
+        const contextStatus = await getContextCollectionStatus();
+        setIsRunning(contextStatus);
+        console.log(`📊 Initial context collection status: ${contextStatus ? 'Running' : 'Stopped'}`);
       } catch (error) {
-        console.error('Failed to fetch actions:', error);
+        console.error('Failed to initialize:', error);
       } finally {
         setLoading(false);
       }
     };
 
-    loadActions();
+    initialize();
+
+    // Poll for new actions every 3 seconds
+    const pollInterval = setInterval(async () => {
+      try {
+        const fetchedActions = await fetchSuggestedActions();
+        setActions(fetchedActions);
+      } catch (error) {
+        console.error('Failed to poll actions:', error);
+      }
+    }, 3000);
+
+    // Cleanup interval on unmount
+    return () => clearInterval(pollInterval);
   }, []);
 
-  const onStart = () => {
-    handleStart();
+  const onStart = async () => {
+    await handleStart();
     setIsRunning(true);
   };
 
-  const onStop = () => {
-    handleStop();
+  const onStop = async () => {
+    await handleStop();
     setIsRunning(false);
   };
 

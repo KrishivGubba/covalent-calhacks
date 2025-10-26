@@ -6,12 +6,58 @@ use std::process::{Child, Command};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::path::PathBuf;
 
+// Suggested action from Flask
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SuggestedAction {
+    pub id: String,
+    pub uuid: String,
+    pub title: String,
+    pub description: String,
+}
+
 // Context collection state - controls whether context is being collected and sent
 #[derive(Clone)]
 pub struct ContextState {
     // Controls whether context collection is active
     // Set to false to pause context collection (e.g., when actions are running, app is in focus, or user toggles)
     pub is_enabled: Arc<AtomicBool>,
+}
+
+// Store for suggested actions
+#[derive(Clone)]
+pub struct ActionsStore {
+    actions: Arc<Mutex<Vec<SuggestedAction>>>,
+}
+
+impl ActionsStore {
+    fn new() -> Self {
+        Self {
+            actions: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn add_action(&self, action: SuggestedAction) {
+        if let Ok(mut actions) = self.actions.lock() {
+            // Add new action to the beginning of the list
+            actions.insert(0, action);
+            // Keep only the last 20 actions
+            if actions.len() > 20 {
+                actions.truncate(20);
+            }
+            println!("📝 Added action to store. Total actions: {}", actions.len());
+        }
+    }
+
+    pub fn get_actions(&self) -> Vec<SuggestedAction> {
+        self.actions.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn clear_actions(&self) {
+        if let Ok(mut actions) = self.actions.lock() {
+            actions.clear();
+            println!("🗑️  Cleared all actions from store");
+        }
+    }
 }
 
 impl ContextState {
@@ -171,6 +217,18 @@ async fn trigger_action(action_uuid: String, action_description: String, state: 
     result
 }
 
+// Get suggested actions
+#[tauri::command]
+fn get_suggested_actions(store: tauri::State<ActionsStore>) -> Vec<SuggestedAction> {
+    store.get_actions()
+}
+
+// Clear all actions
+#[tauri::command]
+fn clear_suggested_actions(store: tauri::State<ActionsStore>) {
+    store.clear_actions();
+}
+
 // #[cfg(target_os = "macos")]
 // use tauri_plugin_macos_permissions;
 
@@ -210,11 +268,16 @@ pub fn run() {
             let context_state = ContextState::new();
             app.manage(context_state.clone());
             
+            // Create and manage actions store
+            let actions_store = ActionsStore::new();
+            app.manage(actions_store.clone());
+            
             // Start context collection loop using Tauri's async runtime
             println!("🚀 Starting context loop spawn task...");
             let context_state_for_loop = context_state.clone();
+            let actions_store_for_loop = actions_store.clone();
             tauri::async_runtime::spawn(async move {
-                match screen_context::ContextLoop::new_with_state(context_state_for_loop) {
+                match screen_context::ContextLoop::new_with_state_and_store(context_state_for_loop, actions_store_for_loop) {
                     Ok(mut context_loop) => {
                         println!("🔄 Initializing context loop...");
                         
@@ -283,7 +346,9 @@ pub fn run() {
             enable_context_collection,
             disable_context_collection,
             get_context_collection_status,
-            trigger_action
+            trigger_action,
+            get_suggested_actions,
+            clear_suggested_actions
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,47 +1,68 @@
 import React, { useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface Action {
   id: string;
+  uuid: string;  // Action UUID from database
   title: string;
   description: string;
+  node_uuid?: string;  // Optional: node this action belongs to
+  node_metadata?: string;  // Optional: metadata of the node
 }
 
 interface SuggestedActionsProps {
   actions: Action[];
 }
 
-type ActionStatus = 'idle' | 'playing' | 'done';
+type ActionStatus = 'idle' | 'playing' | 'done' | 'error';
 
 const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
   const [actionStatuses, setActionStatuses] = useState<Record<string, ActionStatus>>({});
 
-  const handleActionClick = (actionId: string) => {
-    const currentStatus = actionStatuses[actionId] || 'idle';
+  const handleActionClick = async (action: Action) => {
+    const currentStatus = actionStatuses[action.id] || 'idle';
     
     if (currentStatus === 'idle') {
-      // Start playing
-      setActionStatuses({ ...actionStatuses, [actionId]: 'playing' });
-      // Simulate completion after 3 seconds
-      setTimeout(() => {
-        setActionStatuses(prev => ({ ...prev, [actionId]: 'done' }));
-      }, 3000);
+      // Start playing - trigger the action via Tauri
+      setActionStatuses({ ...actionStatuses, [action.id]: 'playing' });
+      
+      try {
+        console.log(`🎬 Triggering action: ${action.description} (${action.uuid})`);
+        
+        // Call the Tauri command to trigger the action
+        await invoke('trigger_action', {
+          actionUuid: action.uuid,
+          actionDescription: action.description,
+        });
+        
+        console.log(`✅ Action completed successfully`);
+        setActionStatuses(prev => ({ ...prev, [action.id]: 'done' }));
+      } catch (error) {
+        console.error(`❌ Action failed:`, error);
+        setActionStatuses(prev => ({ ...prev, [action.id]: 'error' }));
+        
+        // Reset to idle after 3 seconds on error
+        setTimeout(() => {
+          setActionStatuses(prev => ({ ...prev, [action.id]: 'idle' }));
+        }, 3000);
+      }
     } else if (currentStatus === 'playing') {
-      // Pause/reset
-      setActionStatuses({ ...actionStatuses, [actionId]: 'idle' });
-    } else if (currentStatus === 'done') {
-      // Reset from done state
-      setActionStatuses({ ...actionStatuses, [actionId]: 'idle' });
+      // Can't pause/reset while playing
+      console.log('⏸️  Action is already executing');
+    } else if (currentStatus === 'done' || currentStatus === 'error') {
+      // Reset from done/error state
+      setActionStatuses({ ...actionStatuses, [action.id]: 'idle' });
     }
   };
 
-  const renderActionButton = (actionId: string) => {
-    const status = actionStatuses[actionId] || 'idle';
+  const renderActionButton = (action: Action) => {
+    const status = actionStatuses[action.id] || 'idle';
     
     if (status === 'idle') {
       return (
         <button 
           style={styles.playButton}
-          onClick={() => handleActionClick(actionId)}
+          onClick={() => handleActionClick(action)}
           onMouseEnter={(e) => {
             (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(255, 255, 255, 0.35)';
           }}
@@ -56,7 +77,7 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
       return (
         <button 
           style={styles.loadingButton}
-          onClick={() => handleActionClick(actionId)}
+          disabled={true}
         >
           <span style={styles.loadingDots}>
             <span style={styles.dot1}>.</span>
@@ -65,13 +86,23 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
           </span>
         </button>
       );
-    } else {
+    } else if (status === 'done') {
       return (
         <button 
           style={styles.doneButton}
-          onClick={() => handleActionClick(actionId)}
+          onClick={() => handleActionClick(action)}
         >
           ✓
+        </button>
+      );
+    } else {
+      // error state
+      return (
+        <button 
+          style={styles.errorButton}
+          onClick={() => handleActionClick(action)}
+        >
+          ✗
         </button>
       );
     }
@@ -102,7 +133,7 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
                   <h3 style={styles.actionTitle}>{action.title}</h3>
                   <p style={styles.actionDescription}>{action.description}</p>
                 </div>
-                {renderActionButton(action.id)}
+                {renderActionButton(action)}
               </div>
             </div>
           ))
@@ -215,6 +246,23 @@ const styles = {
     border: '2px solid rgba(34, 197, 94, 0.5)',
     backgroundColor: 'rgba(34, 197, 94, 0.2)',
     color: '#22c55e',
+    fontSize: '1.3rem',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
+    flexShrink: 0,
+  },
+  errorButton: {
+    width: '40px',
+    height: '40px',
+    borderRadius: '50%',
+    border: '2px solid rgba(239, 68, 68, 0.5)',
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    color: '#ef4444',
     fontSize: '1.3rem',
     cursor: 'pointer',
     transition: 'all 0.2s ease',

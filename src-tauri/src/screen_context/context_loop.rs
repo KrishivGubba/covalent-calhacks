@@ -16,6 +16,7 @@ pub struct ContextLoop {
     interval: Duration,
     running: bool,
     context_state: Option<ContextState>,
+    actions_store: Option<crate::ActionsStore>,
 }
 
 impl ContextLoop {
@@ -32,6 +33,7 @@ impl ContextLoop {
             interval: Duration::from_secs(1), // Default to 1 second
             running: false,
             context_state: None,
+            actions_store: None,
         })
     }
 
@@ -48,6 +50,24 @@ impl ContextLoop {
             interval: Duration::from_secs(1), // Default to 1 second
             running: false,
             context_state: Some(context_state),
+            actions_store: None,
+        })
+    }
+
+    /// Create a new context loop with state and actions store
+    pub fn new_with_state_and_store(context_state: ContextState, actions_store: crate::ActionsStore) -> Result<Self> {
+        let collector = EnhancedContextCollector::new()?;
+        let analyzer = LLMAnalyzer::new();
+        let api_client = ContextApiClient::new();
+        
+        Ok(Self {
+            collector,
+            analyzer,
+            api_client,
+            interval: Duration::from_secs(1), // Default to 1 second
+            running: false,
+            context_state: Some(context_state),
+            actions_store: Some(actions_store),
         })
     }
 
@@ -111,6 +131,14 @@ impl ContextLoop {
     /// Run a single iteration of the collection loop
     async fn run_iteration(&mut self, iteration: u64) -> Result<()> {
         println!("\n━━━ Iteration {} ━━━", iteration);
+        
+        // Check if context collection is disabled BEFORE doing any work
+        if let Some(ref state) = self.context_state {
+            if !state.is_enabled() {
+                println!("  ⏸️  Context collection is DISABLED - skipping iteration completely");
+                return Ok(());
+            }
+        }
         
         // Step 1: Collect context
         println!("  📊 Collecting context...");
@@ -201,19 +229,43 @@ impl ContextLoop {
         Ok(())
     }
 
-    /// Send analysis to Flask API (only if context collection is enabled)
+    /// Send analysis to Flask API
     async fn send_to_flask(&self, analysis: &ContextAnalysisOutput) -> Result<()> {
-        // Check if context collection is enabled
-        if let Some(ref state) = self.context_state {
-            if !state.is_enabled() {
-                println!("  ⏸️  Context collection is disabled - skipping Flask send");
-                return Ok(());
-            }
-        }
-        
+        // Note: We already check if collection is enabled at the start of run_iteration()
+        // so this will only be called when collection is enabled
         match self.api_client.send_analysis_output(analysis).await {
             Ok(response) => {
                 println!("  ✓ Flask response: {} (UUID: {})", response.message, response.written);
+                
+                // Check if an action was generated (not "no-action-generated")
+                if response.written != "no-action-generated" && !response.written.is_empty() {
+                    // Extract action text from message (format: "Context processed successfully. Suggested action: <action>")
+                    let action_text = if let Some(action_part) = response.message.split("Suggested action: ").nth(1) {
+                        action_part.trim()
+                    } else {
+                        &response.message
+                    };
+                    
+                    // Only store if action is not "None"
+                    if action_text != "None" && !action_text.is_empty() {
+                        if let Some(ref store) = self.actions_store {
+                            let suggested_action = crate::SuggestedAction {
+                                id: response.written.clone(),
+                                uuid: response.written.clone(),
+                                title: if action_text.len() > 100 {
+                                    format!("{}...", &action_text[..100])
+                                } else {
+                                    action_text.to_string()
+                                },
+                                description: action_text.to_string(),
+                            };
+                            
+                            store.add_action(suggested_action);
+                            println!("  ✅ Action stored for frontend");
+                        }
+                    }
+                }
+                
                 Ok(())
             }
             Err(e) => {
