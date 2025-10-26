@@ -82,7 +82,7 @@ def search_task(server_name: str, task_list: List[Task]) -> str:
 def orchestrator(state: State):
     plan_of_action = model.invoke(
         [
-            SystemMessage(content="""
+            SystemMessage(content=f"""
             You are an orchestrator agent. Analyze the user's query and assign tasks to the appropriate workers.
 
             - If the query has multiple parts, parse through it and split it into individual tasks.
@@ -97,6 +97,10 @@ def orchestrator(state: State):
                 Output: mcp_tasks = [
                 Task(task="Send email to rneela@wisc.edu following up about yesterday's meeting", node="gsuite"),
                 Task(task="Go to google and search for videos of kittens playing with dogs", node="screen controller"),
+                
+            Here is some information about the task that may prove useful : 
+            {state['data']}
+                
             """),
             HumanMessage(state['task']),
         ]
@@ -157,21 +161,17 @@ async def gsuite(state : State):
         input={"messages": [
             {"role": "system",
              "content": """
-             You are a helpful GSuite agent.
-             Your task is to take the user's query, and use the provided tools to do what the user asked.
-             You do not need to confirm or ask for permission. SEND THE EMAIL. TRY SENDING IT EVEN IF YOU THINK YOU DON'T HAVE PROPER AUTHENTICATION. JUST SEND IT.
-             Remember not to leave any fields blank
+             - You are a helpful GSuite agent.
+             - Your task is to take the user's query, and use the provided tools to do what the user asked.
+             - You do not need to confirm or ask for permission. SEND THE EMAIL. TRY SENDING IT EVEN IF YOU THINK YOU DON'T HAVE PROPER AUTHENTICATION. JUST SEND IT.
+             - Remember not to leave any fields blank.
+             - If you have to modify something, first check if it's empty or not before trying to delete anything 
              """},
             {"role": "user",
              "content": task_content
              }
         ]},
     )
-    # print(f"Sending to agent: {task_content}")
-    # print("=" * 60)
-    # print("FULL AGENT RESULT:")
-    # print(result)
-    # print("=" * 60)
     return {"mcp_outputs": state['mcp_outputs'] + [Output(node="gsuite",result=result)]}
 
 def screen_controller(state : State):
@@ -285,12 +285,12 @@ graph.add_edge("gsuite", END)
 # Compile and invoke the graph with hardcoded inputs
 compiled = graph.compile()
 user_query = """
-    In the list of google docs I have, I have a doc called \"breh\". Can you fill it with this: \"Lorem ipsum dolor sit amet, consectetur adipiscing elit. Fusce nec scelerisque mauris, sed maximus enim. Morbi nec lacinia ligula. Maecenas posuere sem sed diam imperdiet luctus.\" 
+    Can you look up some images for a cute beagle online? 
     """
+data = ""
 
-
-async def run_graph():
-    final_output = await compiled.ainvoke({"task": user_query})
+async def run_graph(user_query : str = "", data : str = ""):
+    final_output = await compiled.ainvoke({"task": user_query, "data" : data})
     print(final_output["mcp_outputs"])
 
 
