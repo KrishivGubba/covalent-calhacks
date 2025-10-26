@@ -40,6 +40,14 @@ class Task(BaseModel):
         description="The MCP server that has to be called",
     )
 
+class SCTask(TypedDict):
+    # The prompt for krishiv's LLM
+    action: str
+
+    # The relevant details for krishiv's LLM
+    details : str
+
+
 class Output(BaseModel):
     node: Literal["gsuite", "screen controller"]
     result: dict
@@ -56,6 +64,9 @@ class State(TypedDict):
     # The list of tasks that include the server name and task that each mcp has to perform
     mcp_tasks: List[Task]
 
+    # The list of tasks that the screen controller has to complete
+    sc_tasks: List[SCTask]
+
     # The list of outputs the nodes will write to (somehow)
     mcp_outputs: List[Output]
 
@@ -67,18 +78,6 @@ class LLMTasks(BaseModel):
 model = llm.with_structured_output(LLMTasks)
 worker_agent = Anthropic()
 
-def search_task(server_name: str, task_list: List[Task]) -> str:
-    """
-    This is the method that given a server and Task list, finds the task for the mcp server
-    :param server_name: the name of the server
-    :param task_list: the list of tasks that are in the state object
-    :return: the task the server has to perform
-    """
-    for task in task_list:
-        if task.node == server_name:
-            return task.prompt
-
-
 # Orchestrator node assigns tasks to specific workers explicitly
 def orchestrator(state: State):
     plan_of_action = model.invoke(
@@ -89,7 +88,8 @@ def orchestrator(state: State):
             - If the query has multiple parts, parse through it and split it into individual tasks.
             - If the task involves doing an action via the gsuite (calendar, drive, docs, sheets, slides, gmail)
             or anything related (event, task, presentation, email etc.) the task will use the 'gsuite' node
-            -  If there exists any task that cannot be completed with the gsuite, it should be a screen controller task
+            -  If there exists any task that cannot be completed with the gsuite, it should be a screen controller task 
+            or sc_task.  
             
             Example: 
                 User: Write an email to rneela@wisc.edu to follow up with yesterday's meeting, then go to google and search
@@ -178,7 +178,8 @@ async def gsuite(state : State):
     return {"mcp_outputs": state['mcp_outputs'] + [Output(node="gsuite",result=result)]}
 
 def screen_controller(state : State):
-    print([task.prompt for task in state['mcp_tasks']])
+    tasks = state['sc_tasks']
+
 
 # Worker nodes get assigned explicitly
 # async def drive_worker(state: State):
