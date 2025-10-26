@@ -33,3 +33,4 @@ CLAUDE.md
 
 .env*
 .venv*
+.env
