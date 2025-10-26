@@ -105,6 +105,59 @@ class GraphDAO:
         self.execute_query(query, (action_uuid, action_name, node_uuid))
         return action_uuid
 
+    def get_action_by_id(self, action_uuid):
+        '''
+        Retrieve an action by its UUID.
+        
+        Args:
+            action_uuid (str): UUID of the action to retrieve
+            
+        Returns:
+            tuple: (action_uuid, action_name, node_uuid) or None if not found
+        '''
+        query = """
+            SELECT UUID, Action_name, Node_UUID 
+            FROM action_table 
+            WHERE UUID = ?
+        """
+        result = self.execute_query(query, (action_uuid,))
+        return result[0] if result else None
+
+    def get_node_by_id(self, node_uuid):
+        '''
+        Retrieve a node by its UUID.
+        
+        Args:
+            node_uuid (str): UUID of the node to retrieve
+            
+        Returns:
+            tuple: Node data or None if not found
+        '''
+        query = """
+            SELECT UUID, Metadata, created, last_modified, parent_uuid, children_uuid_arr
+            FROM node_table 
+            WHERE UUID = ?
+        """
+        result = self.execute_query(query, (node_uuid,))
+        return result[0] if result else None
+
+    def get_data_for_node(self, node_uuid):
+        '''
+        Retrieve all data entries for a specific node.
+        
+        Args:
+            node_uuid (str): UUID of the node
+            
+        Returns:
+            list: List of tuples containing (uuid, node_uuid, key, type, info)
+        '''
+        query = """
+            SELECT UUID, Node_UUID, key, type, info
+            FROM data_table 
+            WHERE Node_UUID = ?
+        """
+        return self.execute_query(query, (node_uuid,))
+
     def close(self):
         '''Close the database connection.'''
         self.conn.close()
