@@ -3,8 +3,49 @@ pub mod screen_context;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::Manager;
 use std::process::{Child, Command};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::path::PathBuf;
+
+// Context collection state - controls whether context is being collected and sent
+#[derive(Clone)]
+pub struct ContextState {
+    // Controls whether context collection is active
+    // Set to false to pause context collection (e.g., when actions are running, app is in focus, or user toggles)
+    pub is_enabled: Arc<AtomicBool>,
+}
+
+impl ContextState {
+    fn new() -> Self {
+        Self {
+            is_enabled: Arc::new(AtomicBool::new(true)), // Enabled by default
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.is_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn enable(&self) {
+        println!("🟢 Context collection ENABLED");
+        self.is_enabled.store(true, Ordering::Relaxed);
+    }
+
+    pub fn disable(&self) {
+        println!("🔴 Context collection DISABLED");
+        self.is_enabled.store(false, Ordering::Relaxed);
+    }
+
+    pub fn toggle(&self) -> bool {
+        let new_state = !self.is_enabled();
+        self.is_enabled.store(new_state, Ordering::Relaxed);
+        if new_state {
+            println!("🟢 Context collection ENABLED (toggled)");
+        } else {
+            println!("🔴 Context collection DISABLED (toggled)");
+        }
+        new_state
+    }
+}
 
 // Flask server state management
 struct FlaskServer {
@@ -84,6 +125,52 @@ fn toggle_link_mcps() {
     // TODO: Implement MCP linking functionality
 }
 
+// Context collection control commands
+#[tauri::command]
+fn toggle_context_collection(state: tauri::State<ContextState>) -> bool {
+    state.toggle()
+}
+
+#[tauri::command]
+fn enable_context_collection(state: tauri::State<ContextState>) {
+    state.enable();
+}
+
+#[tauri::command]
+fn disable_context_collection(state: tauri::State<ContextState>) {
+    state.disable();
+}
+
+#[tauri::command]
+fn get_context_collection_status(state: tauri::State<ContextState>) -> bool {
+    state.is_enabled()
+}
+
+// Trigger action command
+#[tauri::command]
+async fn trigger_action(action_uuid: String, action_description: String, state: tauri::State<'_, ContextState>) -> Result<serde_json::Value, String> {
+    use screen_context::ContextApiClient;
+    
+    println!("🎬 Triggering action: {} ({})", action_description, action_uuid);
+    
+    // Disable context collection during action execution to prevent feedback loops
+    state.disable();
+    
+    let api_client = ContextApiClient::new();
+    
+    let result = api_client
+        .trigger_action(action_uuid, action_description)
+        .await
+        .map_err(|e| format!("Failed to trigger action: {}", e));
+    
+    // Re-enable context collection after action completes
+    // Note: You may want to add a delay here to avoid immediate re-collection
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    state.enable();
+    
+    result
+}
+
 // #[cfg(target_os = "macos")]
 // use tauri_plugin_macos_permissions;
 
@@ -119,10 +206,15 @@ pub fn run() {
             // Store flask server in app state so it stays alive
             app.manage(flask_server);
             
+            // Create and manage context state
+            let context_state = ContextState::new();
+            app.manage(context_state.clone());
+            
             // Start context collection loop using Tauri's async runtime
             println!("🚀 Starting context loop spawn task...");
+            let context_state_for_loop = context_state.clone();
             tauri::async_runtime::spawn(async move {
-                match screen_context::ContextLoop::new() {
+                match screen_context::ContextLoop::new_with_state(context_state_for_loop) {
                     Ok(mut context_loop) => {
                         println!("🔄 Initializing context loop...");
                         
@@ -183,7 +275,16 @@ pub fn run() {
             
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet, toggle_profile, toggle_link_mcps])
+        .invoke_handler(tauri::generate_handler![
+            greet, 
+            toggle_profile, 
+            toggle_link_mcps,
+            toggle_context_collection,
+            enable_context_collection,
+            disable_context_collection,
+            get_context_collection_status,
+            trigger_action
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

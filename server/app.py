@@ -64,20 +64,7 @@ def health():
     """Health check endpoint"""
     return jsonify({"status": "healthy", "service": "covalent-context-engine"}), 200
 
-@app.route("/trigger_action", methods=["POST"])
-def trigger_action():
-    try:
-        body = request.get_json()
-        action_uuid = body.get("action_uuid", "")
-        
-        tree = Tree(db_path)
-        
-        node_uuid, data = tree.trigger_action(action_uuid)
 
-        # Use the description field as needed
-        return jsonify({"message": "Action triggered", "written": node_uuid}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 @app.route("/trigger_action", methods=["POST"])
 def trigger_action():

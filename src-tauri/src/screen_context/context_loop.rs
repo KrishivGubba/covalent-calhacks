@@ -5,6 +5,7 @@ use tokio::time::sleep;
 use crate::screen_context::{
     EnhancedContextCollector, LLMAnalyzer, ContextApiClient, ContextAnalysisOutput
 };
+use crate::ContextState;
 
 /// Synchronous context collection loop
 /// Runs every 1-2 seconds, waiting for each iteration to complete before starting the next
@@ -14,10 +15,11 @@ pub struct ContextLoop {
     api_client: ContextApiClient,
     interval: Duration,
     running: bool,
+    context_state: Option<ContextState>,
 }
 
 impl ContextLoop {
-    /// Create a new context loop
+    /// Create a new context loop (without state management)
     pub fn new() -> Result<Self> {
         let collector = EnhancedContextCollector::new()?;
         let analyzer = LLMAnalyzer::new();
@@ -29,6 +31,23 @@ impl ContextLoop {
             api_client,
             interval: Duration::from_secs(1), // Default to 1 second
             running: false,
+            context_state: None,
+        })
+    }
+
+    /// Create a new context loop with state management
+    pub fn new_with_state(context_state: ContextState) -> Result<Self> {
+        let collector = EnhancedContextCollector::new()?;
+        let analyzer = LLMAnalyzer::new();
+        let api_client = ContextApiClient::new();
+        
+        Ok(Self {
+            collector,
+            analyzer,
+            api_client,
+            interval: Duration::from_secs(1), // Default to 1 second
+            running: false,
+            context_state: Some(context_state),
         })
     }
 
@@ -97,6 +116,18 @@ impl ContextLoop {
         println!("  📊 Collecting context...");
         let raw_context = self.collector.collect_context().await?;
         
+        // Check if Covalent app itself is in focus - if so, skip sending to prevent self-referential loops
+        let is_covalent_focused = raw_context.app_info.bundle_id == "com.hem.src-tauri" 
+            || raw_context.app_info.name == "Covalent";
+        
+        if is_covalent_focused {
+            println!("  🔵 Covalent app is in focus - temporarily pausing context collection");
+            // Don't send context when Covalent itself is focused
+            // This prevents self-referential loops and unnecessary processing
+            println!("  ⏸️  Skipping context collection while Covalent is focused");
+            return Ok(());
+        }
+        
         // Display detailed raw context
         println!("  📋 Raw Context Data:");
         match serde_json::to_string_pretty(&raw_context) {
@@ -151,7 +182,7 @@ impl ContextLoop {
     }
 
     /// Fallback iteration that tries to collect and send minimal data even on errors
-    async fn run_fallback_iteration(&mut self, iteration: u64) -> Result<()> {
+    async fn run_fallback_iteration(&mut self, _iteration: u64) -> Result<()> {
         println!("  🔄 Attempting fallback data collection...");
         
         // Try to collect basic context at least
@@ -170,8 +201,16 @@ impl ContextLoop {
         Ok(())
     }
 
-    /// Send analysis to Flask API
+    /// Send analysis to Flask API (only if context collection is enabled)
     async fn send_to_flask(&self, analysis: &ContextAnalysisOutput) -> Result<()> {
+        // Check if context collection is enabled
+        if let Some(ref state) = self.context_state {
+            if !state.is_enabled() {
+                println!("  ⏸️  Context collection is disabled - skipping Flask send");
+                return Ok(());
+            }
+        }
+        
         match self.api_client.send_analysis_output(analysis).await {
             Ok(response) => {
                 println!("  ✓ Flask response: {} (UUID: {})", response.message, response.written);

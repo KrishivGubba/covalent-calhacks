@@ -96,6 +96,40 @@ impl ContextApiClient {
         
         self.send_context(description, data).await
     }
+
+    /// Trigger an action by UUID via Flask API
+    pub async fn trigger_action(&self, action_uuid: String, action_description: String) -> Result<serde_json::Value> {
+        let url = format!("{}/trigger_action", self.base_url);
+        
+        let payload = serde_json::json!({
+            "action_uuid": action_uuid,
+            "action": action_description
+        });
+        
+        let response = self.client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .context("Failed to send trigger_action request to Flask API")?;
+
+        if response.status().is_success() {
+            let json_response: serde_json::Value = response
+                .json()
+                .await
+                .context("Failed to parse trigger_action response from Flask API")?;
+            
+            Ok(json_response)
+        } else {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            Err(anyhow::anyhow!(
+                "Flask API trigger_action returned error status {}: {}",
+                status,
+                error_text
+            ))
+        }
+    }
 }
 
 impl Default for ContextApiClient {
