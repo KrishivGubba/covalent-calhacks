@@ -1,7 +1,5 @@
 import { useState, useEffect } from 'react';
-import Header from './components/Header';
-import SuggestedActions from './components/SuggestedActions';
-import ControlButtons from './components/ControlButtons';
+import FloatingAssistant from './components/FloatingAssistant';
 import type { Action } from './components/SuggestedActions';
 import './styles.css';
 
@@ -50,7 +48,7 @@ function handleStop(): void {
 
 function App() {
   const [actions, setActions] = useState<Action[]>([]);
-  const [isRunning, setIsRunning] = useState(false);
+  const [isRunning, setIsRunning] = useState(true);
   const [loading, setLoading] = useState(true);
 
   // Fetch actions on component mount
@@ -79,52 +77,30 @@ function App() {
     setIsRunning(false);
   };
 
-  const handleProfileClick = () => {
-    console.log('Profile button clicked');
-    // TODO: Implement profile navigation or modal
-  };
-
-  const handleLinkMCPsClick = () => {
-    console.log('Link MCPs button clicked');
-    // TODO: Implement MCP linking functionality
-  };
-
   return (
     <div style={styles.app}>
       {/* Animated background */}
       <div style={styles.backgroundAnimation}></div>
-      
-      <Header 
-        onProfileClick={handleProfileClick}
-        onLinkMCPsClick={handleLinkMCPsClick}
-      />
-      <div style={styles.mainContent}>
-        {loading ? (
-          <div style={styles.loading}>
-            <div style={styles.loadingSpinner}></div>
-            <span style={styles.loadingText}>Loading...</span>
-          </div>
-        ) : (
-          <SuggestedActions actions={actions} />
-        )}
-      </div>
-      <ControlButtons 
-        onStart={onStart}
-        onStop={onStop}
-        isRunning={isRunning}
-      />
+
+      {/* Floating Assistant Widget */}
+      {!loading && (
+        <FloatingAssistant 
+          actions={actions}
+          isRunning={isRunning}
+          onStart={onStart}
+          onStop={onStop}
+        />
+      )}
     </div>
   );
 }
 
 const styles = {
   app: {
-    display: 'flex',
-    flexDirection: 'column' as const,
     height: '100vh',
     width: '100vw',
     overflow: 'hidden',
-    background: 'linear-gradient(135deg, #e0f2fe 0%, #f0f9ff 50%, #fae8ff 100%)',
+    background: 'transparent',
     position: 'relative' as const,
   },
   backgroundAnimation: {
@@ -133,38 +109,8 @@ const styles = {
     left: 0,
     right: 0,
     bottom: 0,
-    background: 'radial-gradient(circle at 20% 50%, rgba(147, 197, 253, 0.3) 0%, transparent 50%), radial-gradient(circle at 80% 80%, rgba(232, 121, 249, 0.3) 0%, transparent 50%)',
+    background: 'transparent',
     pointerEvents: 'none' as const,
-    animation: 'float 20s ease-in-out infinite',
-  },
-  mainContent: {
-    flex: 1,
-    overflow: 'hidden',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    position: 'relative' as const,
-    zIndex: 1,
-  },
-  loading: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    justifyContent: 'center',
-    alignItems: 'center',
-    flex: 1,
-    gap: '1rem',
-  },
-  loadingSpinner: {
-    width: '40px',
-    height: '40px',
-    border: '3px solid rgba(148, 163, 184, 0.1)',
-    borderTop: '3px solid #60a5fa',
-    borderRadius: '50%',
-    animation: 'spin 1s linear infinite',
-  },
-  loadingText: {
-    fontSize: '1rem',
-    color: '#64748b',
-    fontWeight: '500',
   },
 };
 

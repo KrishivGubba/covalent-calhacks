@@ -216,13 +216,13 @@ impl ScreenCapture {
             self.cg_image_to_dynamic_image(cg_image)
         }
     }
-    
-    /// Capture the currently active window
-    pub fn capture_active_window(&self) -> Result<DynamicImage> {
-        let active_window_id = self.get_active_window_id()?;
-        self.capture_window(active_window_id)
-    }
-    
+
+    // pub fn remove_inactive(&self) -> Result<()> {
+    //     let active_window_id = self.get_active_window_id()?;
+    //     let image = self.capture_window(active_window_id)?;
+    //     Ok(())
+    // }
+        
     /// Get information about all available displays
     pub fn get_display_info(&self) -> Vec<DisplayInfo> {
         let mut displays = Vec::new();

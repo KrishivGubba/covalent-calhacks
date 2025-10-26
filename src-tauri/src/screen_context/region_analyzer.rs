@@ -91,6 +91,8 @@ impl RegionAnalyzer {
         let mut total_change_pixels = 0u32;
         let mut total_pixels = 0u32;
         
+
+
         // Analyze each region
         for region in &regions_to_analyze {
             let region_id = self.generate_region_id(&region);
@@ -169,6 +171,8 @@ impl RegionAnalyzer {
             timestamp: std::time::SystemTime::now(),
         })
     }
+
+
     
     /// Get regions to analyze based on screenshot and visual data
     fn get_analysis_regions(

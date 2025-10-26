@@ -10,11 +10,25 @@
     "frontendDist": "../build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Covalent",
-        "width": 800,
-        "height": 600
+        "width": 550,
+        "height": 450,
+        "x": 0,
+        "y": 50,
+        "decorations": false,
+        "transparent": true,
+        "resizable": true,
+        "visibleOnAllWorkspaces": true,
+        "skipTaskbar": true,
+        "visible": true,
+        "center": false,
+        "contentProtected": false,
+        "focus": false,
+        "acceptFirstMouse": true,
+        "titleBarStyle": "Transparent"
       }
     ],
     "security": {
