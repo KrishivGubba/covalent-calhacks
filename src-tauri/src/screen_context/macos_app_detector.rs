@@ -1,15 +1,9 @@
-use anyhow::{Context as AnyhowContext, Result};
-use cocoa::appkit::{NSApplication, NSApplicationActivationPolicy, NSRunningApplication};
-use cocoa::base::{id, nil, NO, YES};
-use cocoa::foundation::{NSArray, NSAutoreleasePool, NSDictionary, NSString};
-use core_foundation::string::CFString;
-use objc::runtime::Object;
+use anyhow::Result;
+use cocoa::base::{id, nil};
+use cocoa::foundation::{NSAutoreleasePool, NSString};
 use objc::{class, msg_send, sel, sel_impl};
-use objc_foundation::NSObject;
-use core_foundation::base::TCFType;
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::path::PathBuf;
 use std::process::Command;
 
 use crate::screen_context::context_data::{AppInfo, BrowserType, IDEType};
@@ -18,6 +12,11 @@ pub struct MacOSAppDetector {
     workspace: id,
     cache: HashMap<u32, AppInfo>,
 }
+
+// SAFETY: MacOSAppDetector is only accessed through Mutex, which provides synchronization.
+// The Objective-C runtime operations we use are thread-safe.
+unsafe impl Send for MacOSAppDetector {}
+unsafe impl Sync for MacOSAppDetector {}
 
 impl MacOSAppDetector {
     pub fn new() -> Result<Self> {
@@ -45,7 +44,27 @@ impl MacOSAppDetector {
                 return Err(anyhow::anyhow!("No frontmost application found"));
             }
             
-            self.extract_app_info_from_nsrunningapp(frontmost_app)
+            let mut app_info = self.extract_app_info_from_nsrunningapp(frontmost_app)?;
+            
+            // Debug logging
+            if std::env::var("COVALENT_DEBUG").is_ok() {
+                eprintln!("🐛 App Debug: name='{}', bundle_id='{}', is_browser={}, is_ide={}",
+                    app_info.name, app_info.bundle_id, app_info.is_browser, app_info.is_ide);
+            }
+            
+            // If bundle ID is empty or unknown, try process-based detection
+            if app_info.bundle_id.is_empty() || app_info.name == "Unknown" {
+                if let Ok(fallback_info) = self.get_app_info_from_process_list(&app_info.name, app_info.process_id) {
+                    if !fallback_info.bundle_id.is_empty() {
+                        app_info.bundle_id = fallback_info.bundle_id;
+                        if app_info.name == "Unknown" {
+                            app_info.name = fallback_info.name;
+                        }
+                    }
+                }
+            }
+            
+            Ok(app_info)
         }
     }
     
@@ -381,6 +400,61 @@ impl MacOSAppDetector {
         } else {
             Ok(None) // Don't fail on AppleScript errors
         }
+    }
+    
+    /// Fallback method to get app info using process list and bundle IDs
+    fn get_app_info_from_process_list(&self, _app_name: &str, process_id: u32) -> Result<AppInfo> {
+        // Use ps to get the process command line, which often contains bundle info
+        let output = Command::new("ps")
+            .arg("-p")
+            .arg(process_id.to_string())
+            .arg("-o")
+            .arg("comm=")
+            .output()?;
+        
+        if output.status.success() {
+            let comm = String::from_utf8(output.stdout)?.trim().to_string();
+            
+            // Try to extract bundle ID from the executable path
+            if comm.contains(".app/Contents/MacOS/") {
+                if let Some(app_name) = comm.split(".app/Contents/MacOS/").next() {
+                    if let Some(app_name) = app_name.split('/').last() {
+                        // Derive a likely bundle ID
+                        let bundle_id = if app_name.contains("Visual Studio Code") || app_name.contains("Code") {
+                            "com.microsoft.VSCode".to_string()
+                        } else if app_name.contains("Google Chrome") || app_name.contains("Chrome") {
+                            "com.google.Chrome".to_string()
+                        } else if app_name.contains("Slack") {
+                            "com.tinyspeck.slackmacgap".to_string()
+                        } else if app_name.contains("Safari") {
+                            "com.apple.Safari".to_string()
+                        } else if app_name.contains("Finder") {
+                            "com.apple.finder".to_string()
+                        } else {
+                            format!("com.app.{}", app_name.to_lowercase().replace(" ", ""))
+                        };
+                        
+                        return Ok(AppInfo {
+                            name: app_name.to_string(),
+                            bundle_id,
+                            version: None,
+                            window_title: None,
+                            window_id: None,
+                            process_id,
+                            executable_path: Some(comm),
+                            is_browser: false,
+                            browser_type: None,
+                            is_ide: false,
+                            ide_type: None,
+                            current_file_path: None,
+                            workspace_path: None,
+                        });
+                    }
+                }
+            }
+        }
+        
+        Err(anyhow::anyhow!("Could not extract app info from process"))
     }
 }
 

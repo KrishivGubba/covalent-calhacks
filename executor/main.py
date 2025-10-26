@@ -1,6 +1,8 @@
-from executor.llm_client_obj import LLM_Client
+from llm_client_obj import LLM_Client
 import json
-from executor.learn_helper import LearnObject
+from learn_helper import LearnObject
+from vocab_code import click_at, insert_at
+
 
 def decide(context_json):
     """
@@ -99,24 +101,6 @@ context_json:
     return False
 
 
-
-if __name__ == "__main__":
-    samples = [
-        {"action": "the user seems to have a question", "details": "what is the difference between supervised and unsupervised learning"},
-        {"action": "the user is searching something up", "details": "looking for a place to eat near San Francisco"},
-        {"action": "the user is debugging some code", "details": "trying to fix a syntax error in my Python script"},
-        {"action": "the user is reading an article", "details": "reading about how blockchain consensus algorithms work"},
-        {"action": "the user is texting someone on linkedin", "details": "the user is dming ritesh neela"},
-    ]
-
-    print("=== Intent Classification Test ===")
-    for i, ctx in enumerate(samples, 1):
-        result = decideIsMessageSending(ctx)
-        print(f"Sample {i}:")
-        print(f"  action  = {ctx['action']}")
-        print(f"  details = {ctx['details']}")
-        print(f"  → messaging someone? {result}\n")
-
 def thingy(contextJson):
     #somehow the context has to be passed to us, maybe we can hit an endpoint
     # contextJson = {
@@ -136,6 +120,27 @@ def thingy(contextJson):
         lo.switchToTabByIndex(0)
     else:
         if decideIsMessageSending(context_json=contextJson):
-            print("fucker is sending a message")
+            click_at(642, 767)
+            action, details = contextJson["action"], contextJson["details"]
+            messageToBeSent = LLM_Client.queryForMessage(action, details)
+            insert_at(messageToBeSent)
+            click_at(1007, 884)
         else:
             print("not sending a message")
+
+if __name__ == "__main__":
+    samples = [
+        # {"action": "the user seems to have a question", "details": "what is the difference between supervised and unsupervised learning"},
+        # {"action": "the user is searching something up", "details": "looking for a place to eat near San Francisco"},
+        # {"action": "the user is debugging some code", "details": "trying to fix a syntax error in my Python script"},
+        # {"action": "the user is reading an article", "details": "reading about how blockchain consensus algorithms work"},
+        {"action": "the user is texting someone on linkedin", "details": "the user is dming ritesh neela"},
+    ]
+
+    print("=== Intent Classification Test ===")
+    for i, ctx in enumerate(samples, 1):
+        result = thingy(ctx)
+        print(f"Sample {i}:")
+        print(f"  action  = {ctx['action']}")
+        print(f"  details = {ctx['details']}")
+        print(f"  → messaging someone? {result}\n")

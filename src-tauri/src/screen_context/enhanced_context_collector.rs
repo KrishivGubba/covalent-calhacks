@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::screen_context::activity_monitor::ActivityMonitor;
 use crate::screen_context::context_data::{
-    ActivityMetrics, FileContext, RawContext, SystemState,
+    FileContext, RawContext, SystemState,
 };
 use crate::screen_context::context_type::ContextType;
 use crate::screen_context::macos_app_detector::MacOSAppDetector;
@@ -108,7 +108,7 @@ impl EnhancedContextCollector {
             let mut history = self.collection_history.lock().await;
             history.push(CollectionHistoryEntry {
                 timestamp: start_time,
-                context_type: detected_context_type,
+                context_type: detected_context_type.clone(),
                 app_name: context.app_info.name.clone(),
                 collection_duration: start_time.elapsed(),
                 success: true,

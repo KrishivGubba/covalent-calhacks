@@ -1,14 +1,14 @@
 use core_foundation::base::{CFRelease, CFTypeRef};
 use core_graphics::display::{
-    CGDisplay, CGDisplayBounds, CGDisplayCreateImage, CGDisplayCreateImageForRect, CGDisplayPixelsHigh,
-    CGDisplayPixelsWide, CGGetActiveDisplayList, CGGetDisplaysWithRect, CGMainDisplayID, CGRect, CGSize,
+    CGDisplayBounds, CGDisplayCreateImage, CGDisplayCreateImageForRect, CGDisplayPixelsHigh,
+    CGDisplayPixelsWide, CGGetActiveDisplayList, CGMainDisplayID, CGRect, CGSize,
 };
 use core_graphics::geometry::{CGPoint, CGRect as CoreCGRect};
 use core_graphics::image::CGImage;
 use core_graphics::window::{
-    kCGWindowIsOnscreen, CGWindowID, CGWindowImageOption, CGWindowListCreateDescriptionFromArray,
-    CGWindowListCreateImage, CGWindowListOption, kCGNullWindowID, kCGWindowImageDefault,
-    kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly,
+    CGWindowID, CGWindowListCreateDescriptionFromArray,
+    CGWindowListCreateImage, kCGNullWindowID, kCGWindowImageDefault,
+    kCGWindowListOptionOnScreenOnly,
 };
 use foreign_types::ForeignType;
 use image::{DynamicImage, ImageBuffer, Rgb};
@@ -216,13 +216,13 @@ impl ScreenCapture {
             self.cg_image_to_dynamic_image(cg_image)
         }
     }
-    
-    /// Capture the currently active window
-    pub fn capture_active_window(&self) -> Result<DynamicImage> {
-        let active_window_id = self.get_active_window_id()?;
-        self.capture_window(active_window_id)
-    }
-    
+
+    // pub fn remove_inactive(&self) -> Result<()> {
+    //     let active_window_id = self.get_active_window_id()?;
+    //     let image = self.capture_window(active_window_id)?;
+    //     Ok(())
+    // }
+        
     /// Get information about all available displays
     pub fn get_display_info(&self) -> Vec<DisplayInfo> {
         let mut displays = Vec::new();

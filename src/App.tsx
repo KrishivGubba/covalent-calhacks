@@ -1,51 +1,117 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useState, useEffect } from 'react';
+import FloatingAssistant from './components/FloatingAssistant';
+import type { Action } from './components/SuggestedActions';
+import './styles.css';
+
+// API function placeholder to fetch suggested actions
+async function fetchSuggestedActions(): Promise<Action[]> {
+  // TODO: Replace with actual API call
+  // Example: const response = await fetch('/api/actions');
+  // return await response.json();
+  
+  // Mock data for demonstration
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve([
+        {
+          id: '1',
+          title: 'Review Pull Request #123',
+          description: 'A new pull request has been submitted for the authentication module. Please review the changes and provide feedback on the implementation.',
+        },
+        {
+          id: '2',
+          title: 'Update Dependencies',
+          description: 'Several npm packages have new versions available. Consider updating to get the latest security patches and features.',
+        },
+        {
+          id: '3',
+          title: 'Fix Linting Issues',
+          description: 'There are 5 linting warnings in the codebase. Review and fix these issues to maintain code quality standards.',
+        },
+      ]);
+    }, 1000);
+  });
+}
+
+// Handler functions for start and stop buttons
+function handleStart(): void {
+  console.log('Start button pressed');
+  // TODO: Implement start logic
+  // Example: Start a process, begin monitoring, etc.
+}
+
+function handleStop(): void {
+  console.log('Stop button pressed');
+  // TODO: Implement stop logic
+  // Example: Stop a process, pause monitoring, etc.
+}
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const [actions, setActions] = useState<Action[]>([]);
+  const [isRunning, setIsRunning] = useState(true);
+  const [loading, setLoading] = useState(true);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  // Fetch actions on component mount
+  useEffect(() => {
+    const loadActions = async () => {
+      try {
+        const fetchedActions = await fetchSuggestedActions();
+        setActions(fetchedActions);
+      } catch (error) {
+        console.error('Failed to fetch actions:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadActions();
+  }, []);
+
+  const onStart = () => {
+    handleStart();
+    setIsRunning(true);
+  };
+
+  const onStop = () => {
+    handleStop();
+    setIsRunning(false);
+  };
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <div style={styles.app}>
+      {/* Animated background */}
+      <div style={styles.backgroundAnimation}></div>
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
+      {/* Floating Assistant Widget */}
+      {!loading && (
+        <FloatingAssistant 
+          actions={actions}
+          isRunning={isRunning}
+          onStart={onStart}
+          onStop={onStop}
         />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+      )}
+    </div>
   );
 }
+
+const styles = {
+  app: {
+    height: '100vh',
+    width: '100vw',
+    overflow: 'hidden',
+    background: 'transparent',
+    position: 'relative' as const,
+  },
+  backgroundAnimation: {
+    position: 'absolute' as const,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'transparent',
+    pointerEvents: 'none' as const,
+  },
+};
 
 export default App;

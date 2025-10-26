@@ -5,9 +5,6 @@ Data Access Object for Graph operations. Used to load graph data from SQlite DB
 import os
 import sqlite3
 
-
-import sqlite3
-
 class GraphDAO:
     def __init__(self, db_path):
         '''
@@ -65,6 +62,101 @@ class GraphDAO:
             query += " AND data = ?"
             params.append(data)
         return self.execute_query(query, tuple(params))
+
+    def add_data(self, node_uuid, key, data_type, info):
+        '''
+        Insert data into the data_table associated with a specific node.
+        
+        Args:
+            node_uuid (str): UUID of the node to associate this data with
+            key (str): Key/name for this piece of data
+            data_type (str): Type of data (e.g., 'text', 'json', 'url', etc.)
+            info (str): The actual data content
+            
+        Returns:
+            str: UUID of the inserted data record
+        '''
+        import uuid
+        data_uuid = str(uuid.uuid4())
+        query = """
+            INSERT INTO data_table (UUID, Node_UUID, key, type, info)
+            VALUES (?, ?, ?, ?, ?)
+        """
+        self.execute_query(query, (data_uuid, node_uuid, key, data_type, info))
+        return data_uuid
+
+    def add_action(self, node_uuid, action_name):
+        '''
+        Insert an action into the action_table associated with a specific node.
+        
+        Args:
+            node_uuid (str): UUID of the node to associate this action with
+            action_name (str): Name/description of the action
+            
+        Returns:
+            str: UUID of the inserted action record
+        '''
+        import uuid
+        action_uuid = str(uuid.uuid4())
+        query = """
+            INSERT INTO action_table (UUID, Action_name, Node_UUID)
+            VALUES (?, ?, ?)
+        """
+        self.execute_query(query, (action_uuid, action_name, node_uuid))
+        return action_uuid
+
+    def get_action_by_id(self, action_uuid):
+        '''
+        Retrieve an action by its UUID.
+        
+        Args:
+            action_uuid (str): UUID of the action to retrieve
+            
+        Returns:
+            tuple: (action_uuid, action_name, node_uuid) or None if not found
+        '''
+        query = """
+            SELECT UUID, Action_name, Node_UUID 
+            FROM action_table 
+            WHERE UUID = ?
+        """
+        result = self.execute_query(query, (action_uuid,))
+        return result[0] if result else None
+
+    def get_node_by_id(self, node_uuid):
+        '''
+        Retrieve a node by its UUID.
+        
+        Args:
+            node_uuid (str): UUID of the node to retrieve
+            
+        Returns:
+            tuple: Node data or None if not found
+        '''
+        query = """
+            SELECT UUID, Metadata, created, last_modified, parent_uuid, children_uuid_arr
+            FROM node_table 
+            WHERE UUID = ?
+        """
+        result = self.execute_query(query, (node_uuid,))
+        return result[0] if result else None
+
+    def get_data_for_node(self, node_uuid):
+        '''
+        Retrieve all data entries for a specific node.
+        
+        Args:
+            node_uuid (str): UUID of the node
+            
+        Returns:
+            list: List of tuples containing (uuid, node_uuid, key, type, info)
+        '''
+        query = """
+            SELECT UUID, Node_UUID, key, type, info
+            FROM data_table 
+            WHERE Node_UUID = ?
+        """
+        return self.execute_query(query, (node_uuid,))
 
     def close(self):
         '''Close the database connection.'''
@@ -211,3 +303,63 @@ class TestGraphDAO:
         (node_uuid, metadata, created, last_modified, parent_uuid, children_uuid_arr, actions)
         '''
         return self.nodes_data
+
+if __name__ == "__main__":
+    # Initialize test data
+    test_dao = TestGraphDAO()
+    
+    # Connect to the database
+    db_path = os.path.join(os.path.dirname(__file__), "graph.db")
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Enable foreign keys
+    cursor.execute("PRAGMA foreign_keys = ON;")
+    
+    # Clear existing data (optional - comment out if you want to keep existing data)
+    cursor.execute("DELETE FROM action_table;")
+    cursor.execute("DELETE FROM node_table;")
+    
+    print("Inserting test data into database...")
+    
+    # Insert all nodes
+    for node_data in test_dao.nodes_data:
+        node_uuid, metadata, created, last_modified, parent_uuid, children_uuid_arr, actions = node_data
+        
+        # Insert node into node_table
+        cursor.execute(
+            """
+            INSERT INTO node_table (UUID, Metadata, created, last_modified, parent_uuid, children_uuid_arr)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (node_uuid, metadata, created, last_modified, parent_uuid, children_uuid_arr)
+        )
+        
+        # Insert actions into action_table if they exist
+        if actions:
+            # Actions are in format: "action_uuid|action_name"
+            action_uuid, action_name = actions.split('|')
+            cursor.execute(
+                """
+                INSERT INTO action_table (UUID, Action_name, Node_UUID)
+                VALUES (?, ?, ?)
+                """,
+                (action_uuid, action_name, node_uuid)
+            )
+    
+    # Commit all changes
+    conn.commit()
+    print(f"Successfully inserted {len(test_dao.nodes_data)} nodes into the database.")
+    
+    # Verify the data
+    cursor.execute("SELECT COUNT(*) FROM node_table;")
+    node_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM action_table;")
+    action_count = cursor.fetchone()[0]
+    
+    print(f"Total nodes in database: {node_count}")
+    print(f"Total actions in database: {action_count}")
+    
+    # Close connection
+    conn.close()
+    print("Database connection closed.")
