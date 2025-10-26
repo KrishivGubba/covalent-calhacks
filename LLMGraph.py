@@ -4,72 +4,47 @@ import asyncio
 
 import os
 
-from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.constants import START, END
 from langgraph.graph import StateGraph
-from langgraph.prebuilt import ToolNode
-from langgraph.types import Send
+from anthropic import Anthropic
 from langchain.chat_models import init_chat_model
+from langchain.agents import create_agent
 from pydantic import BaseModel, Field
 import dotenv
 dotenv.load_dotenv()
 
 from composio import Composio
-composio = Composio(api_key=os.getenv("COMPOSIO_API_KEY"))
-
-gmail_auth_config_id = os.getenv("GOOGLE_AUTH_CONFIG_ID")
-user_uuid = "ea208670-a797-4fdb-b527-63942d74dd70"
-
-
-def authenticate_toolkit(user_id: str, auth_config_id: str):
-    """
-    Authentication for composio. Authenticates gsuite-master-auth which gives authentication to EVERYTHING you can think of
-    :param user_id: user_id of the user
-    :param auth_config_id: master config
-    :return: returns the connection request id for use
-    """
-    connection_request = composio.connected_accounts.initiate(
-        user_id=user_id,
-        auth_config_id=auth_config_id,
-    )
-    print(
-        f"Visit this URL to authenticate Gmail: {connection_request.redirect_url}"
-    )
-    # This will wait for the auth flow to be completed
-    connection_request.wait_for_connection(timeout=15)
-    return connection_request.id
-
-connection_id = authenticate_toolkit(user_uuid, gmail_auth_config_id) # highlight : Important user connection id for use in tool servers
-# You can also verify the connection status using:
-connected_account = composio.connected_accounts.get(connection_id)
-print(f"Connected account: {connected_account}")
-
-llm = init_chat_model(
-    model_provider="google_genai",
-    model="gemini-2.5-flash",
+composio = Composio(
+    api_key=os.getenv("COMPOSIO_API_KEY")
 )
 
+gmail_auth_config_id = os.getenv("GOOGLE_AUTH_CONFIG_ID")
+
+# connection_id = authenticate_toolkit(user_uuid, gmail_auth_config_id) # highlight : Important user connection id for use in tool servers
+# # You can also verify the connection status using:
+# connected_account = composio.connected_accounts.get(connection_id)
+# print(f"Connected account: {connected_account}")
+
+llm = init_chat_model(
+    model_provider="anthropic",
+    model="claude-sonnet-4-5-20250929",
+)
 
 class Task(BaseModel):
-    task: str = Field(
+    prompt: str = Field(
         description="The details of the task that the MCP has to perform",
     )
-    server: Literal[
-        "drive",
-        "docs",
-        "calendar",
-        "sheets",
-        "slides",
-        "mail"
+    node: Literal[
+        "gsuite",
+        "screen controller"
     ] = Field(
         description="The MCP server that has to be called",
     )
 
-
 class Output(BaseModel):
-    server: Literal["drive", "docs", "calendar", "sheets", "slides", "mail"]
+    server: Literal["gsuite", "screen controller"]
     result: str
 
 
@@ -89,7 +64,7 @@ class LLMTasks(BaseModel):
 
 
 model = llm.with_structured_output(LLMTasks)
-
+worker_agent = Anthropic()
 
 def search_task(server_name: str, task_list: List[Task]) -> str:
     """
@@ -99,8 +74,8 @@ def search_task(server_name: str, task_list: List[Task]) -> str:
     :return: the task the server has to perform
     """
     for task in task_list:
-        if task.server == server_name:
-            return task.task
+        if task.node == server_name:
+            return task.prompt
 
 
 # Orchestrator node assigns tasks to specific workers explicitly
@@ -110,11 +85,18 @@ def orchestrator(state: State):
             SystemMessage(content="""
             You are an orchestrator agent. Analyze the user's query and assign tasks to the appropriate workers.
 
-            - If the query involves any of the given keywords, drive, docs, calendar, sheets, slides, mail, based on the 
-            user's query, create a task the user wants to be done with that service
-            - If the user doesn't mention any task for that keyword, just put in n/a and nothing else
-            - Don't touch mcp_outputs parameter of State class
-
+            - If the query has multiple parts, parse through it and split it into individual tasks.
+            - If the task involves doing an action via the gsuite (calendar, drive, docs, sheets, slides, gmail)
+            or anything related (event, task, presentation, email etc.) the task will use the 'gsuite' node
+            -  If there exists any task that cannot be completed with the gsuite, it should be a screen controller task
+            
+            Example: 
+                User: Write an email to rneela@wisc.edu to follow up with yesterday's meeting, then go to google and search
+                up for some videos of kittens playing with puppies
+                
+                Output: mcp_tasks = [
+                Task(task="Send email to rneela@wisc.edu following up about yesterday's meeting", node="gsuite"),
+                Task(task="Go to google and search for videos of kittens playing with dogs", node="screen controller"),
             """),
             HumanMessage(state['task']),
         ]
@@ -125,19 +107,35 @@ def orchestrator(state: State):
     }
 
 async def gsuite(state : State):
+    session = composio.experimental.tool_router.create_session(user_id="user")
     client = MultiServerMCPClient(
         {
             "gsuite": {
-                "transport": "stdio",
-                "command": "python",
-                "args": ""
+                "transport" : "streamable_http",
+                "url" : session['url']
             }
         }
     )
-
     tools = await client.get_tools()
-    gsuite_worker = llm.with_config(tools)
 
+    agent = create_agent(
+        "anthropic:claude-sonnet-4-5",
+        tools
+    )
+
+    result = await agent.invoke(
+        input={"messages": [
+            {"role": "system",
+             "content": """
+             You are a helpful GSuite agent.
+             Your task is to take the user's query, and use the provided tools to do what the user asked"""},
+            {"role": "user",
+             "content": [task.prompt if task.node == "gsuite" else Task.node for task in state['mcp_tasks']]
+             }
+        ]},
+        response_format=Output,
+    )
+    return {"mcp_outputs": state['mcp_outputs'] + [Output(server="slides", result=result)]}
 
 # Worker nodes get assigned explicitly
 # async def drive_worker(state: State):
@@ -246,6 +244,7 @@ graph = StateGraph(State)
 # graph.add_node("mail_worker", mail_worker)
 # graph.add_node("synthesizer", synthesizer)
 graph.add_node("gsuite", gsuite)
+graph.add_node("orchestrator", orchestrator)
 
 graph.add_edge(START, "orchestrator")
 graph.add_edge("orchestrator", "gsuite")
@@ -260,16 +259,16 @@ graph.add_edge("gsuite", END)
 # graph.add_edge("slides_worker", "synthesizer")
 # graph.add_edge("mail_worker", "synthesizer")
 
-graph.add_edge("synthesizer", END)
+# graph.add_edge("synthesizer", END)
 
 # Compile and invoke the graph with hardcoded inputs
 compiled = graph.compile()
-user_query = "Make a google doc called \" it worked! \", create a calendar event called haircut and send an email to riteshneela@wisc.edu"
+user_query = "Send an email to rneela@wisc.edu saying \" IT WORKED \""
 
 
 async def run_graph():
     final_output = await compiled.ainvoke({"task": user_query})
-    print(final_output["combined_result"])
+    print(final_output["mcp_outputs"])
 
 
 asyncio.run(run_graph())
