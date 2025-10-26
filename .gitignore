@@ -22,5 +22,20 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-.env
+
+
+CLAUDE.md 
+
+# ignore the database
+*.db
 *.pyc
+
+
+.env*
+.venv*
+
+.env
+
+__pycache__/
+*.pyc
+*.pyo
