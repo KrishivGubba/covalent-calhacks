@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 from graph_dao import GraphDAO, TestGraphDAO
+from anthropic import Anthropic
 
 load_dotenv() 
 
@@ -276,6 +277,61 @@ class Tree:
         """
         # Find the most relevant node using traverse
         node = self.traverse(summary)
+
+        # take the summary of what's going on 
+        mtd = self.get_parent_metadata(node)
+        ACTION_CREATION_PROMPT = self.BASE_PROMPT[75:] + f"""
+            Now, after looking at this graph this is most relevant node that we picked: {mtd}
+            You are an AI Desktop Agent whose goal is to automate any tasks for the user. Your goal is to ANTICIPATE ANY ACTIONS
+            THAT THE USER MIGHT WANT TO TAKE BASED ON THE CURRENT SCREEN CONTENT.
+
+            You have access to the user's computer screen (if you want to control it and take actions)
+            You have access to the GSuite (Email, Calendar, Docs, Sheets, etc)
+            You can define a series of tasks as well.
+
+            Here is a description of what the current user is doing:
+            {summary}
+
+            Based on what the user is doing, suggest a task that the user might want to perform.
+            The task should be a simple action that the user can perform.
+            For example: "Send an email to Ritesh - rneela@wisc.edu confirming the meeting at 10am. Schedule this meeting on my calendar from 10am - 11am"
+
+            Note that when an action is performed, you will be given all context so don't worry about providing too much context
+            Focus on being clear what action is to be performed
+            
+            ONLY output the task and nothing else.
+        """
+        # ALSO ADD THE OCR HERE!!!!! IF I GET THIS FROM SCREEN VIEWING
+        
+        # Call Claude Sonnet 4.5 with the action prompt
+        try:
+            anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+            response = anthropic_client.messages.create(
+                model="claude-sonnet-4-5-20250929",
+                max_tokens=1024,
+                messages=[
+                    {"role": "user", "content": ACTION_CREATION_PROMPT}
+                ]
+            )
+            suggested_action = response.content[0].text
+            print(f"\n{'='*60}")
+            print(f"Suggested Action from Claude:")
+            print(f"{suggested_action}")
+            print(f"{'='*60}\n")
+            
+            # Insert the suggested action into the database if it was generated successfully
+            if suggested_action and node:
+                try:
+                    action_uuid = self.dao.add_action(
+                        node_uuid=node.node_uuid,
+                        action_name=suggested_action
+                    )
+                    print(f"Successfully inserted action into database with UUID: {action_uuid}")
+                except Exception as action_error:
+                    print(f"Error inserting action into database: {action_error}")
+        except Exception as e:
+            print(f"Error calling Claude API: {e}")
+            suggested_action = None
         
         if node is None:
             print("Warning: Could not find suitable node, using root")
@@ -458,7 +514,24 @@ if tree.API_KEY:
     
     # Test Case 1: Simple text data for a specific candidate
     print("\n--- Test Case 1: Interview notes for Ritesh ---")
-    summary1 = "Interview feedback for Ritesh's summer 2026 internship application"
+    summary1 = """
+    The user is viewing an email which says:
+    Hi Elizabeth,
+
+I'm glad to be moving forward in the interview process with KLA. 
+My availability (Central Daylight Time) for the upcoming week is:
+Saturday (11/02)- All day
+Sunday (11/03) - All day
+Monday(11/04) - After 12pm
+Tuesday (11/05) - After 1pm
+Wednesday (11/06) - After 12pm
+Thursday(11/07) - After 1pm
+Friday(11/08) - All day
+Please let me know if you need any additional times.
+
+Regards,
+Ritesh Neela
+    """
     data1 = {
         "candidate": "Ritesh",
         "position": "Software Engineering Intern - Summer 2026",
