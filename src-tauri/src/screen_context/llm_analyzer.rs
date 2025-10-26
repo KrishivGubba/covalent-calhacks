@@ -1,17 +1,22 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crate::screen_context::chromium_bridge::DOMChangeAnalysis;
 use crate::screen_context::context_data::RawContext;
 use crate::screen_context::context_type::{ContextType, IntentAnalysis};
 use crate::screen_context::region_analyzer::RegionChangeAnalysis;
+use crate::screen_context::claude_client::ClaudeClient;
+use crate::screen_context::screen_capture::ScreenCapture;
 
 /// LLM-powered context analyzer that generates structured output
 pub struct LLMAnalyzer {
     session_start: SystemTime,
     last_analysis: Option<ContextAnalysisOutput>,
+    claude_client: Option<Arc<ClaudeClient>>,
+    screen_capture: Arc<ScreenCapture>,
 }
 
 /// Final structured output for the frontend
@@ -44,9 +49,21 @@ pub struct AnalysisMetadata {
 
 impl LLMAnalyzer {
     pub fn new() -> Self {
+        let claude_client = ClaudeClient::new().ok().map(Arc::new);
+        let screen_capture = Arc::new(ScreenCapture::new().unwrap_or_else(|_| {
+            // Create a default ScreenCapture if it fails
+            panic!("Failed to create ScreenCapture");
+        }));
+        
+        if claude_client.is_none() {
+            eprintln!("⚠️  Warning: Claude API key not found. Set ANTHROPIC_API_KEY or CLAUDE_API_KEY environment variable.");
+        }
+        
         Self {
             session_start: SystemTime::now(),
             last_analysis: None,
+            claude_client,
+            screen_capture,
         }
     }
     
@@ -75,8 +92,16 @@ impl LLMAnalyzer {
         let context_type = self.detect_context_type(raw_context);
         let confidence = context_type.confidence_score();
         
-        // Generate description using rule-based approach (can be enhanced with actual LLM)
-        let description = self.generate_description(raw_context, &context_type, dom_changes, region_changes);
+        // Generate description using Claude API or fallback to rule-based
+        let description = self.generate_description_with_claude(
+            raw_context, 
+            &context_type, 
+            dom_changes, 
+            region_changes
+        ).await.unwrap_or_else(|e| {
+            eprintln!("⚠️  Claude description failed: {}, using fallback", e);
+            self.generate_description_fallback(raw_context, &context_type, dom_changes, region_changes)
+        });
         
         // Detect changes
         let (changes_detected, key_changes, change_intensity) = self.analyze_changes(dom_changes, region_changes);
@@ -142,7 +167,157 @@ impl LLMAnalyzer {
         }
     }
     
-    fn generate_description(
+    /// Generate description using Claude API with screenshot fallback
+    async fn generate_description_with_claude(
+        &self,
+        raw_context: &RawContext,
+        context_type: &ContextType,
+        dom_changes: Option<&DOMChangeAnalysis>,
+        region_changes: Option<&RegionChangeAnalysis>,
+    ) -> Result<String> {
+        let claude_client = self.claude_client.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Claude client not available"))?;
+        
+        // Build context metadata for Claude
+        let metadata = self.build_metadata_for_claude(raw_context, context_type, dom_changes, region_changes);
+        
+        let system_prompt = "You are an AI assistant that analyzes user activity and context. \
+            Generate a concise, natural description (max 200 words) of what the user is currently doing. \
+            Focus on the task, workflow stage, and key activities. Be specific but concise.";
+        
+        let user_prompt = format!(
+            "Analyze this user context and generate a description:\n\n{}\n\n\
+            Generate a concise description of what the user is doing.",
+            metadata
+        );
+        
+        // Try text-only Claude first
+        match claude_client.generate_description(system_prompt, &user_prompt).await {
+            Ok(description) => return Ok(description),
+            Err(e) => {
+                eprintln!("⚠️  Text-based Claude failed: {}, trying with screenshot...", e);
+                
+                // Fallback to screenshot + Claude
+                return self.generate_with_screenshot(claude_client, &metadata).await;
+            }
+        }
+    }
+    
+    /// Generate description with screenshot using Claude vision
+    async fn generate_with_screenshot(
+        &self,
+        claude_client: &Arc<ClaudeClient>,
+        metadata: &str,
+    ) -> Result<String> {
+        // Capture screenshot
+        let screenshot = self.screen_capture.capture_full_screen()
+            .map_err(|e| anyhow::anyhow!("Failed to capture screenshot: {}", e))?;
+        
+        // Convert to PNG bytes
+        let mut png_bytes = Vec::new();
+        screenshot.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+            .map_err(|e| anyhow::anyhow!("Failed to encode screenshot: {}", e))?;
+        
+        // Encode to base64
+        let screenshot_base64 = ClaudeClient::encode_image_to_base64(&png_bytes);
+        
+        let system_prompt = "You are an AI assistant that analyzes user activity from screenshots and metadata. \
+            Generate a concise, natural description (max 200 words) of what the user is currently doing. \
+            Analyze the screenshot AND the provided metadata. Be specific but concise.";
+        
+        let user_prompt = format!(
+            "Here is the user's screen. Analyze both the screenshot and this metadata:\n\n{}\n\n\
+            Generate a concise description of what the user is doing.",
+            metadata
+        );
+        
+        claude_client.generate_description_with_image(
+            system_prompt,
+            &user_prompt,
+            &screenshot_base64
+        ).await
+    }
+    
+    /// Build comprehensive metadata string for Claude
+    fn build_metadata_for_claude(
+        &self,
+        raw_context: &RawContext,
+        context_type: &ContextType,
+        dom_changes: Option<&DOMChangeAnalysis>,
+        region_changes: Option<&RegionChangeAnalysis>,
+    ) -> String {
+        let mut metadata = Vec::new();
+        
+        // App info
+        metadata.push(format!("App: {}", raw_context.app_info.name));
+        metadata.push(format!("Bundle ID: {}", raw_context.app_info.bundle_id));
+        metadata.push(format!("Context Type: {}", context_type.category_name()));
+        
+        if let Some(ref title) = raw_context.app_info.window_title {
+            metadata.push(format!("Window Title: {}", title));
+        }
+        
+        if raw_context.app_info.is_browser {
+            metadata.push("Browser: Yes".to_string());
+        }
+        
+        if raw_context.app_info.is_ide {
+            metadata.push("IDE: Yes".to_string());
+            if let Some(ref file_path) = raw_context.app_info.current_file_path {
+                metadata.push(format!("Current File: {}", file_path));
+            }
+        }
+        
+        // DOM data
+        if let Some(dom_data) = &raw_context.dom_data {
+            metadata.push(format!("URL: {}", dom_data.url));
+            metadata.push(format!("Page Title: {}", dom_data.title));
+            
+            if !dom_data.visible_text.is_empty() {
+                let truncated_text = if dom_data.visible_text.len() > 300 {
+                    format!("{}...", &dom_data.visible_text[..300])
+                } else {
+                    dom_data.visible_text.clone()
+                };
+                metadata.push(format!("Visible Text: {}", truncated_text));
+            }
+            
+            if !dom_data.forms.is_empty() {
+                metadata.push(format!("Forms: {} present", dom_data.forms.len()));
+            }
+            
+            if let Some(ref active_el) = dom_data.active_element {
+                metadata.push(format!("Active Element: {}", active_el));
+            }
+        }
+        
+        // Activity metrics
+        metadata.push(format!("Activity Level: {:?}", raw_context.activity_metrics.activity_level));
+        metadata.push(format!("Idle: {}", raw_context.activity_metrics.is_idle));
+        
+        // Changes
+        if let Some(dom_changes) = dom_changes {
+            if dom_changes.has_changes {
+                let mut changes = Vec::new();
+                if dom_changes.url_changed { changes.push("URL changed"); }
+                if dom_changes.form_changes.input_focus_changed { changes.push("Input focus changed"); }
+                if dom_changes.content_changes.scroll_changed { changes.push("Scrolled"); }
+                if dom_changes.content_changes.text_similarity < 0.9 { changes.push("Text changed"); }
+                metadata.push(format!("Recent Changes: {}", changes.join(", ")));
+            }
+        }
+        
+        if let Some(region_changes) = region_changes {
+            if !region_changes.changed_regions.is_empty() {
+                metadata.push(format!("Visual Changes: {:.1}% of screen", region_changes.total_change_percentage * 100.0));
+            }
+        }
+        
+        metadata.join("\n")
+    }
+    
+    /// Fallback description generation (rule-based)
+    fn generate_description_fallback(
         &self,
         raw_context: &RawContext,
         context_type: &ContextType,

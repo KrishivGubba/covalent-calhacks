@@ -13,6 +13,11 @@ pub struct MacOSAppDetector {
     cache: HashMap<u32, AppInfo>,
 }
 
+// SAFETY: MacOSAppDetector is only accessed through Mutex, which provides synchronization.
+// The Objective-C runtime operations we use are thread-safe.
+unsafe impl Send for MacOSAppDetector {}
+unsafe impl Sync for MacOSAppDetector {}
+
 impl MacOSAppDetector {
     pub fn new() -> Result<Self> {
         unsafe {

@@ -11,7 +11,6 @@ use crate::screen_context::context_data::{
 use crate::screen_context::context_type::ContextType;
 use crate::screen_context::macos_app_detector::MacOSAppDetector;
 use crate::screen_context::smart_collector::SmartCollector;
-use crate::screen_context::context_api::ContextApiClient;
 
 /// Enhanced ContextCollector that integrates all macOS-specific functionality
 pub struct EnhancedContextCollector {
@@ -20,7 +19,6 @@ pub struct EnhancedContextCollector {
     app_detector: Arc<Mutex<MacOSAppDetector>>,
     previous_state: Arc<Mutex<Option<SystemState>>>,
     collection_history: Arc<Mutex<Vec<CollectionHistoryEntry>>>,
-    api_client: Arc<ContextApiClient>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,7 +36,6 @@ impl EnhancedContextCollector {
         let smart_collector = Arc::new(SmartCollector::new()?);
         let activity_monitor = Arc::new(ActivityMonitor::new()?);
         let app_detector = Arc::new(Mutex::new(MacOSAppDetector::new()?));
-        let api_client = Arc::new(ContextApiClient::new());
         
         Ok(Self {
             smart_collector,
@@ -46,7 +43,6 @@ impl EnhancedContextCollector {
             app_detector,
             previous_state: Arc::new(Mutex::new(None)),
             collection_history: Arc::new(Mutex::new(Vec::new())),
-            api_client,
         })
     }
     
@@ -123,22 +119,6 @@ impl EnhancedContextCollector {
                 history.remove(0);
             }
         }
-        
-        // Send context to Flask API (non-blocking, log errors)
-        let api_client = self.api_client.clone();
-        let context_clone = context.clone();
-        let detected_context_type_clone = detected_context_type.clone();
-        
-        tokio::spawn(async move {
-            match api_client.send_raw_context(&context_clone, &detected_context_type_clone).await {
-                Ok(response) => {
-                    println!("✓ Context sent to Flask API successfully. Node UUID: {}", response.written);
-                }
-                Err(e) => {
-                    eprintln!("✗ Failed to send context to Flask API: {}", e);
-                }
-            }
-        });
         
         Ok(context)
     }

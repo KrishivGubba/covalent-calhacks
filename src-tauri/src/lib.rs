@@ -93,16 +93,21 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Start Flask server
-            let app_dir = app.path()
-                .resource_dir()
-                .unwrap_or_else(|_| {
-                    // Fallback to current working directory in dev mode
-                    std::env::current_dir()
-                        .unwrap()
-                        .parent()
-                        .unwrap()
-                        .to_path_buf()
-                });
+            let app_dir = if cfg!(dev) {
+                // In dev mode, use project root (parent of src-tauri)
+                std::env::current_dir()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .to_path_buf()
+            } else {
+                // In production, use resource directory
+                app.path()
+                    .resource_dir()
+                    .unwrap_or_else(|_| std::env::current_dir().unwrap())
+            };
+            
+            println!("App directory: {:?}", app_dir);
             
             let flask_server = FlaskServer::new();
             
@@ -113,6 +118,33 @@ pub fn run() {
             
             // Store flask server in app state so it stays alive
             app.manage(flask_server);
+            
+            // Start context collection loop using Tauri's async runtime
+            tauri::async_runtime::spawn(async move {
+                match screen_context::ContextLoop::new() {
+                    Ok(mut context_loop) => {
+                        println!("🔄 Initializing context loop...");
+                        
+                        if let Err(e) = context_loop.initialize().await {
+                            eprintln!("✗ Failed to initialize context loop: {}", e);
+                            return;
+                        }
+                        
+                        // Set interval to 2 seconds
+                        context_loop.set_interval(2);
+                        
+                        println!("✓ Context loop initialized successfully");
+                        
+                        // Run the loop (this will run indefinitely)
+                        if let Err(e) = context_loop.run().await {
+                            eprintln!("✗ Context loop error: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("✗ Failed to create context loop: {}", e);
+                    }
+                }
+            });
             
             // Create menu items
             let open_profile = MenuItem::with_id(app, "open_profile", "Open Profile", true, None::<&str>)?;

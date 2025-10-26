@@ -3,6 +3,8 @@
 pub mod context_type;
 pub mod context_data;
 pub mod context_api;
+pub mod claude_client;
+pub mod context_loop;
 //pub mod context_examples;
 pub mod demo;
 pub mod ocr_tesseract;
@@ -37,6 +39,8 @@ pub use context_type::{
     CreativeType, DataWorkType, AdministrationType, IntentAnalysis, DeltaAnalysis
 };
 pub use context_api::{ContextApiClient, ContextPayload, ContextResponse};
+pub use claude_client::ClaudeClient;
+pub use context_loop::ContextLoop;
 pub use enhanced_context_collector::{EnhancedContextCollector, SystemReadiness};
 pub use screen_capture::ScreenCapture;
 pub use chromium_bridge::{ChromiumBridge, DOMChangeAnalysis};

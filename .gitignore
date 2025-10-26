@@ -29,3 +29,7 @@ CLAUDE.md
 # ignore the database
 *.db
 *.pyc
+
+
+.env*
+.venv*
