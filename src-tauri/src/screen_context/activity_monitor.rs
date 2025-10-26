@@ -5,14 +5,16 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio::time::interval;
+use crate::screen_context::macos_app_detector::MacOSAppDetector;
+use crate::screen_context::context_data::AppInfo;
 
 use crate::screen_context::context_data::{
     ActivityEntry, ActivityLevel, ActivityMetrics, ActivityTimeline, MouseActivity, MousePatterns,
     ScrollActivity, ScrollDirection, TransitionType, TypingActivity, TypingPatterns,
 };
-use crate::screen_context::context_type::ContextType;
+use crate::screen_context::context_type::{ContextType, DevelopmentType, ResearchType};
 
 #[derive(Debug, Clone)]
 pub struct ActivityEvent {
@@ -43,8 +45,11 @@ pub struct ActivityMonitor {
     
     // Context tracking
     current_context: Arc<RwLock<Option<ContextEntry>>>,
+    current_app: Arc<Mutex<Option<AppInfo>>>,
+    app_detector: Arc<Mutex<MacOSAppDetector>>,
     context_history: Arc<Mutex<VecDeque<ContextEntry>>>,
     context_switches_today: Arc<AtomicU64>,
+    app_switch_tx: broadcast::Sender<AppInfo>,
     
     // Timeline
     activity_timeline: Arc<Mutex<ActivityTimeline>>,
@@ -68,6 +73,8 @@ struct ContextEntry {
 
 impl ActivityMonitor {
     pub fn new() -> Result<Self> {
+        let (app_switch_tx, _) = broadcast::channel(100);
+        
         Ok(Self {
             recent_events: Arc::new(Mutex::new(VecDeque::new())),
             event_retention_duration: Duration::from_secs(300), // 5 minutes
@@ -78,8 +85,11 @@ impl ActivityMonitor {
             scroll_count: Arc::new(AtomicU64::new(0)),
             
             current_context: Arc::new(RwLock::new(None)),
+            current_app: Arc::new(Mutex::new(None)),
+            app_detector: Arc::new(Mutex::new(MacOSAppDetector::new()?)),
             context_history: Arc::new(Mutex::new(VecDeque::new())),
             context_switches_today: Arc::new(AtomicU64::new(0)),
+            app_switch_tx,
             
             activity_timeline: Arc::new(Mutex::new(ActivityTimeline {
                 entries: Vec::new(),
@@ -94,7 +104,7 @@ impl ActivityMonitor {
             max_history_size: 1000,
         })
     }
-    
+
     pub fn with_idle_threshold(mut self, threshold: Duration) -> Self {
         self.idle_threshold = threshold;
         self
@@ -166,28 +176,26 @@ impl ActivityMonitor {
             }
         });
         
-        // Start periodic cleanup task
-        let events_clone = Arc::clone(&self.recent_events);
-        let retention_duration = self.event_retention_duration;
+        let mut interval = interval(Duration::from_secs(1));
+        let mut app_switch_rx = self.app_switch_tx.subscribe();
         
-        tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(60));
-            
-            loop {
-                interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    // Regular activity check
+                    if self.is_user_active().await {
+                        *self.last_activity.lock().await = Instant::now();
+                    }
+                }
                 
-                let cutoff = Instant::now() - retention_duration;
-                let mut events = events_clone.lock().await;
-                
-                while let Some(front) = events.front() {
-                    if front.timestamp < cutoff {
-                        events.pop_front();
-                    } else {
-                        break;
+                result = app_switch_rx.recv() => {
+                    if let Ok(new_app) = result {
+                        // Handle app switch
+                        self.handle_app_switch(new_app).await?;
                     }
                 }
             }
-        });
+        }
         
         Ok(())
     }
@@ -352,10 +360,43 @@ impl ActivityMonitor {
     
     // Private helper methods
     
+    async fn handle_app_switch(&self, new_app: AppInfo) -> Result<()> {
+        let mut current_app = self.current_app.lock().await;
+        
+        // Check if this is actually a new app
+        if let Some(ref current) = *current_app {
+            if current.bundle_id == new_app.bundle_id {
+                return Ok(());
+            }
+        }
+        
+        // Update current app
+        *current_app = Some(new_app.clone());
+        
+        // Record context switch
+        let (mut detected_context, _) = if let Some(title) = new_app.window_title.as_deref() {
+            ContextType::from_window_title(title, Some(&new_app.bundle_id))
+        } else {
+            ContextType::from_app_bundle_id(&new_app.bundle_id)
+        };
+
+        if new_app.is_ide {
+            detected_context = ContextType::Development(DevelopmentType::Frontend);
+        } else if new_app.is_browser {
+            detected_context = ContextType::Research(ResearchType::TechnicalResearch);
+        }
+
+        self.record_context_switch(
+            new_app.name,
+            new_app.window_title,
+            detected_context,
+        ).await?;
+        
+        Ok(())
+    }
+    
     async fn detect_system_activity() -> Option<ActivityEvent> {
-        // In a real implementation, this would use Core Graphics event tapping
-        // or other system APIs to detect actual user activity
-        // For now, we return None (no activity detected)
+        // This is now handled by the app switch detection
         None
     }
     

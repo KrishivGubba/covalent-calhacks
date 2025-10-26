@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 from flask import Flask, render_template, request, jsonify, flash, redirect
 from werkzeug.security import check_password_hash, generate_password_hash
 import sqlite3
@@ -77,3 +78,32 @@ def login():
         "username" : body.get("username")
     }
     return response, 200
+=======
+from flask import Flask, request, jsonify
+import sqlite3
+
+from flask_cors import CORS
+from graph import Tree
+
+app = Flask(__name__)
+CORS(app)
+
+# Connect to SQLite Database
+conn = sqlite3.connect('graph.db', check_same_thread=False)
+db1 = conn.cursor()
+
+
+@app.route("/screen", methods=["POST"])
+def screen():
+    body = request.get_json()
+    description = body.get("description", "")
+    data = body.get("data", "")
+    
+    tree = Tree("graph.db")
+    
+    node_uuid, data = tree.learn(description, data)
+
+
+    # Use the description field as needed
+    return jsonify({"message": "Screen data received", "written": node_uuid}), 200
+>>>>>>> hem-screen

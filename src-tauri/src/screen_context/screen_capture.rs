@@ -1,14 +1,14 @@
 use core_foundation::base::{CFRelease, CFTypeRef};
 use core_graphics::display::{
-    CGDisplay, CGDisplayBounds, CGDisplayCreateImage, CGDisplayCreateImageForRect, CGDisplayPixelsHigh,
-    CGDisplayPixelsWide, CGGetActiveDisplayList, CGGetDisplaysWithRect, CGMainDisplayID, CGRect, CGSize,
+    CGDisplayBounds, CGDisplayCreateImage, CGDisplayCreateImageForRect, CGDisplayPixelsHigh,
+    CGDisplayPixelsWide, CGGetActiveDisplayList, CGMainDisplayID, CGRect, CGSize,
 };
 use core_graphics::geometry::{CGPoint, CGRect as CoreCGRect};
 use core_graphics::image::CGImage;
 use core_graphics::window::{
-    kCGWindowIsOnscreen, CGWindowID, CGWindowImageOption, CGWindowListCreateDescriptionFromArray,
-    CGWindowListCreateImage, CGWindowListOption, kCGNullWindowID, kCGWindowImageDefault,
-    kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly,
+    CGWindowID, CGWindowListCreateDescriptionFromArray,
+    CGWindowListCreateImage, kCGNullWindowID, kCGWindowImageDefault,
+    kCGWindowListOptionOnScreenOnly,
 };
 use foreign_types::ForeignType;
 use image::{DynamicImage, ImageBuffer, Rgb};
