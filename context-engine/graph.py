@@ -8,6 +8,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 from graph_dao import GraphDAO, TestGraphDAO
 from anthropic import Anthropic
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from LLMGraph import run_graph
 
 load_dotenv() 
 
@@ -262,7 +265,7 @@ class Tree:
 
         return best_node
     
-    def learn(self, summary, data, key=None, data_type="text"):
+    async def learn(self, summary, data, key=None, data_type="text"):
         """
         Learn new information by inserting it into the most relevant node.
         
@@ -370,7 +373,7 @@ class Tree:
             print(f"Error inserting data: {e}")
             return suggested_action, action_uuid
         
-    def trigger_action(self, action_uuid):
+    async def trigger_action(self, action_uuid):
         """
         Trigger an action by its UUID, gathering all relevant context data from the node 
         and its ancestors into a single concatenated string.
@@ -467,9 +470,11 @@ class Tree:
         print(f"With context data string of length: {len(collected_data_string)}")
         # ================================================================
         
+        # Call run_graph with action_text as user_query and collected_data_string as data
+        await run_graph(user_query=action_text, data=collected_data_string)
+        
         return action_text, collected_data_string
 
-    
     # show as adjacency list
     def __repr__(self):
         def build_adj_list(node, adj_list=None):
