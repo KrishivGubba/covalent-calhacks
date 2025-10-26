@@ -1,9 +1,7 @@
-import uuid
 from typing import TypedDict, Literal, List
+from typing_extensions import TypedDict
 import asyncio
-
 import os
-
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.constants import START, END
@@ -73,6 +71,7 @@ class State(TypedDict):
 
 class LLMTasks(BaseModel):
     mcp_tasks: List[Task]
+    sc_tasks: List[SCTask]
 
 
 model = llm.with_structured_output(LLMTasks)
@@ -90,6 +89,7 @@ def orchestrator(state: State):
             or anything related (event, task, presentation, email etc.) the task will use the 'gsuite' node
             -  If there exists any task that cannot be completed with the gsuite, it should be a screen controller task 
             or sc_task.  
+            - A screen controller task must be split into a list of the smallest executable tasks possible 
             
             Example: 
                 User: Write an email to rneela@wisc.edu to follow up with yesterday's meeting, then go to google and search
@@ -98,6 +98,17 @@ def orchestrator(state: State):
                 Output: mcp_tasks = [
                 Task(task="Send email to rneela@wisc.edu following up about yesterday's meeting", node="gsuite"),
                 Task(task="Go to google and search for videos of kittens playing with dogs", node="screen controller"),
+                ]
+                
+            Example 2: 
+                User: Send a message to Ritesh Neela on LinkedIn telling him how much of a good time the user had during the meeting
+                Provided data: The user had a lot of fun at the meeting yesterday and the current screen is the open dm with Ritesh
+                Neela.
+                
+                Output: sc_tasks = [
+                   SCTask(action="Write a message about how much fun you had at the meeting yesterday", "details"="Current screen is the dm with Ritesh on LinkedIn"),
+                   SCTask(action="Press send on the send button", details="")
+                   ]
                 
             Here is some information about the task that may prove useful : 
             {state['data']}
@@ -108,11 +119,13 @@ def orchestrator(state: State):
     )
     return {
         "mcp_tasks": plan_of_action.mcp_tasks,
-        "mcp_outputs": []
+        "sc_tasks": plan_of_action.sc_tasks,
+        "mcp_outputs": [],
     }
 
 async def gsuite(state : State):
     user_id = os.getenv("USER_ID")
+    print(user_id)
     connected_accounts = composio.connected_accounts.list(
         user_ids=[user_id], # this is set to xxx to always bypass the filtering and setup and new auth every time
         auth_config_ids=["ac_cgbJXrl-9yI4"],
@@ -211,14 +224,14 @@ graph.add_edge("gsuite", END)
 
 # Compile and invoke the graph with hardcoded inputs
 compiled = graph.compile()
-user_query = """
-    Can you look up some images for a cute beagle online? 
-    """
-data = ""
 
 async def run_graph(user_query : str = "No task provided", data : str = "No data provided"):
     final_output = await compiled.ainvoke({"task": user_query, "data" : data})
     print(final_output["mcp_outputs"])
 
+user_query = """
+    Take the first 3 words of the google doc \"breh\" and create a calendar event who's name starts those three words
+    """
+data = ""
 
-asyncio.run(run_graph(user_query, data))
+asyncio.run(run_graph(user_query))

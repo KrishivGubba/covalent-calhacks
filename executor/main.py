@@ -1,6 +1,6 @@
-from llm_client_obj import LLM_Client
+from executor.llm_client_obj import LLM_Client
 import json
-from learn_helper import LearnObject
+from executor.learn_helper import LearnObject
 
 def decide(context_json):
     """
