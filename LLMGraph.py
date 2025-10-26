@@ -27,16 +27,17 @@ llm = init_chat_model(
     model="claude-sonnet-4-5-20250929",
 )
 
-class Task(BaseModel):
+# Always the kind of task used for the mcp server
+class MCPTask(BaseModel):
     prompt: str = Field(
         description="The details of the task that the MCP has to perform",
     )
-    node: Literal[
-        "gsuite",
-        "screen controller"
-    ] = Field(
-        description="The MCP server that has to be called",
-    )
+    # node: Literal[
+    #     "gsuite",
+    #     "screen controller"
+    # ] = Field(
+    #     description="The MCP server that has to be called",
+    # )
 
 class SCTask(TypedDict):
     # The prompt for krishiv's LLM
@@ -60,7 +61,7 @@ class State(TypedDict):
     data: str
 
     # The list of tasks that include the server name and task that each mcp has to perform
-    mcp_tasks: List[Task]
+    mcp_tasks: List[MCPTask]
 
     # The list of tasks that the screen controller has to complete
     sc_tasks: List[SCTask]
@@ -70,7 +71,7 @@ class State(TypedDict):
 
 
 class LLMTasks(BaseModel):
-    mcp_tasks: List[Task]
+    mcp_tasks: List[MCPTask]
     sc_tasks: List[SCTask]
 
 
@@ -117,6 +118,7 @@ def orchestrator(state: State):
             HumanMessage(state['task']),
         ]
     )
+    # print(plan_of_action)
     return {
         "mcp_tasks": plan_of_action.mcp_tasks,
         "sc_tasks": plan_of_action.sc_tasks,
@@ -124,12 +126,13 @@ def orchestrator(state: State):
     }
 
 async def gsuite(state : State):
+    print("Using the gsuite node")
     user_id = os.getenv("USER_ID")
     print(user_id)
     connected_accounts = composio.connected_accounts.list(
         user_ids=[user_id], # this is set to xxx to always bypass the filtering and setup and new auth every time
         auth_config_ids=["ac_cgbJXrl-9yI4"],
-        toolkit_slugs=["GMAIL"]
+        toolkit_slugs=["GMAIL","GOOGLECALENDAR","GOOGLESLIDES","GOOGLEDRIVE","GOOGLESHEETS","GOOGLEDOCS"]
     )
     active_connection = None
 
@@ -168,7 +171,7 @@ async def gsuite(state : State):
         tools
     )
 
-    gsuite_tasks = [task.prompt for task in state['mcp_tasks'] if task.node == "gsuite"]
+    gsuite_tasks = [task.prompt for task in state['mcp_tasks']]
     if len(gsuite_tasks) == 0:
         return {"mcp_outputs" : state["mcp_outputs"]}
     task_content = " ".join(gsuite_tasks) if gsuite_tasks else ""
@@ -191,20 +194,19 @@ async def gsuite(state : State):
     return {"mcp_outputs": state['mcp_outputs'] + [Output(node="gsuite",result=result)]}
 
 def screen_controller(state : State):
+    print("Using the screen_controller node")
     tasks = state['sc_tasks']
     from executor.main import thingy
     thingy(tasks[0])
 
 def assign_workers(state: State):
     sends = []
-    tasks = state['mcp_tasks']
-    for task in tasks:
-        if task.server == "gsuite":
-            if task.task != "n/a":
-                sends.append(Send("gsuite", state))
-        if task.server == "screen controller":
-            if task.task != "n/a":
-                sends.append(Send("screen controller", state))
+    # Only sending the state object to the appropriate node when that associated list in the state
+    # has executable tasks
+    if len(state['mcp_tasks']) > 0:
+        sends.append(Send("gsuite", state))
+    if len(state['sc_tasks']) > 0:
+        sends.append(Send("screen controller", state))
     return sends
 
 
@@ -217,8 +219,8 @@ graph.add_node("orchestrator", orchestrator)
 graph.add_node("screen controller", screen_controller)
 
 graph.add_edge(START, "orchestrator")
-graph.add_edge("orchestrator", "gsuite")
-graph.add_edge("orchestrator", "screen controller")
+graph.add_conditional_edges("orchestrator", assign_workers, ["gsuite","screen controller"])
+
 graph.add_edge("screen controller", END)
 graph.add_edge("gsuite", END)
 
