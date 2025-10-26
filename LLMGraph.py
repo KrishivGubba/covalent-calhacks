@@ -127,6 +127,9 @@ async def gsuite(state : State):
         tools
     )
 
+    gsuite_tasks = [task.prompt for task in state['mcp_tasks'] if task.node == "gsuite"]
+    task_content = " ".join(gsuite_tasks) if gsuite_tasks else ""
+
     result = await agent.ainvoke(
         input={"messages": [
             {"role": "system",
@@ -134,11 +137,16 @@ async def gsuite(state : State):
              You are a helpful GSuite agent.
              Your task is to take the user's query, and use the provided tools to do what the user asked"""},
             {"role": "user",
-             "content": [task.prompt if task.node == "gsuite" else task.node for task in state['mcp_tasks']]
+             "content": task_content  # Now it's a proper string
              }
         ]},
     )
+    print(f"Sending to agent: {task_content}")
+    result = await agent.ainvoke(...)
+    print("=" * 60)
+    print("FULL AGENT RESULT:")
     print(result)
+    print("=" * 60)
     return {"mcp_outputs": state['mcp_outputs'] + [Output(node="gsuite",result=result)]}
 
 # Worker nodes get assigned explicitly
