@@ -25,13 +25,37 @@ def screen():
         description = body.get("description", "")
         data = body.get("data", "")
         
+        # Parse the analysis data to enhance the description with app context
+        enhanced_description = description  # Default to original
+        try:
+            import json
+            analysis_data = json.loads(data) if data else {}
+            app_name = analysis_data.get("app_name", "Unknown")
+            context_type = analysis_data.get("context_type", "Unknown")
+            activity_level = analysis_data.get("activity_level", "Unknown")
+            workflow_stage = analysis_data.get("workflow_stage", "Unknown")
+            
+            # Enhance description with app context for better action generation
+            enhanced_description = f"Current App: {app_name} | Context: {context_type} | Activity: {activity_level} | Stage: {workflow_stage} | {description}"
+            
+            print(f"Enhanced description: {enhanced_description}")
+            
+        except Exception as parse_error:
+            print(f"Warning: Could not parse analysis data: {parse_error}")
+        
         tree = Tree(db_path)
         
-        action, actionID = tree.learn(description, data)
+        action, actionID = tree.learn(enhanced_description, data)
 
-        # Use the description field as needed
-        return jsonify({"action": action, "actionID": actionID}), 200
+        # Return in format expected by Rust code
+        return jsonify({
+            "message": f"Context processed successfully. Suggested action: {action if action else 'None'}", 
+            "written": str(actionID) if actionID else "no-action-generated"
+        }), 200
     except Exception as e:
+        print(f"Error in /screen endpoint: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
@@ -40,7 +64,7 @@ def health():
     """Health check endpoint"""
     return jsonify({"status": "healthy", "service": "covalent-context-engine"}), 200
 
-@app.route("trigger_action", methods=["POST"])
+@app.route("/trigger_action", methods=["POST"])
 def trigger_action():
     try:
         body = request.get_json()

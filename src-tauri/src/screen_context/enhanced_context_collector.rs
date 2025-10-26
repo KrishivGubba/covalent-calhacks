@@ -48,11 +48,16 @@ impl EnhancedContextCollector {
     
     /// Initialize the collector and start monitoring
     pub async fn initialize(&self) -> Result<()> {
-        // Start activity monitoring
-        self.activity_monitor.start_monitoring().await?;
+        // Start activity monitoring (non-blocking)
+        let monitor = Arc::clone(&self.activity_monitor);
+        tokio::spawn(async move {
+            if let Err(e) = monitor.start_monitoring().await {
+                eprintln!("⚠️  Activity monitoring error: {}", e);
+            }
+        });
         
-        // Check permissions and availability
-        self.check_system_readiness().await?;
+        // Skip system readiness check as it can hang on browser checks
+        // The collector will work with available sources
         
         Ok(())
     }

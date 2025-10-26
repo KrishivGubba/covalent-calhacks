@@ -120,6 +120,7 @@ pub fn run() {
             app.manage(flask_server);
             
             // Start context collection loop using Tauri's async runtime
+            println!("🚀 Starting context loop spawn task...");
             tauri::async_runtime::spawn(async move {
                 match screen_context::ContextLoop::new() {
                     Ok(mut context_loop) => {
@@ -133,7 +134,7 @@ pub fn run() {
                         // Set interval to 2 seconds
                         context_loop.set_interval(2);
                         
-                        println!("✓ Context loop initialized successfully");
+                        println!("✓ Context loop initialized successfully, starting loop...");
                         
                         // Run the loop (this will run indefinitely)
                         if let Err(e) = context_loop.run().await {
