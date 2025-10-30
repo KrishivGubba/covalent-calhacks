@@ -78,7 +78,7 @@ class Tree:
 
         self.model = "gemini-2.5-flash"
 
-    async def trigger_action(self, action_uuid):
+    def trigger_action(self, action_uuid):
         """
         Trigger an action by its UUID, gathering all relevant context data from the node 
         and its ancestors into a single concatenated string.
@@ -175,9 +175,6 @@ class Tree:
         print(f"Would execute: {action_text}")
         print(f"With context data string of length: {len(collected_data_string)}")
         # ================================================================
-        
-        # Call run_graph with action_text as user_query and collected_data_string as data
-        await run_graph(user_query=action_text, data=collected_data_string)
         
         return action_text, collected_data_string
 
@@ -323,13 +320,15 @@ class Tree:
         
         # Find the node with highest cosine similarity
         best_node = None # the actual node object
-        best_similarity = -1.0 
+        best_similarity = -1.0
+        similarity_scores = {}
         
         for node_uuid, node in self.nodes.items():
             if node.embedding is not None:
                 try:
                     # Calculate cosine similarity
                     similarity = cosine_similarity(screen_embedding, node.embedding)[0][0]
+                    similarity_scores[node.metadata] = similarity
                     
                     if similarity > best_similarity:
                         best_similarity = similarity
@@ -339,12 +338,12 @@ class Tree:
                     print(f"Error calculating similarity for node {node_uuid}: {e}")
                     continue
         
-        # if best_node is not None:
-        #     print(f"Best match: Node '{best_node.metadata}' with similarity: {best_similarity:.4f}")
-        #     return best_node
-        # else:
-        #     print("No suitable node found, returning root")
-        #     return self.root if curr is None else curr
+        print(f"🔍 traverse() - Screen input: '{screen[:100]}...'")
+        print(f"🔍 traverse() - Top 5 similarity scores:")
+        sorted_scores = sorted(similarity_scores.items(), key=lambda x: x[1], reverse=True)[:5]
+        for node_name, score in sorted_scores:
+            print(f"   - {node_name}: {score:.4f}")
+        
         if best_node is None:
             print("No suitable node found, returning root")
             return self.root if curr is None else curr
@@ -384,6 +383,7 @@ class Tree:
         """
         # Find the most relevant node using traverse
         node = self.traverse(summary)
+        print(f"DEBUG learn(): traverse() returned node={node}")
 
         # Initialize variables for return
         suggested_action = None
@@ -416,7 +416,9 @@ class Tree:
         
         # Call Claude Sonnet 4.5 with the action prompt
         try:
+            print(f"DEBUG learn(): Creating Anthropic client...")
             anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+            print(f"DEBUG learn(): Sending prompt to Claude...")
             response = anthropic_client.messages.create(
                 model="claude-sonnet-4-5-20250929",
                 max_tokens=1024,
@@ -428,10 +430,13 @@ class Tree:
             print(f"\n{'='*60}")
             print(f"Suggested Action from Claude:")
             print(f"{suggested_action}")
+            print(f"Type: {type(suggested_action)}, Length: {len(suggested_action)}")
             print(f"{'='*60}\n")
+            print(f"DEBUG learn(): suggested_action is truthy={bool(suggested_action)}")
             
             # Insert the suggested action into the database if it was generated successfully
             if suggested_action and node:
+                print(f"DEBUG learn(): Both suggested_action and node are truthy, inserting...")
                 try:
                     action_uuid = self.dao.add_action(
                         node_uuid=node.node_uuid,
@@ -441,8 +446,12 @@ class Tree:
                 except Exception as action_error:
                     print(f"Error inserting action into database: {action_error}")
                     action_uuid = None
+            else:
+                print(f"DEBUG learn(): Skipping insertion - suggested_action truthy={bool(suggested_action)}, node truthy={bool(node)}")
         except Exception as e:
             print(f"Error calling Claude API: {e}")
+            import traceback
+            traceback.print_exc()
             suggested_action = None
             action_uuid = None
         
@@ -492,7 +501,7 @@ class Tree:
         return str(build_adj_list(self.root))
 
 print("Initializing graph from database...")
-tree = Tree("graph.db")
+tree = Tree("../context-engine/graph.db")
 print("Graph structure:")
 print(tree)
 

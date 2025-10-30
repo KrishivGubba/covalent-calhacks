@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 import sqlite3
 import os
 import sys
-import asyncio
 
 from flask_cors import CORS
 
@@ -24,7 +23,7 @@ def screen():
     try:
         body = request.get_json()
         description = body.get("description", "")
-        data = body.get("data", "")
+        data = body.get("description", "")
         
         # Parse the analysis data to enhance the description with app context
         enhanced_description = description  # Default to original
@@ -46,11 +45,10 @@ def screen():
         
         tree = Tree(db_path)
         
-        # Call async learn function
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        action, actionID = loop.run_until_complete(tree.learn(enhanced_description, data))
-        loop.close()
+        # Call learn function - it's a regular function, not async
+        print(f"\n📍 DEBUG: Calling tree.learn()...")
+        action, actionID = tree.learn(enhanced_description, data)
+        print(f"📍 DEBUG: tree.learn() returned - action={action}, actionID={actionID}")
 
         # Return in format expected by Rust code
         return jsonify({
@@ -80,11 +78,7 @@ def trigger_action():
         
         tree = Tree(db_path)
         
-        # Call async trigger_action function
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        success = loop.run_until_complete(tree.trigger_action(action_uuid))
-        loop.close()
+        success = tree.trigger_action(action_uuid)
 
         # Use the description field as needed
         return jsonify({"message": "Action triggered", "success": success}), 200

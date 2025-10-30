@@ -235,7 +235,16 @@ impl ContextLoop {
         // so this will only be called when collection is enabled
         match self.api_client.send_analysis_output(analysis).await {
             Ok(response) => {
-                println!("  ✓ Flask response: {} (UUID: {})", response.message, response.written);
+                println!("  ✓ Flask API Response:");
+                // Output the full Flask response as JSON
+                match serde_json::to_string_pretty(&response) {
+                    Ok(json) => {
+                        for line in json.lines() {
+                            println!("    {}", line);
+                        }
+                    }
+                    Err(e) => println!("    ❌ Failed to serialize Flask response: {}", e),
+                }
                 
                 // Check if an action was generated (not "no-action-generated")
                 if response.written != "no-action-generated" && !response.written.is_empty() {
