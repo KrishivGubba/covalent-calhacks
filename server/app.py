@@ -45,6 +45,7 @@ def screen():
         
         tree = Tree(db_path)
         
+        
         # Call learn function - it's a regular function, not async
         print(f"\n📍 DEBUG: Calling tree.learn()...")
         action, actionID = tree.learn(enhanced_description, data)
