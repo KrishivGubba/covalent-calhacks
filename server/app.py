@@ -22,33 +22,37 @@ db1 = conn.cursor()
 def screen():
     try:
         body = request.get_json()
-        description = body.get("description", "")
-        data = body.get("description", "")
         
-        # Parse the analysis data to enhance the description with app context
-        enhanced_description = description  # Default to original
-        try:
-            import json
-            analysis_data = json.loads(data) if data else {}
-            app_name = analysis_data.get("app_name", "Unknown")
-            context_type = analysis_data.get("context_type", "Unknown")
-            activity_level = analysis_data.get("activity_level", "Unknown")
-            workflow_stage = analysis_data.get("workflow_stage", "Unknown")
-            
-            # Enhance description with app context for better action generation
-            enhanced_description = f"Current App: {app_name} | Context: {context_type} | Activity: {activity_level} | Stage: {workflow_stage} | {description}"
-            
-            print(f"Enhanced description: {enhanced_description}")
-            
-        except Exception as parse_error:
-            print(f"Warning: Could not parse analysis data: {parse_error}")
+        # The body is already parsed JSON from the Rust code
+        # Extract fields directly from the JSON object
+        description = body.get("description", "")
+        app_name = body.get("app_name", "Unknown")
+        context_type = body.get("context_type", {})
+        activity_level = body.get("activity_level", "Unknown")
+        workflow_stage = body.get("workflow_stage", "Unknown")
+        
+        # Format context_type properly (it's a nested object like {"Development": "DevOps"})
+        context_type_str = "Unknown"
+        if isinstance(context_type, dict) and context_type:
+            # Get the first key-value pair from the context_type dict
+            for key, value in context_type.items():
+                context_type_str = f"{key}({value})" if value else key
+                break
+        
+        # Enhance description with app context for better action generation
+        enhanced_description = f"Current App: {app_name} | Context: {context_type_str} | Activity: {activity_level} | Stage: {workflow_stage} | {description}"
+        
+        print(f"Enhanced description: {enhanced_description}")
         
         tree = Tree(db_path)
         
+        # Convert the entire body to JSON string for storage
+        import json
+        data_str = json.dumps(body)
         
         # Call learn function - it's a regular function, not async
         print(f"\n📍 DEBUG: Calling tree.learn()...")
-        action, actionID = tree.learn(enhanced_description, data)
+        action, actionID = tree.learn(enhanced_description, data_str)
         print(f"📍 DEBUG: tree.learn() returned - action={action}, actionID={actionID}")
 
         # Return in format expected by Rust code

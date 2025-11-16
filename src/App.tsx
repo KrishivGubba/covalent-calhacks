@@ -70,7 +70,11 @@ function App() {
     const pollInterval = setInterval(async () => {
       try {
         const fetchedActions = await fetchSuggestedActions();
-        setActions(fetchedActions);
+        // Only update if actions have actually changed
+        setActions(prevActions => {
+          const hasChanged = JSON.stringify(prevActions) !== JSON.stringify(fetchedActions);
+          return hasChanged ? fetchedActions : prevActions;
+        });
       } catch (error) {
         console.error('Failed to poll actions:', error);
       }
@@ -95,15 +99,13 @@ function App() {
       {/* Animated background */}
       <div style={styles.backgroundAnimation}></div>
 
-      {/* Floating Assistant Widget */}
-      {!loading && (
-        <FloatingAssistant 
-          actions={actions}
-          isRunning={isRunning}
-          onStart={onStart}
-          onStop={onStop}
-        />
-      )}
+      {/* Floating Assistant Widget - always rendered to maintain transparency */}
+      <FloatingAssistant 
+        actions={actions}
+        isRunning={isRunning}
+        onStart={onStart}
+        onStop={onStop}
+      />
     </div>
   );
 }
@@ -115,6 +117,7 @@ const styles = {
     overflow: 'hidden',
     background: 'transparent',
     position: 'relative' as const,
+    WebkitAppRegion: 'no-drag' as const,
   },
   backgroundAnimation: {
     position: 'absolute' as const,
