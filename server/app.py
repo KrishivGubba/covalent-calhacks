@@ -1,7 +1,8 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 import sqlite3
 import os
 import sys
+import time
 
 from flask_cors import CORS
 
@@ -9,13 +10,27 @@ from flask_cors import CORS
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'context-engine'))
 from graph import Tree
 
+
+
 app = Flask(__name__)
 CORS(app)
 
+@app.before_request
+def start_timer():
+    g.start_time = time.perf_counter()
+
+@app.after_request
+def log_request(response):
+    if hasattr(g, "start_time"):
+        duration = time.perf_counter() - g.start_time
+        app.logger.info("Request %s %s completed in %.3f ms", request.method, request.path, duration * 1000)
+        response.headers["X-Process-Time"] = f"{duration:.3f}s"
+    return response
+
 # Connect to SQLite Database
 db_path = os.path.join(os.path.dirname(__file__), '..', 'context-engine', 'graph.db')
-conn = sqlite3.connect(db_path, check_same_thread=False)
-db1 = conn.cursor()
+
+tree = Tree(db_path)
 
 
 @app.route("/screen", methods=["POST"])
@@ -43,7 +58,7 @@ def screen():
         except Exception as parse_error:
             print(f"Warning: Could not parse analysis data: {parse_error}")
         
-        tree = Tree(db_path)
+        
         
         
         # Call learn function - it's a regular function, not async
@@ -76,8 +91,6 @@ def trigger_action():
         body = request.get_json()
         action_uuid = body.get("action_uuid", "")
         action = body.get("action", "")
-        
-        tree = Tree(db_path)
         
         success = tree.trigger_action(action_uuid)
 

@@ -10,7 +10,7 @@ class GraphDAO:
         '''
         Initialize the DAO with a SQLite connection.
         '''
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.cursor = self.conn.cursor()
 
     def get_all_nodes(self):

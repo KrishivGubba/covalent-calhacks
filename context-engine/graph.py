@@ -629,142 +629,142 @@ print(tree)
 #     print("\nSkipping traverse test - API key not available")
 
 # Test cases for the learn() method
-if tree.API_KEY:
-    print("\n" + "="*50)
-    print("Testing learn() method:")
-    print("="*50)
+# if tree.API_KEY:
+#     print("\n" + "="*50)
+#     print("Testing learn() method:")
+#     print("="*50)
     
-    # Test Case 1: Simple text data for a specific candidate
-    print("\n--- Test Case 1: Interview notes for Ritesh ---")
-    summary1 = """
-    The user is viewing an email which says:
-    Hi Elizabeth,
+#     # Test Case 1: Simple text data for a specific candidate
+#     print("\n--- Test Case 1: Interview notes for Ritesh ---")
+#     summary1 = """
+#     The user is viewing an email which says:
+#     Hi Elizabeth,
 
-I'm glad to be moving forward in the interview process with KLA. 
-My availability (Central Daylight Time) for the upcoming week is:
-Saturday (11/02)- All day
-Sunday (11/03) - All day
-Monday(11/04) - After 12pm
-Tuesday (11/05) - After 1pm
-Wednesday (11/06) - After 12pm
-Thursday(11/07) - After 1pm
-Friday(11/08) - All day
-Please let me know if you need any additional times.
+# I'm glad to be moving forward in the interview process with KLA. 
+# My availability (Central Daylight Time) for the upcoming week is:
+# Saturday (11/02)- All day
+# Sunday (11/03) - All day
+# Monday(11/04) - After 12pm
+# Tuesday (11/05) - After 1pm
+# Wednesday (11/06) - After 12pm
+# Thursday(11/07) - After 1pm
+# Friday(11/08) - All day
+# Please let me know if you need any additional times.
 
-Regards,
-Ritesh Neela
-    """
-    data1 = {
-        "candidate": "Ritesh",
-        "position": "Software Engineering Intern - Summer 2026",
-        "interview_date": "2025-10-30",
-        "interviewer": "John Smith",
-        "technical_score": 8.5,
-        "cultural_fit": 9.0,
-        "feedback": "Strong problem-solving skills, excellent communication",
-        "recommendation": "Proceed to final round"
-    }
-    node_uuid1, written_data1 = tree.learn(summary1, data1, key="ritesh_interview_round1")
-    print(f"Data inserted into node UUID: {node_uuid1}")
+# Regards,
+# Ritesh Neela
+#     """
+#     data1 = {
+#         "candidate": "Ritesh",
+#         "position": "Software Engineering Intern - Summer 2026",
+#         "interview_date": "2025-10-30",
+#         "interviewer": "John Smith",
+#         "technical_score": 8.5,
+#         "cultural_fit": 9.0,
+#         "feedback": "Strong problem-solving skills, excellent communication",
+#         "recommendation": "Proceed to final round"
+#     }
+#     node_uuid1, written_data1 = tree.learn(summary1, data1, key="ritesh_interview_round1")
+#     print(f"Data inserted into node UUID: {node_uuid1}")
     
-    # Test Case 2: Career fair information
-    print("\n--- Test Case 2: Career fair event details ---")
-    summary2 = "Details about the upcoming MIT career fair"
-    data2 = {
-        "event_name": "MIT Career Fair Fall 2025",
-        "date": "2025-11-15",
-        "location": "MIT Student Center",
-        "booth_number": "A-42",
-        "recruiters": ["Sarah Johnson", "Mike Chen"],
-        "target_positions": ["New Grad SWE", "Internships"],
-        "expected_attendance": 500
-    }
-    node_uuid2, written_data2 = tree.learn(summary2, data2, key="mit_career_fair_2025")
-    print(f"Data inserted into node UUID: {node_uuid2}")
+#     # Test Case 2: Career fair information
+#     print("\n--- Test Case 2: Career fair event details ---")
+#     summary2 = "Details about the upcoming MIT career fair"
+#     data2 = {
+#         "event_name": "MIT Career Fair Fall 2025",
+#         "date": "2025-11-15",
+#         "location": "MIT Student Center",
+#         "booth_number": "A-42",
+#         "recruiters": ["Sarah Johnson", "Mike Chen"],
+#         "target_positions": ["New Grad SWE", "Internships"],
+#         "expected_attendance": 500
+#     }
+#     node_uuid2, written_data2 = tree.learn(summary2, data2, key="mit_career_fair_2025")
+#     print(f"Data inserted into node UUID: {node_uuid2}")
     
-    # Test Case 3: Employee onboarding checklist
-    print("\n--- Test Case 3: New employee onboarding ---")
-    summary3 = "Onboarding checklist for new software engineer starting next week"
-    data3 = {
-        "employee_name": "Alex Thompson",
-        "start_date": "2025-11-01",
-        "department": "Engineering",
-        "checklist": [
-            "Setup laptop and accounts",
-            "Assign mentor",
-            "Schedule orientation",
-            "Provide access badges",
-            "Enroll in benefits"
-        ],
-        "status": "in_progress"
-    }
-    node_uuid3, written_data3 = tree.learn(summary3, data3, key="alex_thompson_onboarding")
-    print(f"Data inserted into node UUID: {node_uuid3}")
+#     # Test Case 3: Employee onboarding checklist
+#     print("\n--- Test Case 3: New employee onboarding ---")
+#     summary3 = "Onboarding checklist for new software engineer starting next week"
+#     data3 = {
+#         "employee_name": "Alex Thompson",
+#         "start_date": "2025-11-01",
+#         "department": "Engineering",
+#         "checklist": [
+#             "Setup laptop and accounts",
+#             "Assign mentor",
+#             "Schedule orientation",
+#             "Provide access badges",
+#             "Enroll in benefits"
+#         ],
+#         "status": "in_progress"
+#     }
+#     node_uuid3, written_data3 = tree.learn(summary3, data3, key="alex_thompson_onboarding")
+#     print(f"Data inserted into node UUID: {node_uuid3}")
     
-    # Test Case 4: Timesheet approval data
-    print("\n--- Test Case 4: Timesheet approval ---")
-    summary4 = "Timesheet approval for engineering team - October 2025"
-    data4 = {
-        "period": "October 2025",
-        "team": "Engineering",
-        "total_hours": 1680,
-        "approved_by": "Manager Name",
-        "approval_date": "2025-10-31",
-        "notes": "All timesheets reviewed and approved"
-    }
-    node_uuid4, written_data4 = tree.learn(summary4, data4, key="eng_timesheet_oct2025")
-    print(f"Data inserted into node UUID: {node_uuid4}")
+#     # Test Case 4: Timesheet approval data
+#     print("\n--- Test Case 4: Timesheet approval ---")
+#     summary4 = "Timesheet approval for engineering team - October 2025"
+#     data4 = {
+#         "period": "October 2025",
+#         "team": "Engineering",
+#         "total_hours": 1680,
+#         "approved_by": "Manager Name",
+#         "approval_date": "2025-10-31",
+#         "notes": "All timesheets reviewed and approved"
+#     }
+#     node_uuid4, written_data4 = tree.learn(summary4, data4, key="eng_timesheet_oct2025")
+#     print(f"Data inserted into node UUID: {node_uuid4}")
     
-    # Test Case 5: Leave request approval
-    print("\n--- Test Case 5: Vacation leave request ---")
-    summary5 = "Vacation leave request for summer holiday period"
-    data5 = {
-        "employee": "Jane Doe",
-        "leave_type": "vacation",
-        "start_date": "2026-07-01",
-        "end_date": "2026-07-15",
-        "days": 10,
-        "status": "approved",
-        "approved_by": "HR Manager",
-        "coverage_plan": "Tasks delegated to team members"
-    }
-    node_uuid5, written_data5 = tree.learn(summary5, data5, key="jane_vacation_july2026")
-    print(f"Data inserted into node UUID: {node_uuid5}")
+#     # Test Case 5: Leave request approval
+#     print("\n--- Test Case 5: Vacation leave request ---")
+#     summary5 = "Vacation leave request for summer holiday period"
+#     data5 = {
+#         "employee": "Jane Doe",
+#         "leave_type": "vacation",
+#         "start_date": "2026-07-01",
+#         "end_date": "2026-07-15",
+#         "days": 10,
+#         "status": "approved",
+#         "approved_by": "HR Manager",
+#         "coverage_plan": "Tasks delegated to team members"
+#     }
+#     node_uuid5, written_data5 = tree.learn(summary5, data5, key="jane_vacation_july2026")
+#     print(f"Data inserted into node UUID: {node_uuid5}")
     
-    # Test Case 6: Simple string data (not JSON)
-    print("\n--- Test Case 6: Simple text note ---")
-    summary6 = "Quick note about fall 2026 internship recruiting timeline"
-    data6 = "Start posting job descriptions by January 2026. Begin screening in February."
-    node_uuid6, written_data6 = tree.learn(summary6, data6)
-    print(f"Data inserted into node UUID: {node_uuid6}")
+#     # Test Case 6: Simple string data (not JSON)
+#     print("\n--- Test Case 6: Simple text note ---")
+#     summary6 = "Quick note about fall 2026 internship recruiting timeline"
+#     data6 = "Start posting job descriptions by January 2026. Begin screening in February."
+#     node_uuid6, written_data6 = tree.learn(summary6, data6)
+#     print(f"Data inserted into node UUID: {node_uuid6}")
     
-    # Test Case 7: Employee issue resolution
-    print("\n--- Test Case 7: Employee issue documentation ---")
-    summary7 = "Conflict resolution between team members"
-    data7 = {
-        "issue_id": "ISS-2025-042",
-        "date_reported": "2025-10-20",
-        "issue_type": "interpersonal_conflict",
-        "parties_involved": ["Employee A", "Employee B"],
-        "description": "Disagreement over project responsibilities",
-        "resolution": "Mediation session held, roles clarified",
-        "status": "resolved",
-        "follow_up_date": "2025-11-20"
-    }
-    action, actionID = tree.learn(summary7, data7, key="conflict_resolution_042")
-    print(f"Action: {action}")
-    print(f"Action UUID: {actionID}")
+#     # Test Case 7: Employee issue resolution
+#     print("\n--- Test Case 7: Employee issue documentation ---")
+#     summary7 = "Conflict resolution between team members"
+#     data7 = {
+#         "issue_id": "ISS-2025-042",
+#         "date_reported": "2025-10-20",
+#         "issue_type": "interpersonal_conflict",
+#         "parties_involved": ["Employee A", "Employee B"],
+#         "description": "Disagreement over project responsibilities",
+#         "resolution": "Mediation session held, roles clarified",
+#         "status": "resolved",
+#         "follow_up_date": "2025-11-20"
+#     }
+#     action, actionID = tree.learn(summary7, data7, key="conflict_resolution_042")
+#     print(f"Action: {action}")
+#     print(f"Action UUID: {actionID}")
     
-    print("\n" + "="*50)
-    print("All learn() test cases completed!")
-    print("="*50)
+#     print("\n" + "="*50)
+#     print("All learn() test cases completed!")
+#     print("="*50)
     
-    # Verify data was inserted by checking the database
-    print("\n--- Verifying data in database ---")
-    cursor = tree.dao.cursor
-    cursor.execute("SELECT COUNT(*) FROM data_table")
-    count = cursor.fetchone()[0]
-    print(f"Total records in data_table: {count}")
+#     # Verify data was inserted by checking the database
+#     print("\n--- Verifying data in database ---")
+#     cursor = tree.dao.cursor
+#     cursor.execute("SELECT COUNT(*) FROM data_table")
+#     count = cursor.fetchone()[0]
+#     print(f"Total records in data_table: {count}")
     
-else:
-    print("\nSkipping learn() test - API key not available")
+# else:
+#     print("\nSkipping learn() test - API key not available")

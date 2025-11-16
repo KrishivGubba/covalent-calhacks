@@ -16,3 +16,4 @@ langchain-mcp-adapters
 langgraph
 fastmcp
 google
+google-generativeai
