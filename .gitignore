@@ -39,3 +39,7 @@ CLAUDE.md
 __pycache__/
 *.pyc
 *.pyo
+
+
+*.md 
+*.MD 
