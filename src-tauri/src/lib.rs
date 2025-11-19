@@ -1,5 +1,6 @@
 // Module declarations
 pub mod screen_context;
+pub mod tab_completion;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::Manager;
 use std::process::{Child, Command};
@@ -256,7 +257,7 @@ pub fn run() {
             
             let flask_server = FlaskServer::new();
             
-            match flask_server.start(app_dir) {
+            match flask_server.start(app_dir.clone()) {
                 Ok(_) => println!("✓ Flask server started successfully"),
                 Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
             }
@@ -271,6 +272,28 @@ pub fn run() {
             // Create and manage actions store
             let actions_store = ActionsStore::new();
             app.manage(actions_store.clone());
+            
+            // Initialize tab completion system
+            println!("🚀 Initializing tab completion system...");
+            let graph_db_path = if cfg!(dev) {
+                app_dir.clone().join("../context-engine/graph.db")
+            } else {
+                app.path()
+                    .resource_dir()
+                    .unwrap_or_else(|_| std::env::current_dir().unwrap())
+                    .join("../context-engine/graph.db")
+            };
+            
+            match tab_completion::initialize(graph_db_path.to_string_lossy().to_string()) {
+                Ok(trigger) => {
+                    println!("✅ Tab completion initialized");
+                    trigger.start_listening();
+                    println!("⌨️  Cmd+Tab listener active");
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Failed to initialize tab completion: {}", e);
+                }
+            }
             
             // Start context collection loop using Tauri's async runtime
             println!("🚀 Starting context loop spawn task...");
@@ -348,7 +371,8 @@ pub fn run() {
             get_context_collection_status,
             trigger_action,
             get_suggested_actions,
-            clear_suggested_actions
+            clear_suggested_actions,
+            tab_completion::injector::inject_completion_text
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

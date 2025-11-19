@@ -42,7 +42,7 @@ accessibility-sys = "0.1"
 cocoa = "0.25"
 objc-foundation = "0.1"
 osascript = "0.3"
-reqwest = { version = "0.11", features = ["json", "multipart"] }
+reqwest = { version = "0.11", features = ["json", "multipart", "blocking"] }
 websocket = "0.26"
 tokio-tungstenite = "0.21"
 url = "2.4"
@@ -55,4 +55,10 @@ foreign-types = "0.5"
 colored = "2.0"
 base64 = "0.21"
 screenshots = "0.7"
+
+# Tab completion system dependencies
+llama-cpp-2 = "0.1"
+rdev = "0.5"
+arboard = "3.4"
+lazy_static = "1.4"
 

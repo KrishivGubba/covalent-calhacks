@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import FloatingAssistant from './components/FloatingAssistant';
+import CompletionPopup from './components/CompletionPopup';
 import type { Action } from './components/SuggestedActions';
 import { enableContextCollection, disableContextCollection, getContextCollectionStatus } from './utils/contextControl';
 import './styles.css';
@@ -106,6 +107,9 @@ function App() {
         onStart={onStart}
         onStop={onStop}
       />
+      
+      {/* Tab Completion Popup */}
+      <CompletionPopup />
     </div>
   );
 }
