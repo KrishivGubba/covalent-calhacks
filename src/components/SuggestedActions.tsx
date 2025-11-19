@@ -3,11 +3,12 @@ import { invoke } from '@tauri-apps/api/core';
 
 export interface Action {
   id: string;
-  uuid: string;  // Action UUID from database
-  title: string;
-  description: string;
-  node_uuid?: string;  // Optional: node this action belongs to
-  node_metadata?: string;  // Optional: metadata of the node
+  uuid: string;           // Action UUID from database
+  title: string;          // action_name from backend
+  description: string;    // action_plan from backend
+  action_prompt: string;  // action_prompt from backend (sent when triggering)
+  node_uuid?: string;     // Optional: node this action belongs to
+  node_metadata?: string; // Optional: metadata of the node
 }
 
 interface SuggestedActionsProps {
@@ -27,12 +28,12 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
       setActionStatuses({ ...actionStatuses, [action.id]: 'playing' });
       
       try {
-        console.log(`🎬 Triggering action: ${action.description} (${action.uuid})`);
+        console.log(`🎬 Triggering action: ${action.title} (${action.uuid})`);
         
-        // Call the Tauri command to trigger the action
+        // Call the Tauri command to trigger the action with action_prompt
         await invoke('trigger_action', {
           actionUuid: action.uuid,
-          actionDescription: action.description,
+          actionPrompt: action.action_prompt,
         });
         
         console.log(`✅ Action completed successfully`);

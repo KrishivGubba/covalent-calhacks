@@ -272,11 +272,25 @@ impl ContextLoop {
                                     effective_action_name.to_string()
                                 };
 
+                                // Extract action_plan and action_prompt from response
+                                let action_plan = response
+                                    .action_plan
+                                    .as_deref()
+                                    .unwrap_or("No plan available")
+                                    .to_string();
+                                
+                                let action_prompt = response
+                                    .action_prompt
+                                    .as_deref()
+                                    .unwrap_or("")
+                                    .to_string();
+
                                 let suggested_action = crate::SuggestedAction {
                                     id: action_uuid.clone(),
                                     uuid: action_uuid.clone(),
-                                    title,
-                                    description: effective_action_name.to_string(),
+                                    title,                    // action_name
+                                    description: action_plan, // action_plan
+                                    action_prompt,            // action_prompt
                                 };
 
                                 store.add_action(suggested_action);

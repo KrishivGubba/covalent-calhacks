@@ -20,6 +20,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
   const [viewState, setViewState] = useState<ViewState>('collapsed');
   const [actionStatuses, setActionStatuses] = useState<Record<string, ActionStatus>>({});
   const [isAnimating, setIsAnimating] = useState(false);
+  const [hoveredActionId, setHoveredActionId] = useState<string | null>(null);
 
   // Simulate action detection - expand to prompt
   useEffect(() => {
@@ -66,23 +67,37 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
     }, 100);
   };
 
-  const handleActionClick = (actionId: string) => {
-    const currentStatus = actionStatuses[actionId] || 'idle';
+  const handleActionClick = async (action: Action) => {
+    const currentStatus = actionStatuses[action.id] || 'idle';
     
     if (currentStatus === 'idle') {
-      setActionStatuses({ ...actionStatuses, [actionId]: 'playing' });
-      setTimeout(() => {
-        setActionStatuses(prev => ({ ...prev, [actionId]: 'done' }));
-      }, 3000);
+      setActionStatuses({ ...actionStatuses, [action.id]: 'playing' });
+      
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        console.log(`🎬 Triggering action: ${action.title} (${action.uuid})`);
+        
+        await invoke('trigger_action', {
+          actionUuid: action.uuid,
+          actionPrompt: action.action_prompt,
+        });
+        
+        console.log(`✅ Action completed successfully`);
+        setActionStatuses(prev => ({ ...prev, [action.id]: 'done' }));
+      } catch (error) {
+        console.error(`❌ Action failed:`, error);
+        setActionStatuses(prev => ({ ...prev, [action.id]: 'idle' }));
+      }
     } else if (currentStatus === 'playing') {
-      setActionStatuses({ ...actionStatuses, [actionId]: 'idle' });
+      // Can't cancel while playing
+      console.log('⏸️  Action is already executing');
     } else if (currentStatus === 'done') {
-      setActionStatuses({ ...actionStatuses, [actionId]: 'idle' });
+      setActionStatuses({ ...actionStatuses, [action.id]: 'idle' });
     }
   };
 
-  const renderActionButton = (actionId: string) => {
-    const status = actionStatuses[actionId] || 'idle';
+  const renderActionButton = (action: Action) => {
+    const status = actionStatuses[action.id] || 'idle';
     
     if (status === 'idle') {
       return (
@@ -90,7 +105,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
           style={styles.playButton}
           onClick={(e) => {
             e.stopPropagation();
-            handleActionClick(actionId);
+            handleActionClick(action);
           }}
           onMouseEnter={(e) => {
             (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(120, 120, 120, 0.65)';
@@ -106,10 +121,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
       return (
         <button 
           style={styles.loadingButton}
-          onClick={(e) => {
-            e.stopPropagation();
-            handleActionClick(actionId);
-          }}
+          disabled={true}
         >
           <span style={styles.loadingDots}>
             <span style={styles.dot1}>.</span>
@@ -124,7 +136,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
           style={styles.doneButton}
           onClick={(e) => {
             e.stopPropagation();
-            handleActionClick(actionId);
+            handleActionClick(action);
           }}
         >
           ✓
@@ -232,15 +244,29 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
             </button>
           </div>
           <div style={styles.actionsList}>
-            {actions.map((action) => (
-              <div key={action.id} style={styles.actionItem}>
-                <div style={styles.actionText}>
-                  <h4 style={styles.actionTitle}>{action.title}</h4>
-                  <p style={styles.actionDescription}>{action.description}</p>
+            {actions.map((action) => {
+              const isHovered = hoveredActionId === action.id;
+              return (
+                <div 
+                  key={action.id} 
+                  style={{
+                    ...styles.actionItem,
+                    height: isHovered ? 'auto' : '60px',
+                    transition: 'height 0.3s ease',
+                  }}
+                  onMouseEnter={() => setHoveredActionId(action.id)}
+                  onMouseLeave={() => setHoveredActionId(null)}
+                >
+                  <div style={styles.actionText}>
+                    <h4 style={styles.actionTitle}>{action.title}</h4>
+                    {isHovered && (
+                      <p style={styles.actionDescription}>{action.description}</p>
+                    )}
+                  </div>
+                  {renderActionButton(action)}
                 </div>
-                {renderActionButton(action.id)}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

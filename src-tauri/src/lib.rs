@@ -11,8 +11,9 @@ use std::path::PathBuf;
 pub struct SuggestedAction {
     pub id: String,
     pub uuid: String,
-    pub title: String,
-    pub description: String,
+    pub title: String,           // action_name from Flask
+    pub description: String,     // action_plan from Flask
+    pub action_prompt: String,   // action_prompt from Flask
 }
 
 // Context collection state - controls whether context is being collected and sent
@@ -194,10 +195,10 @@ fn get_context_collection_status(state: tauri::State<ContextState>) -> bool {
 
 // Trigger action command
 #[tauri::command]
-async fn trigger_action(action_uuid: String, action_description: String, state: tauri::State<'_, ContextState>) -> Result<serde_json::Value, String> {
+async fn trigger_action(action_uuid: String, action_prompt: String, state: tauri::State<'_, ContextState>) -> Result<serde_json::Value, String> {
     use screen_context::ContextApiClient;
     
-    println!("🎬 Triggering action: {} ({})", action_description, action_uuid);
+    println!("🎬 Triggering action: {} ({})", action_prompt, action_uuid);
     
     // Disable context collection during action execution to prevent feedback loops
     state.disable();
@@ -205,7 +206,7 @@ async fn trigger_action(action_uuid: String, action_description: String, state: 
     let api_client = ContextApiClient::new();
     
     let result = api_client
-        .trigger_action(action_uuid, action_description)
+        .trigger_action(action_uuid, action_prompt)
         .await
         .map_err(|e| format!("Failed to trigger action: {}", e));
     

@@ -65,6 +65,7 @@ interface Action {
   uuid: string;
   title: string;
   description: string;
+  action_prompt: string;
 }
 
 export const ActionButtonWithAutoSuspend: React.FC<{ action: Action }> = ({ action }) => {
@@ -81,7 +82,7 @@ export const ActionButtonWithAutoSuspend: React.FC<{ action: Action }> = ({ acti
       // 4. Re-enable context collection
       const response = await invoke('trigger_action', {
         actionUuid: action.uuid,
-        actionDescription: action.description,
+        actionPrompt: action.action_prompt,
       });
       
       console.log('Action executed successfully:', response);
@@ -191,18 +192,20 @@ export const ContextCollectionIndicator: React.FC = () => {
 
 // Example 4: Full Integration Example
 export const FloatingAssistantWithContextControl: React.FC = () => {
-  const [actions, setActions] = useState<Action[]>([
+  const [actions] = useState<Action[]>([
     {
       id: '1',
       uuid: 'action-uuid-1',
       title: 'Click Submit',
       description: 'Click the submit button on the form',
+      action_prompt: 'Click the submit button to complete the form submission',
     },
     {
       id: '2',
       uuid: 'action-uuid-2',
       title: 'Fill Name Field',
       description: 'Enter "John Doe" in the name field',
+      action_prompt: 'Type "John Doe" into the name input field',
     },
   ]);
 

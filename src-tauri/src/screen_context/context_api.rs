@@ -101,12 +101,12 @@ impl ContextApiClient {
     }
 
     /// Trigger an action by UUID via Flask API
-    pub async fn trigger_action(&self, action_uuid: String, action_description: String) -> Result<serde_json::Value> {
+    pub async fn trigger_action(&self, action_uuid: String, action_prompt: String) -> Result<serde_json::Value> {
         let url = format!("{}/trigger_action", self.base_url);
         
         let payload = serde_json::json!({
             "action_uuid": action_uuid,
-            "action": action_description
+            "action": action_prompt
         });
         
         let response = self.client
