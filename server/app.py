@@ -67,13 +67,20 @@ def screen():
         
         # Call learn function - it's a regular function, not async
         print(f"\n📍 DEBUG: Calling tree.learn()...")
-        action, actionID = tree.learn(enhanced_description, data_str)
-        print(f"📍 DEBUG: tree.learn() returned - action={action}, actionID={actionID}")
+        action_name, action_plan, action_prompt, action_uuid = tree.learn(enhanced_description, data_str)
+        print(f"📍 DEBUG: tree.learn() returned:")
+        print(f"  - action_name: {action_name}")
+        print(f"  - action_plan: {action_plan}")
+        print(f"  - action_prompt: {action_prompt}")
+        print(f"  - action_uuid: {action_uuid}")
 
-        # Return in format expected by Rust code
+        # Return all action details to the frontend
         return jsonify({
-            "message": f"Context processed successfully. Suggested action: {action if action else 'None'}", 
-            "written": str(actionID) if actionID else "no-action-generated"
+            "message": f"Context processed successfully. Suggested action: {action_name if action_name else 'None'}", 
+            "action_name": action_name,
+            "action_plan": action_plan,
+            "action_prompt": action_prompt,
+            "action_uuid": str(action_uuid) if action_uuid else None
         }), 200
     except Exception as e:
         print(f"Error in /screen endpoint: {e}")

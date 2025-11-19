@@ -14,7 +14,10 @@ pub struct ContextPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextResponse {
     pub message: String,
-    pub written: String,
+    pub action_name: Option<String>,
+    pub action_plan: Option<String>,
+    pub action_prompt: Option<String>,
+    pub action_uuid: Option<String>,
 }
 
 /// HTTP client for sending context data to Flask API

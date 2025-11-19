@@ -25,6 +25,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS action_table (
             UUID TEXT PRIMARY KEY,
             Action_name TEXT,
+            Action_plan TEXT,
+            Action_prompt TEXT,
             Node_UUID TEXT NOT NULL,
             FOREIGN KEY (Node_UUID) REFERENCES node_table(UUID) ON DELETE CASCADE
         );

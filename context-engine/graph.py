@@ -379,14 +379,16 @@ class Tree:
             data_type (str): Type of data being stored (default: "text")
             
         Returns:
-            tuple: (suggested_action, action_uuid) - The suggested action text and its UUID in the database
+            tuple: (action_name, action_plan, action_prompt, action_uuid) - The suggested action details and UUID
         """
         # Find the most relevant node using traverse
         node = self.traverse(summary)
         print(f"DEBUG learn(): traverse() returned node={node}")
 
         # Initialize variables for return
-        suggested_action = None
+        action_name = None
+        action_plan = None
+        action_prompt = None
         action_uuid = None
 
         # take the summary of what's going on 
@@ -405,14 +407,35 @@ class Tree:
 
             Based on what the user is doing, suggest a task that the user might want to perform.
             The task should be a simple action that the user can perform.
-            For example: "Send an email to Ritesh - rneela@wisc.edu confirming the meeting at 10am. Schedule this meeting on my calendar from 10am - 11am"
+            For example the action prompt could be: "Send an email to Ritesh - rneela@wisc.edu confirming the meeting at 10am. Schedule this meeting on my calendar from 10am - 11am"
 
             Note that when an action is performed, you will be given all context so don't worry about providing too much context
             Focus on being clear what action is to be performed
-            
-            ONLY output the task and nothing else.
+
+            The action name is a very high level description of what the action is that will be displayed on the UI. It should be very short and summarize what the action will do.
+           
+            When the user hovers over this action, the entire action plan will be displayed. this should be a more detailed description of what the action will do. For example if you're sending
+            an email, this action plan should contain the exact email that will be sent.
+
+            The actions prompt is an even more detailed description of what the action will do. It should be a more detailed description of what the action will do. This is what will be
+            send to the langraph to perform the action via MCP calls. It's fine if the action plan and action prompt are of similar length but keep any information that the user doesn't really need to see
+            but is necessary to take the action over here.
+
+            here is an example of the output:
+            {{
+                "action_name": "Schedule Interview with Ritesh",
+                "action_plan": "Send email to Ritesh (rneela@wisc.edu) confirming interview on Monday 11/04 at 12:30pm CDT. Add calendar event for 12:30pm-1:30pm with meeting link.",
+                "action_prompt": "Schedule an interview with candidate Ritesh Neela (rneela@wisc.edu) for the Software Engineering Intern - Summer 2026 position. Based on his availability email, schedule the interview for Monday, November 4th at 12:30pm Central Daylight Time. Send him a confirmation email with the interview details and create a calendar event from 12:30pm-1:30pm. Include a Google Meet link in the calendar invite. The interviewer should be John Smith from the engineering team."
+            }}
+
+            Output in the following format as a JSON object:
+            {{
+                "action_name": "<action_name>",
+                "action_plan": "<action_plan>"
+                "action_prompt": "<action_prompt>"
+            }}
+
         """
-        # ALSO ADD THE OCR HERE!!!!! IF I GET THIS FROM SCREEN VIEWING
         
         # Call Claude Sonnet 4.5 with the action prompt
         try:
@@ -426,33 +449,61 @@ class Tree:
                     {"role": "user", "content": ACTION_CREATION_PROMPT}
                 ]
             )
-            suggested_action = response.content[0].text
+            llm_response = response.content[0].text
             print(f"\n{'='*60}")
-            print(f"Suggested Action from Claude:")
-            print(f"{suggested_action}")
-            print(f"Type: {type(suggested_action)}, Length: {len(suggested_action)}")
+            print(f"Raw LLM Response from Claude:")
+            print(f"{llm_response}")
             print(f"{'='*60}\n")
-            print(f"DEBUG learn(): suggested_action is truthy={bool(suggested_action)}")
+            
+            # Parse the JSON response from the LLM
+            try:
+                # Extract JSON from the response (handle potential markdown code blocks)
+                import re
+                json_match = re.search(r'\{[^{}]*"action_name"[^{}]*\}', llm_response, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                    action_data = json.loads(json_str)
+                    action_name = action_data.get("action_name")
+                    action_plan = action_data.get("action_plan")
+                    action_prompt = action_data.get("action_prompt")
+                    
+                    print(f"Parsed action_name: {action_name}")
+                    print(f"Parsed action_plan: {action_plan}")
+                    print(f"Parsed action_prompt: {action_prompt}")
+                else:
+                    print("Warning: Could not find valid JSON in LLM response")
+                    action_name = None
+                    action_plan = None
+                    action_prompt = None
+            except json.JSONDecodeError as json_error:
+                print(f"Error parsing JSON from LLM response: {json_error}")
+                action_name = None
+                action_plan = None
+                action_prompt = None
             
             # Insert the suggested action into the database if it was generated successfully
-            if suggested_action and node:
-                print(f"DEBUG learn(): Both suggested_action and node are truthy, inserting...")
+            if action_name and node:
+                print(f"DEBUG learn(): action_name and node are valid, inserting into DB...")
                 try:
                     action_uuid = self.dao.add_action(
                         node_uuid=node.node_uuid,
-                        action_name=suggested_action
+                        action_name=action_name,
+                        action_plan=action_plan,
+                        action_prompt=action_prompt
                     )
                     print(f"Successfully inserted action into database with UUID: {action_uuid}")
                 except Exception as action_error:
                     print(f"Error inserting action into database: {action_error}")
                     action_uuid = None
             else:
-                print(f"DEBUG learn(): Skipping insertion - suggested_action truthy={bool(suggested_action)}, node truthy={bool(node)}")
+                print(f"DEBUG learn(): Skipping insertion - action_name={action_name}, node={node}")
         except Exception as e:
             print(f"Error calling Claude API: {e}")
             import traceback
             traceback.print_exc()
-            suggested_action = None
+            action_name = None
+            action_plan = None
+            action_prompt = None
             action_uuid = None
         
         if node is None:
@@ -481,10 +532,10 @@ class Tree:
             )
             print(f"Successfully inserted data into node '{node.metadata}' (UUID: {node.node_uuid})")
             print(f"Data UUID: {data_uuid}")
-            return suggested_action, action_uuid
+            return action_name, action_plan, action_prompt, action_uuid
         except Exception as e:
             print(f"Error inserting data: {e}")
-            return suggested_action, action_uuid
+            return action_name, action_plan, action_prompt, action_uuid
         
 
     

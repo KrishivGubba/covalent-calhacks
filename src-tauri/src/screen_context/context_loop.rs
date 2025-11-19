@@ -246,31 +246,42 @@ impl ContextLoop {
                     Err(e) => println!("    ❌ Failed to serialize Flask response: {}", e),
                 }
                 
-                // Check if an action was generated (not "no-action-generated")
-                if response.written != "no-action-generated" && !response.written.is_empty() {
-                    // Extract action text from message (format: "Context processed successfully. Suggested action: <action>")
-                    let action_text = if let Some(action_part) = response.message.split("Suggested action: ").nth(1) {
-                        action_part.trim()
-                    } else {
-                        &response.message
-                    };
-                    
-                    // Only store if action is not "None"
-                    if action_text != "None" && !action_text.is_empty() {
-                        if let Some(ref store) = self.actions_store {
-                            let suggested_action = crate::SuggestedAction {
-                                id: response.written.clone(),
-                                uuid: response.written.clone(),
-                                title: if action_text.len() > 100 {
-                                    format!("{}...", &action_text[..100])
+                // Check if an action was generated (action_uuid present and action_name not None/"None")
+                if let Some(action_uuid) = &response.action_uuid {
+                    if !action_uuid.is_empty() {
+                        // Extract action text from message (format: "Context processed successfully. Suggested action: <action>")
+                        let action_text = if let Some(action_part) = response.message.split("Suggested action: ").nth(1) {
+                            action_part.trim()
+                        } else {
+                            &response.message
+                        };
+
+                        // Prefer explicit action_name if provided
+                        let effective_action_name = response
+                            .action_name
+                            .as_deref()
+                            .filter(|name| !name.is_empty() && *name != "None")
+                            .unwrap_or(action_text);
+
+                        // Only store if action is not "None" or empty
+                        if !effective_action_name.is_empty() && effective_action_name != "None" {
+                            if let Some(ref store) = self.actions_store {
+                                let title = if effective_action_name.len() > 100 {
+                                    format!("{}...", &effective_action_name[..100])
                                 } else {
-                                    action_text.to_string()
-                                },
-                                description: action_text.to_string(),
-                            };
-                            
-                            store.add_action(suggested_action);
-                            println!("  ✅ Action stored for frontend");
+                                    effective_action_name.to_string()
+                                };
+
+                                let suggested_action = crate::SuggestedAction {
+                                    id: action_uuid.clone(),
+                                    uuid: action_uuid.clone(),
+                                    title,
+                                    description: effective_action_name.to_string(),
+                                };
+
+                                store.add_action(suggested_action);
+                                println!("  ✅ Action stored for frontend");
+                            }
                         }
                     }
                 }

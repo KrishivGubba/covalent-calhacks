@@ -85,13 +85,15 @@ class GraphDAO:
         self.execute_query(query, (data_uuid, node_uuid, key, data_type, info))
         return data_uuid
 
-    def add_action(self, node_uuid, action_name):
+    def add_action(self, node_uuid, action_name, action_plan=None, action_prompt=None):
         '''
         Insert an action into the action_table associated with a specific node.
         
         Args:
             node_uuid (str): UUID of the node to associate this action with
             action_name (str): Name/description of the action
+            action_plan (str, optional): Detailed plan for the action (user-facing)
+            action_prompt (str, optional): Full prompt for LangGraph execution
             
         Returns:
             str: UUID of the inserted action record
@@ -99,10 +101,10 @@ class GraphDAO:
         import uuid
         action_uuid = str(uuid.uuid4())
         query = """
-            INSERT INTO action_table (UUID, Action_name, Node_UUID)
-            VALUES (?, ?, ?)
+            INSERT INTO action_table (UUID, Action_name, Action_plan, Action_prompt, Node_UUID)
+            VALUES (?, ?, ?, ?, ?)
         """
-        self.execute_query(query, (action_uuid, action_name, node_uuid))
+        self.execute_query(query, (action_uuid, action_name, action_plan, action_prompt, node_uuid))
         return action_uuid
 
     def get_action_by_id(self, action_uuid):
@@ -304,6 +306,8 @@ class TestGraphDAO:
         '''
         return self.nodes_data
 
+
+# The main method for this adds the testing data into the graph
 if __name__ == "__main__":
     # Initialize test data
     test_dao = TestGraphDAO()
