@@ -235,6 +235,14 @@ fn clear_suggested_actions(store: tauri::State<ActionsStore>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Load environment variables from .env file
+    if let Err(e) = dotenvy::dotenv() {
+        eprintln!("⚠️  Warning: Could not load .env file: {}", e);
+        eprintln!("   Make sure ANTHROPIC_API_KEY is set in your environment or .env file");
+    } else {
+        println!("✓ Loaded environment variables from .env file");
+    }
+    
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
