@@ -191,7 +191,7 @@ export const ContextCollectionIndicator: React.FC = () => {
 
 // Example 4: Full Integration Example
 export const FloatingAssistantWithContextControl: React.FC = () => {
-  const [actions, setActions] = useState<Action[]>([
+  const [actions] = useState<Action[]>([
     {
       id: '1',
       uuid: 'action-uuid-1',

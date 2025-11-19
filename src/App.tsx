@@ -44,7 +44,6 @@ async function handleStop(): Promise<void> {
 function App() {
   const [actions, setActions] = useState<Action[]>([]);
   const [isRunning, setIsRunning] = useState(true);
-  const [loading, setLoading] = useState(true);
 
   // Fetch actions and sync context collection status on component mount
   useEffect(() => {
@@ -60,8 +59,6 @@ function App() {
         console.log(`📊 Initial context collection status: ${contextStatus ? 'Running' : 'Stopped'}`);
       } catch (error) {
         console.error('Failed to initialize:', error);
-      } finally {
-        setLoading(false);
       }
     };
 
