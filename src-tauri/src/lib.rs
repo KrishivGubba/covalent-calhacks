@@ -109,13 +109,13 @@ impl FlaskServer {
     fn start(&self, app_dir: PathBuf) -> Result<(), String> {
         let server_dir = app_dir.join("server");
         let start_script = server_dir.join("start_server.sh");
-        
+
         if !start_script.exists() {
             return Err(format!("Flask start script not found at {:?}", start_script));
         }
 
         println!("Starting Flask server from {:?}", start_script);
-        
+
         match Command::new("bash")
             .arg(&start_script)
             .current_dir(&server_dir)
@@ -125,7 +125,7 @@ impl FlaskServer {
                 println!("Flask server started with PID: {:?}", child.id());
                 let mut process_guard = self.process.lock().unwrap();
                 *process_guard = Some(child);
-                
+
                 // Give server a moment to start up
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 Ok(())
@@ -149,6 +149,92 @@ impl FlaskServer {
 }
 
 impl Drop for FlaskServer {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+// Ollama server state management
+struct OllamaServer {
+    process: Arc<Mutex<Option<Child>>>,
+    was_already_running: Arc<Mutex<bool>>,
+}
+
+impl OllamaServer {
+    fn new() -> Self {
+        Self {
+            process: Arc::new(Mutex::new(None)),
+            was_already_running: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    fn is_running() -> bool {
+        // Check if Ollama is already running by trying to connect to the API
+        match std::process::Command::new("curl")
+            .args(["-s", "http://localhost:11434/api/tags"])
+            .output()
+        {
+            Ok(output) => output.status.success(),
+            Err(_) => false,
+        }
+    }
+
+    fn start(&self) -> Result<(), String> {
+        // Check if Ollama is already running
+        if Self::is_running() {
+            println!("✓ Ollama server is already running");
+            *self.was_already_running.lock().unwrap() = true;
+            return Ok(());
+        }
+
+        println!("Starting Ollama server...");
+
+        // Start Ollama serve
+        match Command::new("ollama")
+            .arg("serve")
+            .spawn()
+        {
+            Ok(child) => {
+                println!("Ollama server started with PID: {:?}", child.id());
+                let mut process_guard = self.process.lock().unwrap();
+                *process_guard = Some(child);
+
+                // Give Ollama a moment to start up
+                std::thread::sleep(std::time::Duration::from_secs(2));
+
+                // Verify it started successfully
+                if Self::is_running() {
+                    println!("✓ Ollama server started successfully");
+                    Ok(())
+                } else {
+                    Err("Ollama server started but is not responding".to_string())
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to start Ollama server: {}", e);
+                Err(format!("Failed to start Ollama server: {}. Make sure Ollama is installed (brew install ollama)", e))
+            }
+        }
+    }
+
+    fn stop(&self) {
+        // Only stop if we started it (don't kill user's existing Ollama process)
+        if *self.was_already_running.lock().unwrap() {
+            println!("ℹ️  Ollama was already running, leaving it running");
+            return;
+        }
+
+        if let Ok(mut process_guard) = self.process.lock() {
+            if let Some(mut child) = process_guard.take() {
+                println!("Stopping Ollama server (PID: {:?})", child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+}
+
+impl Drop for OllamaServer {
     fn drop(&mut self) {
         self.stop();
     }
@@ -262,14 +348,26 @@ pub fn run() {
             };
             
             println!("App directory: {:?}", app_dir);
-            
+
+            // Start Ollama server first (required by tab completion)
+            let ollama_server = OllamaServer::new();
+
+            match ollama_server.start() {
+                Ok(_) => println!("✓ Ollama server ready"),
+                Err(e) => eprintln!("✗ Failed to start Ollama server: {}", e),
+            }
+
+            // Store Ollama server in app state so it stays alive
+            app.manage(ollama_server);
+
+            // Start Flask server
             let flask_server = FlaskServer::new();
-            
+
             match flask_server.start(app_dir.clone()) {
                 Ok(_) => println!("✓ Flask server started successfully"),
                 Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
             }
-            
+
             // Store flask server in app state so it stays alive
             app.manage(flask_server);
             

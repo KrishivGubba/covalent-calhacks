@@ -63,6 +63,7 @@ impl ModelInvoker {
                 "prompt": prompt,
                 "suffix": "",  // Enable Fill-in-the-Middle mode for completion
                 "stream": false,
+                "keep_alive": "5m",  // Keep model loaded for 5 minutes to avoid reload delays
                 "options": {
                     "num_predict": max_tokens,
                     "temperature": 0.2,   // Slightly higher for FIM mode
@@ -71,7 +72,7 @@ impl ModelInvoker {
                     "stop": ["\n"],       // Only stop at newline for FIM
                 }
             }))
-            .timeout(std::time::Duration::from_millis(3000))
+            .timeout(std::time::Duration::from_millis(10000))  // Increased to 10s to handle concurrent request queuing
             .send()?;
 
         let result: serde_json::Value = response.json()?;
