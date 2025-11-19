@@ -269,7 +269,7 @@ pub fn get_adapter(app_bundle_id: &str) -> Box<dyn ContextExtractor> {
     }
 }
 
-fn is_chromium_based(bundle_id: &str) -> bool {
+pub(crate) fn is_chromium_based(bundle_id: &str) -> bool {
     let bundle_lower = bundle_id.to_lowercase();
     bundle_lower.contains("chrome") ||
     bundle_lower.contains("electron") ||
@@ -282,7 +282,7 @@ fn is_chromium_based(bundle_id: &str) -> bool {
     bundle_lower.contains("vscode")
 }
 
-fn is_terminal(bundle_id: &str) -> bool {
+pub(crate) fn is_terminal(bundle_id: &str) -> bool {
     let bundle_lower = bundle_id.to_lowercase();
     bundle_lower.contains("terminal") ||
     bundle_lower.contains("iterm") ||

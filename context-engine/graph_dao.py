@@ -102,6 +102,8 @@ class GraphDAO:
             INSERT INTO action_table (UUID, Action_name, Node_UUID)
             VALUES (?, ?, ?)
         """
+
+        #print("Adding action:", action_uuid, action_name, node_uuid)
         self.execute_query(query, (action_uuid, action_name, node_uuid))
         return action_uuid
 

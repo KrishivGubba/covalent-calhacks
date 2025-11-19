@@ -55,29 +55,59 @@ impl ModelInvoker {
     fn predict_ollama(&self, base_url: &str, model: &str, prompt: &str, max_tokens: usize) -> Result<String> {
         // Use blocking reqwest for sync call
         let client = reqwest::blocking::Client::new();
-        
+
         let response = client
             .post(format!("{}/api/generate", base_url))
             .json(&serde_json::json!({
                 "model": model,
                 "prompt": prompt,
+                "suffix": "",  // Enable Fill-in-the-Middle mode for completion
                 "stream": false,
                 "options": {
                     "num_predict": max_tokens,
-                    "temperature": 0.3,
-                    "top_p": 0.9,
+                    "temperature": 0.2,   // Slightly higher for FIM mode
+                    "top_p": 0.9,         // Standard for FIM
+                    "top_k": 50,          // Standard for FIM
+                    "stop": ["\n"],       // Only stop at newline for FIM
                 }
             }))
-            .timeout(std::time::Duration::from_millis(500))
+            .timeout(std::time::Duration::from_millis(3000))
             .send()?;
-        
+
         let result: serde_json::Value = response.json()?;
-        let text = result["response"]
+        let raw_text = result["response"]
             .as_str()
             .unwrap_or("")
             .to_string();
-        
-        Ok(text)
+
+        // Post-process: Clean up the output
+        let cleaned = Self::clean_prediction(&raw_text);
+
+        Ok(cleaned)
+    }
+
+    /// Clean up model output to extract just the completion
+    /// FIM mode should give cleaner output, but we still validate
+    fn clean_prediction(text: &str) -> String {
+        let text = text.trim();
+
+        // FIM mode outputs completion directly, so minimal processing needed
+
+        // Extract first line only (completions should be single line)
+        let result = text.lines().next().unwrap_or(text);
+
+        // Remove any backticks or special characters
+        let result = result.trim().trim_matches('`').trim();
+
+        // If it starts with explanation words, reject it
+        if result.starts_with("It ") ||
+           result.starts_with("This ") ||
+           result.starts_with("You ") ||
+           result.starts_with("The ") {
+            return String::new();
+        }
+
+        result.to_string()
     }
 }
 

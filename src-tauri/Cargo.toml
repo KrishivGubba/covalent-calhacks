@@ -62,4 +62,5 @@ llama-cpp-2 = "0.1"
 rdev = "0.5"
 arboard = "3.4"
 lazy_static = "1.4"
+rusqlite = { version = "0.31", features = ["bundled"] }
 

@@ -392,7 +392,7 @@ class Tree:
         # take the summary of what's going on 
         mtd = self.get_parent_metadata(node)
         ACTION_CREATION_PROMPT = self.BASE_PROMPT[75:] + f"""
-            Now, after looking at this graph this is most relevant node that we picked: {mtd}
+
             You are an AI Desktop Agent whose goal is to automate any tasks for the user. Your goal is to ANTICIPATE ANY ACTIONS
             THAT THE USER MIGHT WANT TO TAKE BASED ON THE CURRENT SCREEN CONTENT.
 

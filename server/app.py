@@ -103,5 +103,146 @@ def trigger_action():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+@app.route("/tab_predict", methods=["POST"])
+def tab_predict():
+    """
+    Get tab completion prediction using graph.db context
+    Request body:
+    {
+        "app_name": "VSCode",
+        "text_buffer": "import numpy as n",
+        "context_type": "full_query",
+        "activity_id": "abc123"
+    }
+    """
+    try:
+        body = request.get_json()
+        app_name = body.get("app_name", "Unknown")
+        text_buffer = body.get("text_buffer", "")
+        context_type = body.get("context_type", "")
+        activity_id = body.get("activity_id", "")
+        
+        if not text_buffer:
+            return jsonify({"error": "text_buffer is required"}), 400
+        
+        # Use graph traversal to find relevant context
+        # The graph.py traverse() method returns the most relevant node
+        relevant_node = tree.traverse(f"App: {app_name} | Context: Typing '{text_buffer}'")
+        
+        # Get data from the relevant node and its ancestors
+        # This gives us context about what the user is working on
+        context_data = []
+        if relevant_node:
+            # Collect metadata chain for context
+            metadata_chain = tree.get_parent_metadata(relevant_node)
+            context_data.append(metadata_chain)
+            
+            # Get actions from this node (these are learned patterns)
+            if relevant_node.actions:
+                for action in relevant_node.actions[:3]:  # Top 3 actions
+                    context_data.append(action.get('action_name', ''))
+        
+        # Generate prediction based on context
+        # This is a simple completion - you could enhance with a local LLM call here
+        prediction = generate_tab_prediction(text_buffer, context_data)
+        
+        return jsonify({
+            "prediction": prediction,
+            "confidence": 0.85,  # TODO: Calculate actual confidence
+            "suggested_actions": [a.get('action_name', '') for a in (relevant_node.actions[:3] if relevant_node else [])]
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in /tab_predict endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/tab_context", methods=["POST"])
+def tab_context():
+    """
+    Update context in graph.db for tab completion learning
+    Request body:
+    {
+        "app_name": "VSCode",
+        "activity_id": "abc123",
+        "context_data": "{json_serialized_context}",
+        "activity_type": "Development::Backend"
+    }
+    """
+    try:
+        body = request.get_json()
+        app_name = body.get("app_name", "Unknown")
+        activity_id = body.get("activity_id", "")
+        context_data = body.get("context_data", "")
+        activity_type = body.get("activity_type", "Unknown")
+        
+        # Create a summary for graph traversal
+        summary = f"Tab completion context update for {app_name} | Activity: {activity_type}"
+        
+        # Use tree.learn() to insert this context into the graph
+        # This will find the right node and store the context there
+        action, action_id = tree.learn(summary, context_data, key=f"tab_context_{activity_id}")
+        
+        return jsonify({
+            "message": "Context updated successfully",
+            "node_id": action_id if action_id else None
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in /tab_context endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+def generate_tab_prediction(text_buffer, context_data):
+    """
+    Generate tab completion prediction based on text buffer and graph context.
+    This is a simple heuristic - enhance with LLM for better results.
+    """
+    # Extract the last incomplete word or phrase
+    last_line = text_buffer.split('\n')[-1] if '\n' in text_buffer else text_buffer
+    words = last_line.split()
+    
+    if not words:
+        return ""
+    
+    last_word = words[-1]
+    
+    # Simple pattern matching from context
+    for context in context_data:
+        if isinstance(context, str):
+            # Look for common patterns in the context
+            if last_word in context:
+                # Find what typically follows this word in context
+                context_words = context.split()
+                for i, word in enumerate(context_words):
+                    if word.startswith(last_word) and i + 1 < len(context_words):
+                        return context_words[i + 1]
+    
+    # Fallback: basic Python/JS completions
+    common_completions = {
+        "import": "numpy as np",
+        "from": "typing import",
+        "def": "function_name():",
+        "class": "ClassName:",
+        "if": "__name__ == '__main__':",
+        "for": "i in range():",
+        "return": "None",
+        "const": "variable = ",
+        "let": "variable = ",
+        "function": "name() {",
+    }
+    
+    for keyword, completion in common_completions.items():
+        if last_word.startswith(keyword) or keyword.startswith(last_word):
+            return completion
+    
+    return ""
+
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5001, debug=False)

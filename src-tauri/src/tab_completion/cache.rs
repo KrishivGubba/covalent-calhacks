@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use super::graph_db::GraphDatabase;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedContext {
@@ -68,16 +69,16 @@ pub struct Pattern {
 pub struct MultiTierCache {
     // L0: Exact prediction cache
     exact_cache: Arc<RwLock<LruCache<String, String>>>,
-    
+
     // L1: Context cache by app + activity
     context_cache: Arc<RwLock<LruCache<String, CachedContext>>>,
-    
-    // L2: Reference to existing context graph
-    graph_db_path: String,
-    
+
+    // L2: Direct SQLite access to graph.db
+    graph_db: Option<Arc<GraphDatabase>>,
+
     // Stats for monitoring
     stats: Arc<RwLock<CacheStats>>,
-    
+
     // Usage tracking for adaptive TTL
     usage_patterns: Arc<RwLock<HashMap<String, UsagePattern>>>,
 }
@@ -100,6 +101,7 @@ struct UsagePattern {
     hit_rate: f64,
 }
 
+#[derive(Debug)]
 pub enum CacheResult {
     ExactHit(String),           // L0: Return prediction directly
     ContextHit(CachedContext),  // L1: Use cached context
@@ -110,6 +112,24 @@ pub enum CacheResult {
 impl MultiTierCache {
     pub fn new(graph_db_path: String) -> Self {
         println!("📦 Initializing multi-tier cache system");
+
+        // Try to connect to graph.db directly
+        let graph_db = match GraphDatabase::new(graph_db_path.clone()) {
+            Ok(db) => {
+                println!("✅ Connected to graph.db directly at: {}", graph_db_path);
+                if let Ok(stats) = db.get_stats() {
+                    println!("   📊 Graph stats: {} nodes, {} data entries, {} actions",
+                             stats.node_count, stats.data_count, stats.action_count);
+                }
+                Some(Arc::new(db))
+            }
+            Err(e) => {
+                eprintln!("⚠️  Failed to connect to graph.db: {}", e);
+                eprintln!("   Will use Flask API fallback");
+                None
+            }
+        };
+
         Self {
             exact_cache: Arc::new(RwLock::new(LruCache::new(
                 NonZeroUsize::new(1000).unwrap()
@@ -117,7 +137,7 @@ impl MultiTierCache {
             context_cache: Arc::new(RwLock::new(LruCache::new(
                 NonZeroUsize::new(100).unwrap()
             ))),
-            graph_db_path,
+            graph_db,
             stats: Arc::new(RwLock::new(CacheStats::default())),
             usage_patterns: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -167,15 +187,89 @@ impl MultiTierCache {
         CacheResult::NeedExtraction
     }
     
-    fn reconstruct_from_graph(&self, app_name: &str, _activity_id: &str) -> Option<CachedContext> {
-        // Try to query the existing context graph database
-        // This integrates with the existing Python graph system via database
-        
-        // For MVP, create a simple context based on app type
-        // Full graph integration would query the SQLite database
+    fn reconstruct_from_graph(&self, app_name: &str, activity_id: &str) -> Option<CachedContext> {
+        // Use direct SQLite access to query graph.db
+        if let Some(ref graph_db) = self.graph_db {
+            // Query graph for relevant context
+            let query = format!("App: {} Activity: {}", app_name, activity_id);
+
+            match graph_db.search_nodes(&query, 5) {
+                Ok(nodes) if !nodes.is_empty() => {
+                    let activity_type = ActivityType::from_app(app_name);
+
+                    // Extract learned patterns from graph nodes
+                    let mut learned_patterns = Vec::new();
+                    let mut recent_actions = Vec::new();
+
+                    for node in &nodes {
+                        // Use data entries as patterns
+                        for data_entry in &node.data_entries {
+                            if let Some(ref key) = data_entry.key {
+                                recent_actions.push(key.clone());
+                            }
+
+                            // Try to extract patterns from info
+                            if data_entry.info.len() < 200 {
+                                recent_actions.push(data_entry.info.clone());
+                            }
+                        }
+                    }
+
+                    recent_actions.truncate(10);
+
+                    return Some(CachedContext {
+                        app_context: AppContext {
+                            name: app_name.to_string(),
+                            bundle_id: String::new(),
+                            window_title: None,
+                        },
+                        activity_type,
+                        learned_patterns,
+                        recent_actions,
+                        timestamp: current_timestamp(),
+                        ttl: 300,
+                    });
+                }
+                Ok(_) => {
+                    // No nodes found, try getting recent nodes
+                    if let Ok(recent_nodes) = graph_db.get_recent_nodes(3) {
+                        if !recent_nodes.is_empty() {
+                            let activity_type = ActivityType::from_app(app_name);
+                            let mut recent_actions = Vec::new();
+
+                            for node in &recent_nodes {
+                                for data_entry in &node.data_entries {
+                                    if let Some(ref key) = data_entry.key {
+                                        recent_actions.push(key.clone());
+                                    }
+                                }
+                            }
+
+                            recent_actions.truncate(5);
+
+                            return Some(CachedContext {
+                                app_context: AppContext {
+                                    name: app_name.to_string(),
+                                    bundle_id: String::new(),
+                                    window_title: None,
+                                },
+                                activity_type,
+                                learned_patterns: vec![],
+                                recent_actions,
+                                timestamp: current_timestamp(),
+                                ttl: 300,
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Graph query error: {}", e);
+                }
+            }
+        }
+
+        // Fallback: create basic context
         let activity_type = ActivityType::from_app(app_name);
-        
-        // Basic reconstruction - can be enhanced to query actual graph.db
         Some(CachedContext {
             app_context: AppContext {
                 name: app_name.to_string(),
@@ -186,7 +280,7 @@ impl MultiTierCache {
             learned_patterns: vec![],
             recent_actions: vec![],
             timestamp: current_timestamp(),
-            ttl: 300, // 5 minutes
+            ttl: 300,
         })
     }
     
@@ -205,6 +299,12 @@ impl MultiTierCache {
         self.record_access(&key);
         
         self.context_cache.write().unwrap().put(key, context);
+    }
+    
+    /// Get context from cache if available
+    pub fn get_context(&self, app_name: &str, activity_id: &str) -> Option<CachedContext> {
+        let key = format!("{}:{}", app_name, activity_id);
+        self.context_cache.write().unwrap().get(&key).cloned()
     }
     
     /// Calculate adaptive TTL based on usage patterns
