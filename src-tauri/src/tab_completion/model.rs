@@ -60,16 +60,17 @@ impl ModelInvoker {
             .post(format!("{}/api/generate", base_url))
             .json(&serde_json::json!({
                 "model": model,
-                "prompt": prompt,
-                "suffix": "",  // Enable Fill-in-the-Middle mode for completion
+                "prompt": prompt,  // Use raw prompt without instructions
                 "stream": false,
                 "keep_alive": "5m",  // Keep model loaded for 5 minutes to avoid reload delays
+                "raw": true,  // Use raw mode to avoid chat template - this is key!
                 "options": {
                     "num_predict": max_tokens,
-                    "temperature": 0.2,   // Slightly higher for FIM mode
-                    "top_p": 0.9,         // Standard for FIM
-                    "top_k": 50,          // Standard for FIM
-                    "stop": ["\n"],       // Only stop at newline for FIM
+                    "temperature": 0.2,
+                    "top_p": 0.95,
+                    "top_k": 40,
+                    "repeat_penalty": 1.1,
+                    // Don't use stop tokens - we'll extract the first line in post-processing
                 }
             }))
             .timeout(std::time::Duration::from_millis(10000))  // Increased to 10s to handle concurrent request queuing
@@ -88,24 +89,38 @@ impl ModelInvoker {
     }
 
     /// Clean up model output to extract just the completion
-    /// FIM mode should give cleaner output, but we still validate
     fn clean_prediction(text: &str) -> String {
+        // Trim whitespace including leading/trailing newlines
         let text = text.trim();
 
-        // FIM mode outputs completion directly, so minimal processing needed
-
-        // Extract first line only (completions should be single line)
-        let result = text.lines().next().unwrap_or(text);
+        // Find the first non-empty line
+        let result = text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("")
+            .trim();
 
         // Remove any backticks or special characters
-        let result = result.trim().trim_matches('`').trim();
+        let result = result.trim_matches('`').trim();
 
-        // If it starts with explanation words, reject it
-        if result.starts_with("It ") ||
-           result.starts_with("This ") ||
-           result.starts_with("You ") ||
-           result.starts_with("The ") {
+        // Reject if it's empty after cleaning
+        if result.is_empty() {
             return String::new();
+        }
+
+        // Reject if it starts with conversational phrases
+        let conversational_starts = [
+            "It ", "This ", "You ", "I ",
+            "Let me ", "I'll ", "I can ",
+            "Complete this", "Only output",
+            "The ", "Here ", "Sure",
+            "Here's", "Certainly", "Of course",
+        ];
+
+        for start in &conversational_starts {
+            if result.starts_with(start) {
+                return String::new();
+            }
         }
 
         result.to_string()
