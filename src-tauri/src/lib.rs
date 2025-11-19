@@ -210,6 +210,17 @@ async fn trigger_action(action_uuid: String, action_prompt: String, state: tauri
         .await
         .map_err(|e| format!("Failed to trigger action: {}", e));
     
+    // Print the result from Flask/Composio
+    match &result {
+        Ok(response) => {
+            println!("✅ Action execution response:");
+            println!("{}", serde_json::to_string_pretty(response).unwrap_or_else(|_| format!("{:?}", response)));
+        }
+        Err(e) => {
+            println!("❌ Action execution failed: {}", e);
+        }
+    }
+    
     // Re-enable context collection after action completes
     // Note: You may want to add a delay here to avoid immediate re-collection
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;

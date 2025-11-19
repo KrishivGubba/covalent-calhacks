@@ -2,6 +2,7 @@ import os
 import json
 import uuid
 import sys
+import asyncio
 from datetime import datetime
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -178,14 +179,17 @@ class Tree:
         print("ACTION EXECUTION PLACEHOLDER")
         print(f"🚀 [graph.py] About to call run_graph() with action_text: {action_text[:100]}...")
         print(f"🚀 [graph.py] Data length being passed: {len(collected_data_string)} characters")
-        run_graph(action_text, collected_data_string)
+        
+        # Run the graph and capture the result
+        result = asyncio.run(run_graph(action_text, collected_data_string))
         print(f"✅ [graph.py] run_graph() call completed")
+        print(f"📊 [graph.py] Result from run_graph: {result}")
         
         print(f"Would execute: {action_text}")
         print(f"With context data string of length: {len(collected_data_string)}")
         # ================================================================
         
-        return action_text, collected_data_string
+        return action_text, collected_data_string, result
 
 
 

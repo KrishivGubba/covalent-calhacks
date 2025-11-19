@@ -103,11 +103,40 @@ def trigger_action():
         action_uuid = body.get("action_uuid", "")
         action = body.get("action", "")
         
-        success = tree.trigger_action(action_uuid)
-
-        # Use the description field as needed
-        return jsonify({"message": "Action triggered", "success": success}), 200
+        result = tree.trigger_action(action_uuid)
+        
+        # result is a tuple: (action_text, collected_data_string, graph_output)
+        if result and len(result) >= 3:
+            action_text, collected_data, graph_output = result
+            
+            # Convert graph_output to JSON-serializable format
+            serializable_output = {}
+            if graph_output:
+                for key, value in graph_output.items():
+                    # Handle Pydantic models and other non-serializable objects
+                    if hasattr(value, 'dict'):
+                        serializable_output[key] = value.dict()
+                    elif hasattr(value, '__dict__'):
+                        serializable_output[key] = value.__dict__
+                    elif isinstance(value, list):
+                        serializable_output[key] = [
+                            item.dict() if hasattr(item, 'dict') else 
+                            item.__dict__ if hasattr(item, '__dict__') else 
+                            str(item) for item in value
+                        ]
+                    else:
+                        serializable_output[key] = str(value)
+            
+            return jsonify({
+                "message": "Action triggered successfully",
+                "action_text": action_text,
+                "graph_output": serializable_output
+            }), 200
+        else:
+            return jsonify({"message": "Action triggered but no result returned"}), 200
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
