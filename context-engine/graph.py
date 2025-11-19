@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import sys
 from datetime import datetime
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -8,6 +9,10 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 from graph_dao import GraphDAO, TestGraphDAO
 from anthropic import Anthropic
+
+# Add parent directory to path to import LLMGraph
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from LLMGraph import run_graph
 
 load_dotenv() 
 
@@ -171,6 +176,10 @@ class Tree:
         # 
         # For now, just print what would be executed
         print("ACTION EXECUTION PLACEHOLDER")
+        print(f"🚀 [graph.py] About to call run_graph() with action_text: {action_text[:100]}...")
+        print(f"🚀 [graph.py] Data length being passed: {len(collected_data_string)} characters")
+        run_graph(action_text, collected_data_string)
+        print(f"✅ [graph.py] run_graph() call completed")
         
         print(f"Would execute: {action_text}")
         print(f"With context data string of length: {len(collected_data_string)}")

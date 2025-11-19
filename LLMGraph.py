@@ -135,7 +135,7 @@ async def gsuite(state : State):
         print(user_id)
         connected_accounts = composio.connected_accounts.list(
             user_ids=[user_id], # this is set to xxx to always bypass the filtering and setup and new auth every time
-            auth_config_ids=["ac_cgbJXrl-9yI4"],
+            auth_config_ids=["ac_gbtRGl26MO9g"],
             toolkit_slugs=["GMAIL","GOOGLECALENDAR","GOOGLESLIDES","GOOGLEDRIVE","GOOGLESHEETS","GOOGLEDOCS"]
         )
         active_connection = None
@@ -152,7 +152,7 @@ async def gsuite(state : State):
             print("No active connection: We will try authenticating again")
             connection_request = composio.connected_accounts.link(
                 user_id=user_id,
-                auth_config_id="ac_cgbJXrl-9yI4",
+                auth_config_id="ac_gbtRGl26MO9g",
             )
             redirect_url = connection_request.redirect_url
             print(f'Please authorize the app by visiting this URL: {redirect_url}')
@@ -265,12 +265,16 @@ graph.add_edge("synthesizer", END)
 compiled = graph.compile()
 
 async def run_graph(user_query : str = "No task provided", data : str = "No data provided"):
+    print(f"🎯 [LLMGraph.py] run_graph() CALLED!")
+    print(f"🎯 [LLMGraph.py] Received user_query: {user_query[:100]}...")
+    print(f"🎯 [LLMGraph.py] Received data length: {len(data)} characters")
     final_output = await compiled.ainvoke({"task": user_query, "data" : data})
     print(final_output["final_outputs"])
+    print(f"✅ [LLMGraph.py] run_graph() execution completed")
 
-user_query = """
-    send a connection request
-    """
-data = "the user is looking at the profile of ritesh neela on linkedin"
+# user_query = """
+#     Can you send an email to rneela@wisc.edu to confirm the interview with Anand on 21st November and create a calendar event. Use GSuite for all of these
+#     """
+# data = "Ritesh is an interview candidate that is currently in the process of interviewing for a position at this company "
 
-asyncio.run(run_graph(user_query))
+# asyncio.run(run_graph(user_query))

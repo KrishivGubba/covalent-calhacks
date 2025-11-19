@@ -17,3 +17,6 @@ langgraph
 fastmcp
 google
 google-generativeai
+playwright
+langchain-anthropic
+Pillow

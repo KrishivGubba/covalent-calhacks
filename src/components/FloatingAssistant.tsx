@@ -251,17 +251,24 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
                   key={action.id} 
                   style={{
                     ...styles.actionItem,
-                    height: isHovered ? 'auto' : '60px',
-                    transition: 'height 0.3s ease',
+                    maxHeight: isHovered ? '300px' : '60px',
+                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    overflow: 'hidden',
                   }}
                   onMouseEnter={() => setHoveredActionId(action.id)}
                   onMouseLeave={() => setHoveredActionId(null)}
                 >
                   <div style={styles.actionText}>
                     <h4 style={styles.actionTitle}>{action.title}</h4>
-                    {isHovered && (
-                      <p style={styles.actionDescription}>{action.description}</p>
-                    )}
+                    <p style={{
+                      ...styles.actionDescription,
+                      maxHeight: isHovered ? '200px' : '0px',
+                      opacity: isHovered ? 1 : 0,
+                      transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                      overflow: 'hidden',
+                    }}>
+                      {action.description}
+                    </p>
                   </div>
                   {renderActionButton(action)}
                 </div>
