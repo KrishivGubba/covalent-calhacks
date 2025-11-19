@@ -43,3 +43,7 @@ __pycache__/
 
 *.md 
 *.MD 
+
+
+*.cursorrules
+*.cursor/*
