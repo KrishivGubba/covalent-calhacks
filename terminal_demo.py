@@ -64,7 +64,6 @@ commands = [
     "npm start",
     "git status",
     "git push",
-    "git pull",
     "python3 main.py",
     "git add *",
     "git commit -m \"created empty text file\""
