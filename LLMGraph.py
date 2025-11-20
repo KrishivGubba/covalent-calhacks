@@ -281,5 +281,6 @@ async def run_graph(user_query : str = "No task provided", data : str = "No data
 #     Can you send an email to rneela@wisc.edu to confirm the interview with Anand on 21st November and create a calendar event. Use GSuite for all of these
 #     """
 # data = "Ritesh is an interview candidate that is currently in the process of interviewing for a position at this company "
-
+# user_query = "Complete the interview scheduling process for candidate Siddharth Ghantasala (siddharthghantasala@gmail.com) for the Summer 2026 Software Engineering Intern position. First, send the currently drafted email with subject 'INTERNSHIP INTERVIEW' that confirms the interview scheduled for 7:30 this Sunday. Then, create a calendar event for this Sunday at 7:30pm with duration of 1 hour (7:30pm-8:30pm). The calendar event should be titled 'Interview - Siddharth Ghantasala - SWE Intern Summer 2026' and include a Google Meet link for the video interview. Add siddharthghantasala@gmail.com as an attendee to the calendar event so he receives the meeting invite with the video conferencing details."
+# data = ""
 # asyncio.run(run_graph(user_query))

@@ -115,10 +115,10 @@ class GraphDAO:
             action_uuid (str): UUID of the action to retrieve
             
         Returns:
-            tuple: (action_uuid, action_name, node_uuid) or None if not found
+            tuple: (action_uuid, action_name, action_prompt, node_uuid) or None if not found
         '''
         query = """
-            SELECT UUID, Action_name, Node_UUID 
+            SELECT UUID, Action_name, Action_prompt, Node_UUID 
             FROM action_table 
             WHERE UUID = ?
         """

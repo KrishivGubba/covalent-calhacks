@@ -101,8 +101,13 @@ class Tree:
             print(f"Error: Action with UUID {action_uuid} not found")
             return None, None
         
-        action_uuid_db, action_text, node_uuid = action_data
-        print(f"Found action: {action_text}")
+        action_uuid_db, action_name, action_prompt, node_uuid = action_data
+        
+        # Use action_prompt if available, otherwise fall back to action_name
+        action_text = action_prompt if action_prompt else action_name
+        
+        print(f"Found action: {action_name}")
+        print(f"Action prompt: {action_text[:200]}..." if len(action_text) > 200 else f"Action prompt: {action_text}")
         print(f"Associated with node UUID: {node_uuid}")
         
         # Collect all data into a list to be concatenated later
