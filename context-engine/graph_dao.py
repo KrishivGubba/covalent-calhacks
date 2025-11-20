@@ -10,7 +10,18 @@ class GraphDAO:
         '''
         Initialize the DAO with a SQLite connection.
         '''
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        # Ensure the database file has write permissions
+        if os.path.exists(db_path):
+            os.chmod(db_path, 0o666)
+        
+        # Open database with write access
+        self.conn = sqlite3.connect(
+            db_path,
+            check_same_thread=False,
+            timeout=10.0  # Wait up to 10 seconds if database is locked
+        )
+        # Enable WAL mode for better concurrent access
+        self.conn.execute('PRAGMA journal_mode=WAL')
         self.cursor = self.conn.cursor()
 
     def get_all_nodes(self):
@@ -100,12 +111,27 @@ class GraphDAO:
         '''
         import uuid
         action_uuid = str(uuid.uuid4())
+        
+        print(f"🔧 add_action() called:")
+        print(f"  - node_uuid: {node_uuid}")
+        print(f"  - action_name: {action_name[:50]}..." if len(action_name) > 50 else f"  - action_name: {action_name}")
+        print(f"  - Generated action_uuid: {action_uuid}")
+        
         query = """
             INSERT INTO action_table (UUID, Action_name, Action_plan, Action_prompt, Node_UUID)
             VALUES (?, ?, ?, ?, ?)
         """
-        self.execute_query(query, (action_uuid, action_name, action_plan, action_prompt, node_uuid))
-        return action_uuid
+        
+        try:
+            self.execute_query(query, (action_uuid, action_name, action_plan, action_prompt, node_uuid))
+            print(f"  ✅ Successfully inserted action into database")
+            return action_uuid
+        except Exception as e:
+            print(f"  ❌ Failed to insert action: {e}")
+            print(f"  Database path: {self.conn}")
+            import traceback
+            traceback.print_exc()
+            raise
 
     def get_action_by_id(self, action_uuid):
         '''
