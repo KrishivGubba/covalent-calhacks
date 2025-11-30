@@ -385,178 +385,479 @@ class Tree:
         # response = model.generate_content(prompt)
 
         return best_node
-    
+
+    def _generate_learning_prompt(self, node, summary, existing_actions, existing_categories):
+        """
+        Generate a prompt for the LLM to decide on action and data insertion.
+
+        Args:
+            node (Node): The current node we're learning into
+            summary (str): Description of what the user is doing on screen
+            existing_actions (list): List of action tuples from get_actions_for_node()
+            existing_categories (list): List of category names from get_categories_for_node()
+
+        Returns:
+            str: The prompt to send to the LLM
+        """
+        # Get metadata chain for context
+        metadata_chain = self.get_parent_metadata(node)
+
+        # Format existing actions
+        actions_text = ""
+        if existing_actions:
+            actions_text = "EXISTING ACTIONS for this node:\n"
+            for idx, action in enumerate(existing_actions, 1):
+                uuid, name, plan, prompt, node_uuid, last_selected = action
+                actions_text += f"{idx}. UUID: {uuid}\n"
+                actions_text += f"   Name: {name}\n"
+                actions_text += f"   Plan: {plan or 'N/A'}\n"
+                actions_text += f"   Last Selected: {last_selected or 'Never'}\n\n"
+        else:
+            actions_text = "EXISTING ACTIONS: None - this node has no actions yet.\n"
+
+        # Format existing categories
+        categories_text = ""
+        if existing_categories:
+            categories_text = f"EXISTING DATA CATEGORIES: {', '.join(existing_categories)}\n"
+        else:
+            categories_text = "EXISTING DATA CATEGORIES: None - this node has no data categories yet.\n"
+
+        prompt = f"""{self.BASE_PROMPT}
+
+CURRENT CONTEXT:
+Node Path (from root): {metadata_chain}
+Current Node: {node.metadata}
+
+{actions_text}
+{categories_text}
+
+USER'S CURRENT ACTIVITY:
+{summary}
+
+YOUR TASK:
+You are an AI Desktop Agent that learns from user behavior and suggests proactive actions.
+
+You have access to:
+- User's computer screen (for screen control actions)
+- GSuite (Email, Calendar, Docs, Sheets, etc.)
+- Ability to define series of tasks
+
+Based on the user's current activity, you must:
+
+1. **ACTION DECISION** - Choose ONE of these three options:
+
+   a) **CREATE** - Generate a completely new action
+      - Use when: Current activity represents a new workflow or task type
+      - Provide: action_name (short UI display), action_plan (detailed user-facing description), action_prompt (full technical prompt for MCP execution)
+
+   b) **MODIFY** - Update an existing action to better match current context
+      - Use when: An existing action is close but needs refinement
+      - Provide: action_uuid (from list above), updated action_name, action_plan, action_prompt
+
+   c) **SELECT** - Use an existing action exactly as-is
+      - Use when: An existing action perfectly matches the current activity
+      - Provide: action_uuid (from list above)
+
+2. **DATA INSERTION** - Extract and categorize relevant information:
+   - Condense the screen summary to preserve ONLY relevant information
+   - Remove UI noise (cursor positions, visual elements, temporary states)
+   - Keep essential context (names, dates, email addresses, decisions, outcomes)
+   - Assign data to categories (can use existing or create new ones)
+   - Can split data across multiple categories if appropriate
+
+OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
+{{
+  "action_decision": {{
+    "type": "create" | "modify" | "select",
+    "action_uuid": "uuid-here-if-modify-or-select-otherwise-null",
+    "action_name": "Short name for UI display (20-40 chars)",
+    "action_plan": "Detailed plan shown on hover - exact content of what will happen",
+    "action_prompt": "Full technical prompt for MCP orchestration - include all context needed for execution"
+  }},
+  "data_insertions": [
+    {{
+      "category": "category_name",
+      "is_new_category": true | false,
+      "condensed_data": "The actual data to store - detailed but concise"
+    }}
+  ]
+}}
+
+IMPORTANT:
+- action_name: Concise UI label (e.g., "Schedule Interview with Ritesh")
+- action_plan: User-facing details (e.g., exact email content, meeting times)
+- action_prompt: Technical execution details (e.g., full instructions for LangGraph/MCP)
+- Output ONLY the JSON object - no explanations, no markdown code blocks
+- Ensure all JSON is properly formatted and valid
+"""
+        return prompt
+
+    def _parse_learning_response(self, response_text):
+        """
+        Parse the JSON response from the LLM.
+
+        Args:
+            response_text (str): Raw response from LLM
+
+        Returns:
+            dict: Parsed response with action_decision and data_insertions
+
+        Raises:
+            ValueError: If response is not valid JSON or missing required fields
+        """
+        import re
+
+        # Try to extract JSON from potential markdown code blocks
+        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(1)
+        else:
+            # Try to find raw JSON
+            json_match = re.search(r'\{.*"action_decision".*\}', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                raise ValueError(f"Could not find valid JSON in LLM response: {response_text[:200]}")
+
+        try:
+            parsed = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in LLM response: {e}\nJSON string: {json_str[:200]}")
+
+        # Validate required fields
+        if "action_decision" not in parsed:
+            raise ValueError("Missing required field: action_decision")
+        if "data_insertions" not in parsed:
+            raise ValueError("Missing required field: data_insertions")
+
+        action_decision = parsed["action_decision"]
+        if "type" not in action_decision:
+            raise ValueError("Missing required field: action_decision.type")
+
+        if action_decision["type"] not in ["create", "modify", "select"]:
+            raise ValueError(f"Invalid action type: {action_decision['type']}")
+
+        if action_decision["type"] in ["modify", "select"] and not action_decision.get("action_uuid"):
+            raise ValueError(f"action_uuid required for type '{action_decision['type']}'")
+
+        if action_decision["type"] in ["create", "modify"]:
+            required = ["action_name", "action_plan", "action_prompt"]
+            for field in required:
+                if not action_decision.get(field):
+                    raise ValueError(f"Missing required field for {action_decision['type']}: action_decision.{field}")
+
+        return parsed
+
     def learn(self, summary, data, key=None, data_type="text"):
         """
-        Learn new information by inserting it into the most relevant node.
-        
+        Learn new information by intelligently managing actions and data insertion.
+
         Args:
-            summary (str): Summary/description of the data to help find the right node
-            data (str or dict): The actual data to store
-            key (str, optional): Key/name for this data. If None, uses a timestamp
-            data_type (str): Type of data being stored (default: "text")
-            
+            summary (str): Description of what the user is doing on screen
+            data (str): Additional context/data (used in prompt, not stored directly)
+            key (str, optional): Deprecated - keys are auto-generated per category
+            data_type (str): Deprecated - type determined by LLM
+
         Returns:
-            tuple: (action_name, action_plan, action_prompt, action_uuid) - The suggested action details and UUID
+            list: List of up to 4 most recently selected actions (tuples)
         """
-        # Find the most relevant node using traverse
-        node = self.traverse(summary)
-        print(f"DEBUG learn(): traverse() returned node={node}")
-
-        # Initialize variables for return
-        action_name = None
-        action_plan = None
-        action_prompt = None
-        action_uuid = None
-
-        # take the summary of what's going on 
-        mtd = self.get_parent_metadata(node)
-        ACTION_CREATION_PROMPT = self.BASE_PROMPT[75:] + f"""
-            Now, after looking at this graph this is most relevant node that we picked: {mtd}
-            You are an AI Desktop Agent whose goal is to automate any tasks for the user. Your goal is to ANTICIPATE ANY ACTIONS
-            THAT THE USER MIGHT WANT TO TAKE BASED ON THE CURRENT SCREEN CONTENT.
-
-            You have access to the user's computer screen (if you want to control it and take actions)
-            You have access to the GSuite (Email, Calendar, Docs, Sheets, etc)
-            You can define a series of tasks as well.
-
-            Here is a description of what the current user is doing:
-            {summary}
-
-            Based on what the user is doing, suggest a task that the user might want to perform.
-            The task should be a simple action that the user can perform.
-            For example the action prompt could be: "Send an email to Ritesh - rneela@wisc.edu confirming the meeting at 10am. Schedule this meeting on my calendar from 10am - 11am"
-
-            Note that when an action is performed, you will be given all context so don't worry about providing too much context
-            Focus on being clear what action is to be performed
-
-            The action name is a very high level description of what the action is that will be displayed on the UI. It should be very short and summarize what the action will do.
-           
-            When the user hovers over this action, the entire action plan will be displayed. this should be a more detailed description of what the action will do. For example if you're sending
-            an email, this action plan should contain the exact email that will be sent.
-
-            The actions prompt is an even more detailed description of what the action will do. It should be a more detailed description of what the action will do. This is what will be
-            send to the langraph to perform the action via MCP calls. It's fine if the action plan and action prompt are of similar length but keep any information that the user doesn't really need to see
-            but is necessary to take the action over here.
-
-            here is an example of the output:
-            {{
-                "action_name": "Schedule Interview with Ritesh",
-                "action_plan": "Send email to Ritesh (rneela@wisc.edu) confirming interview on Monday 11/04 at 12:30pm CDT. Add calendar event for 12:30pm-1:30pm with meeting link.",
-                "action_prompt": "Schedule an interview with candidate Ritesh Neela (rneela@wisc.edu) for the Software Engineering Intern - Summer 2026 position. Based on his availability email, schedule the interview for Monday, November 4th at 12:30pm Central Daylight Time. Send him a confirmation email with the interview details and create a calendar event from 12:30pm-1:30pm. Include a Google Meet link in the calendar invite. The interviewer should be John Smith from the engineering team."
-            }}
-
-            Output in the following format as a JSON object:
-            {{
-                "action_name": "<action_name>",
-                "action_plan": "<action_plan>"
-                "action_prompt": "<action_prompt>"
-            }}
-
-        """
-        
-        # Call Claude Sonnet 4.5 with the action prompt
         try:
-            print(f"DEBUG learn(): Creating Anthropic client...")
+            # 1. Find the relevant node using traverse
+            node = self.traverse(summary)
+            if node is None:
+                print("Warning: Could not find suitable node, using root")
+                node = self.root
+
+            print(f"\n{'='*60}")
+            print(f"LEARN - Selected Node: {node.metadata} (UUID: {node.node_uuid})")
+            print(f"{'='*60}")
+
+            # 2. Gather context
+            existing_actions = self.dao.get_actions_for_node(node.node_uuid, order_by_last_selected=True)
+            existing_categories = self.dao.get_categories_for_node(node.node_uuid)
+
+            print(f"Existing actions: {len(existing_actions)}")
+            print(f"Existing categories: {existing_categories}")
+
+            # 3. Generate and send LLM prompt
+            prompt = self._generate_learning_prompt(node, summary, existing_actions, existing_categories)
+
             anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-            print(f"DEBUG learn(): Sending prompt to Claude...")
             response = anthropic_client.messages.create(
                 model="claude-sonnet-4-5-20250929",
-                max_tokens=1024,
-                messages=[
-                    {"role": "user", "content": ACTION_CREATION_PROMPT}
-                ]
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}]
             )
             llm_response = response.content[0].text
+
             print(f"\n{'='*60}")
-            print(f"Raw LLM Response from Claude:")
-            print(f"{llm_response}")
+            print(f"Raw LLM Response:")
+            print(f"{llm_response[:500]}...")
             print(f"{'='*60}\n")
-            
-            # Parse the JSON response from the LLM
-            try:
-                # Extract JSON from the response (handle potential markdown code blocks)
-                import re
-                json_match = re.search(r'\{[^{}]*"action_name"[^{}]*\}', llm_response, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group(0)
-                    action_data = json.loads(json_str)
-                    action_name = action_data.get("action_name")
-                    action_plan = action_data.get("action_plan")
-                    action_prompt = action_data.get("action_prompt")
-                    
-                    print(f"Parsed action_name: {action_name}")
-                    print(f"Parsed action_plan: {action_plan}")
-                    print(f"Parsed action_prompt: {action_prompt}")
-                else:
-                    print("Warning: Could not find valid JSON in LLM response")
-                    action_name = None
-                    action_plan = None
-                    action_prompt = None
-            except json.JSONDecodeError as json_error:
-                print(f"Error parsing JSON from LLM response: {json_error}")
-                action_name = None
-                action_plan = None
-                action_prompt = None
-            
-            # Insert the suggested action into the database if it was generated successfully
-            if action_name and node:
-                print(f"DEBUG learn(): action_name and node are valid, inserting into DB...")
-                try:
-                    action_uuid = self.dao.add_action(
-                        node_uuid=node.node_uuid,
-                        action_name=action_name,
-                        action_plan=action_plan,
-                        action_prompt=action_prompt
-                    )
-                    print(f"Successfully inserted action into database with UUID: {action_uuid}")
-                except Exception as action_error:
-                    print(f"Error inserting action into database: {action_error}")
-                    action_uuid = None
-            else:
-                print(f"DEBUG learn(): Skipping insertion - action_name={action_name}, node={node}")
+
+            # Parse response
+            parsed = self._parse_learning_response(llm_response)
+
+            # 4. Process action decision
+            action_decision = parsed["action_decision"]
+            action_type = action_decision["type"]
+            current_timestamp = datetime.now().isoformat()
+
+            selected_action_uuid = None
+
+            if action_type == "create":
+                print(f"Creating new action: {action_decision['action_name']}")
+                selected_action_uuid = self.dao.add_action(
+                    node_uuid=node.node_uuid,
+                    action_name=action_decision["action_name"],
+                    action_plan=action_decision["action_plan"],
+                    action_prompt=action_decision["action_prompt"],
+                    last_selected=current_timestamp
+                )
+                print(f"Created action UUID: {selected_action_uuid}")
+
+            elif action_type == "modify":
+                print(f"Modifying action: {action_decision['action_uuid']}")
+                self.dao.update_action(
+                    action_uuid=action_decision["action_uuid"],
+                    action_name=action_decision["action_name"],
+                    action_plan=action_decision["action_plan"],
+                    action_prompt=action_decision["action_prompt"]
+                )
+                self.dao.update_action_last_selected(action_decision["action_uuid"], current_timestamp)
+                selected_action_uuid = action_decision["action_uuid"]
+                print(f"Modified action UUID: {selected_action_uuid}")
+
+            elif action_type == "select":
+                print(f"Selecting existing action: {action_decision['action_uuid']}")
+                self.dao.update_action_last_selected(action_decision["action_uuid"], current_timestamp)
+                selected_action_uuid = action_decision["action_uuid"]
+                print(f"Selected action UUID: {selected_action_uuid}")
+
+            # 5. Process data insertions
+            data_insertions = parsed.get("data_insertions", [])
+            print(f"\nProcessing {len(data_insertions)} data insertions...")
+
+            for insertion in data_insertions:
+                category = insertion["category"]
+                condensed_data = insertion["condensed_data"]
+
+                # Generate a unique key for this data entry
+                timestamp_key = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                data_key = f"{category}_{timestamp_key}"
+
+                self.dao.add_data_with_category(
+                    node_uuid=node.node_uuid,
+                    category=category,
+                    key=data_key,
+                    data_type="text",
+                    info=condensed_data
+                )
+                print(f"  - Inserted into category '{category}': {condensed_data[:100]}...")
+
+                # Increment node counter for each insertion
+                self.dao.increment_node_counter(node.node_uuid)
+
+            # 6. Cleanup stale actions
+            deleted_count = self.dao.delete_stale_actions(node.node_uuid, days_threshold=3)
+            if deleted_count > 0:
+                print(f"\nDeleted {deleted_count} stale actions (>3 days old)")
+
+            # 7. Return recent actions
+            recent_actions = self.dao.get_recent_actions_for_node(node.node_uuid, limit=4)
+            print(f"\nReturning {len(recent_actions)} recent actions")
+
+            return recent_actions
+
         except Exception as e:
-            print(f"Error calling Claude API: {e}")
+            print(f"Error in learn(): {e}")
             import traceback
             traceback.print_exc()
-            action_name = None
-            action_plan = None
-            action_prompt = None
-            action_uuid = None
-        
-        if node is None:
-            print("Warning: Could not find suitable node, using root")
-            node = self.root
-        
-        # Generate a key if not provided
-        if key is None:
-            key = f"data_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        # Convert data to string if it's a dict
-        if isinstance(data, dict):
-            data_str = json.dumps(data)
-            if data_type == "text":
-                data_type = "json"
-        else:
-            data_str = str(data)
-        
-        # Insert data into the database using the DAO
-        try:
-            data_uuid = self.dao.add_data(
-                node_uuid=node.node_uuid,
-                key=key,
-                data_type=data_type,
-                info=data_str
-            )
-            print(f"Successfully inserted data into node '{node.metadata}' (UUID: {node.node_uuid})")
-            print(f"Data UUID: {data_uuid}")
-            return action_name, action_plan, action_prompt, action_uuid
-        except Exception as e:
-            print(f"Error inserting data: {e}")
-            return action_name, action_plan, action_prompt, action_uuid
-        
+            # Return empty list on error - don't crash
+            return []
 
-    
+    @staticmethod
+    def cleanup_node_data(dao, node_uuid, anthropic_api_key=None):
+        """
+        Static method to condense data within a node by category.
+        This method operates directly on the database and is designed to be called
+        by external cleanup threads.
+
+        Args:
+            dao: GraphDAO instance for database operations
+            node_uuid (str): UUID of the node to clean up
+            anthropic_api_key (str, optional): API key for Anthropic. Defaults to env var.
+
+        Returns:
+            bool: True if cleanup succeeded for all categories, False otherwise
+        """
+        # Get API key from environment if not provided
+        if anthropic_api_key is None:
+            anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not anthropic_api_key:
+                print(f"Error: ANTHROPIC_API_KEY not found in environment")
+                return False
+
+        try:
+            # Get all data grouped by category
+            data_by_category = dao.get_data_for_node_by_category(node_uuid)
+
+            if not data_by_category:
+                print(f"No data to clean for node {node_uuid}")
+                return False
+
+            print(f"\n{'='*60}")
+            print(f"CLEANUP - Node UUID: {node_uuid}")
+            print(f"Categories to process: {list(data_by_category.keys())}")
+            print(f"{'='*60}")
+
+            all_succeeded = True
+            anthropic_client = Anthropic(api_key=anthropic_api_key)
+
+            for category, data_entries in data_by_category.items():
+                # Skip categories with only 1 entry - nothing to condense
+                if len(data_entries) <= 1:
+                    print(f"Skipping category '{category}' - only {len(data_entries)} entry")
+                    continue
+
+                print(f"\nProcessing category '{category}' with {len(data_entries)} entries...")
+
+                # Collect all data info from entries
+                data_texts = []
+                for entry in data_entries:
+                    uuid, node_uuid_db, key, data_type, info, cat = entry
+                    data_texts.append(f"- {info}")
+
+                # Create condensation prompt
+                condensation_prompt = f"""You are a data condensation system. Your task is to condense multiple related data entries into a single comprehensive entry.
+
+CATEGORY: {category}
+
+EXISTING DATA ENTRIES:
+{chr(10).join(data_texts)}
+
+YOUR TASK:
+Condense these {len(data_texts)} entries into a SINGLE comprehensive entry that:
+1. Preserves ALL important information from all entries
+2. Removes duplicate or redundant information
+3. If newer information supersedes older information, keep only the newer info
+4. Maintains clarity and usefulness for future reference
+5. Organizes the information logically
+
+IMPORTANT:
+- Output ONLY the condensed text - no explanations, no JSON, no markdown
+- Be thorough but concise
+- Do not lose any important details
+- The output will replace all existing entries for this category
+
+CONDENSED ENTRY:"""
+
+                try:
+                    # Call Claude to condense the data
+                    response = anthropic_client.messages.create(
+                        model="claude-sonnet-4-5-20250929",
+                        max_tokens=2048,
+                        messages=[{"role": "user", "content": condensation_prompt}]
+                    )
+                    condensed_data = response.content[0].text.strip()
+
+                    print(f"Original entries: {len(data_entries)}")
+                    print(f"Condensed to: {len(condensed_data)} chars")
+                    print(f"Preview: {condensed_data[:200]}...")
+
+                    # Delete all existing entries for this category
+                    deleted_count = dao.delete_data_by_category(node_uuid, category)
+                    print(f"Deleted {deleted_count} original entries")
+
+                    # Insert the condensed entry
+                    timestamp_key = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    data_key = f"{category}_condensed_{timestamp_key}"
+                    dao.add_data_with_category(
+                        node_uuid=node_uuid,
+                        category=category,
+                        key=data_key,
+                        data_type="text",
+                        info=condensed_data
+                    )
+                    print(f"Inserted condensed entry for category '{category}'")
+
+                except Exception as e:
+                    print(f"Error condensing category '{category}': {e}")
+                    import traceback
+                    traceback.print_exc()
+                    all_succeeded = False
+                    # Don't delete original data if condensation fails
+                    continue
+
+            # Reset the node counter after successful cleanup
+            dao.reset_node_counter(node_uuid)
+            print(f"\nReset node counter for {node_uuid}")
+
+            return all_succeeded
+
+        except Exception as e:
+            print(f"Error in cleanup_node_data: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    @staticmethod
+    def cleanup_nodes_batch(dao, threshold, anthropic_api_key=None):
+        """
+        Static method to perform batch cleanup on nodes that need it.
+
+        Args:
+            dao: GraphDAO instance for database operations
+            threshold (int): Insertion count threshold for cleanup
+            anthropic_api_key (str, optional): API key for Anthropic. Defaults to env var.
+
+        Returns:
+            list: List of node UUIDs that were successfully cleaned
+        """
+        # Get API key from environment if not provided
+        if anthropic_api_key is None:
+            anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+
+        try:
+            # Get all nodes that need cleanup
+            nodes_needing_cleanup = dao.get_nodes_needing_cleanup(threshold)
+
+            if not nodes_needing_cleanup:
+                print(f"No nodes need cleanup (threshold: {threshold})")
+                return []
+
+            print(f"\n{'='*60}")
+            print(f"BATCH CLEANUP - Found {len(nodes_needing_cleanup)} nodes needing cleanup")
+            print(f"Threshold: {threshold} insertions")
+            print(f"{'='*60}")
+
+            successfully_cleaned = []
+
+            for node_uuid in nodes_needing_cleanup:
+                counter = dao.get_node_counter(node_uuid)
+                print(f"\nCleaning node {node_uuid} (insertion count: {counter})...")
+
+                success = Tree.cleanup_node_data(dao, node_uuid, anthropic_api_key)
+
+                if success:
+                    successfully_cleaned.append(node_uuid)
+                    print(f"✓ Successfully cleaned node {node_uuid}")
+                else:
+                    print(f"✗ Failed to clean node {node_uuid}")
+
+            print(f"\n{'='*60}")
+            print(f"Batch cleanup complete: {len(successfully_cleaned)}/{len(nodes_needing_cleanup)} nodes cleaned")
+            print(f"{'='*60}")
+
+            return successfully_cleaned
+
+        except Exception as e:
+            print(f"Error in cleanup_nodes_batch: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+
     # show as adjacency list
     def __repr__(self):
         def build_adj_list(node, adj_list=None):
@@ -575,3 +876,9 @@ class Tree:
 # tree = Tree("../context-engine/graph.db")
 # print("Graph structure:")
 # print(tree)
+# call the cleanup method in the main function 
+if __name__ == "__main__":
+    
+    dao = GraphDAO("graph.db")
+    
+    Tree.cleanup_nodes_batch(dao, 10)

@@ -65,22 +65,36 @@ def screen():
         import json
         data_str = json.dumps(body)
         
-        # Call learn function - it's a regular function, not async
+        # Call learn function - returns list of recent actions
         print(f"\n📍 DEBUG: Calling tree.learn()...")
-        action_name, action_plan, action_prompt, action_uuid = tree.learn(enhanced_description, data_str)
-        print(f"📍 DEBUG: tree.learn() returned:")
-        print(f"  - action_name: {action_name}")
-        print(f"  - action_plan: {action_plan}")
-        print(f"  - action_prompt: {action_prompt}")
-        print(f"  - action_uuid: {action_uuid}")
+        recent_actions = tree.learn(enhanced_description, data_str)
+        print(f"📍 DEBUG: tree.learn() returned {len(recent_actions)} recent actions")
 
-        # Return all action details to the frontend
+        # Format actions for frontend
+        actions_list = []
+        for action in recent_actions:
+            uuid, name, plan, prompt, node_uuid, last_selected = action
+            actions_list.append({
+                "action_uuid": str(uuid),
+                "action_name": name,
+                "action_plan": plan,
+                "action_prompt": prompt,
+                "last_selected": last_selected
+            })
+
+        # Get the most recent action (first in list) for legacy compatibility
+        primary_action = actions_list[0] if actions_list else None
+
+        # Return all recent actions to the frontend
         return jsonify({
-            "message": f"Context processed successfully. Suggested action: {action_name if action_name else 'None'}", 
-            "action_name": action_name,
-            "action_plan": action_plan,
-            "action_prompt": action_prompt,
-            "action_uuid": str(action_uuid) if action_uuid else None
+            "message": f"Context processed successfully. {len(actions_list)} recent actions available.",
+            "primary_action": primary_action,
+            "recent_actions": actions_list,
+            # Legacy fields for backward compatibility
+            "action_name": primary_action["action_name"] if primary_action else None,
+            "action_plan": primary_action["action_plan"] if primary_action else None,
+            "action_prompt": primary_action["action_prompt"] if primary_action else None,
+            "action_uuid": primary_action["action_uuid"] if primary_action else None
         }), 200
     except Exception as e:
         print(f"Error in /screen endpoint: {e}")

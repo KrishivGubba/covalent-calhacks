@@ -28,6 +28,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
             Action_plan TEXT,
             Action_prompt TEXT,
             Node_UUID TEXT NOT NULL,
+            last_selected TEXT,
             FOREIGN KEY (Node_UUID) REFERENCES node_table(UUID) ON DELETE CASCADE
         );
         """
@@ -41,7 +42,19 @@ def create_schema(conn: sqlite3.Connection) -> None:
             key TEXT,
             type TEXT,
             info TEXT,
+            category TEXT,
             FOREIGN KEY (Node_UUID) REFERENCES node_table(UUID) ON DELETE CASCADE
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS node_counters (
+            node_uuid TEXT PRIMARY KEY,
+            insertion_count INTEGER DEFAULT 0,
+            last_cleanup TEXT,
+            FOREIGN KEY (node_uuid) REFERENCES node_table(UUID) ON DELETE CASCADE
         );
         """
     )
@@ -55,6 +68,18 @@ def create_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_data_node_uuid ON data_table (Node_UUID);
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_action_last_selected ON action_table (last_selected);
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_data_category ON data_table (category);
         """
     )
 

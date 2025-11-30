@@ -246,59 +246,40 @@ impl ContextLoop {
                     Err(e) => println!("    ❌ Failed to serialize Flask response: {}", e),
                 }
                 
-                // Check if an action was generated (action_uuid present and action_name not None/"None")
-                if let Some(action_uuid) = &response.action_uuid {
-                    if !action_uuid.is_empty() {
-                        // Extract action text from message (format: "Context processed successfully. Suggested action: <action>")
-                        let action_text = if let Some(action_part) = response.message.split("Suggested action: ").nth(1) {
-                            action_part.trim()
-                        } else {
-                            &response.message
-                        };
-
-                        // Prefer explicit action_name if provided
-                        let effective_action_name = response
-                            .action_name
-                            .as_deref()
-                            .filter(|name| !name.is_empty() && *name != "None")
-                            .unwrap_or(action_text);
-
-                        // Only store if action is not "None" or empty
-                        if !effective_action_name.is_empty() && effective_action_name != "None" {
-                            if let Some(ref store) = self.actions_store {
-                                let title = if effective_action_name.len() > 100 {
-                                    format!("{}...", &effective_action_name[..100])
+                
+                // Process the recent_actions list from the server
+                if let Some(recent_actions) = &response.recent_actions {
+                    if !recent_actions.is_empty() {
+                        if let Some(ref store) = self.actions_store {
+                            // Clear existing actions and replace with the new list
+                            store.clear_actions();
+                            
+                            println!("  📋 Received {} recent actions from server", recent_actions.len());
+                            
+                            // Add all recent actions to the store
+                            for action_item in recent_actions {
+                                let title = if action_item.action_name.len() > 100 {
+                                    format!("{}...", &action_item.action_name[..100])
                                 } else {
-                                    effective_action_name.to_string()
+                                    action_item.action_name.clone()
                                 };
 
-                                // Extract action_plan and action_prompt from response
-                                let action_plan = response
-                                    .action_plan
-                                    .as_deref()
-                                    .unwrap_or("No plan available")
-                                    .to_string();
-                                
-                                let action_prompt = response
-                                    .action_prompt
-                                    .as_deref()
-                                    .unwrap_or("")
-                                    .to_string();
-
                                 let suggested_action = crate::SuggestedAction {
-                                    id: action_uuid.clone(),
-                                    uuid: action_uuid.clone(),
-                                    title,                    // action_name
-                                    description: action_plan, // action_plan
-                                    action_prompt,            // action_prompt
+                                    id: action_item.action_uuid.clone(),
+                                    uuid: action_item.action_uuid.clone(),
+                                    title,
+                                    description: action_item.action_plan.clone(),
+                                    action_prompt: action_item.action_prompt.clone(),
                                 };
 
                                 store.add_action(suggested_action);
-                                println!("  ✅ Action stored for frontend");
                             }
+                            
+                            println!("  ✅ Replaced actions list with {} recent actions", recent_actions.len());
                         }
                     }
                 }
+
                 
                 Ok(())
             }
