@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::runtime::Handle;
 
 use super::cache::{CachedContext, AppContext, ActivityType, current_timestamp};
 use crate::screen_context::chromium_bridge::ChromiumBridge;
@@ -34,22 +33,19 @@ impl ContextExtractor for BrowserAdapter {
         // Use existing ChromiumBridge to extract browser DOM context
         let bridge = self.chromium_bridge.clone();
         
-        // Run async operation in blocking context
-        let dom_data_result = std::thread::spawn(move || {
-            // Try to get existing tokio runtime, or create a temporary one
-            match Handle::try_current() {
-                Ok(handle) => {
-                    tokio::task::block_in_place(|| {
-                        handle.block_on(bridge.extract_browser_context())
-                    })
-                }
-                Err(_) => {
-                    // Create a temporary runtime if no runtime exists
-                    let rt = tokio::runtime::Runtime::new().unwrap();
-                    rt.block_on(bridge.extract_browser_context())
-                }
-            }
-        }).join();
+        // Try to extract DOM data using tokio runtime
+        // This approach is safer than spawning threads and handles async properly
+        let dom_data_result = tokio::runtime::Handle::try_current()
+            .and_then(|handle| {
+                Ok(tokio::task::block_in_place(|| {
+                    handle.block_on(bridge.extract_browser_context())
+                }))
+            })
+            .or_else(|_| {
+                // Fallback: create a temporary runtime if we're not in async context
+                tokio::runtime::Runtime::new()
+                    .map(|rt| rt.block_on(bridge.extract_browser_context()))
+            });
         
         match dom_data_result {
             Ok(Ok(dom_data)) => {
@@ -258,12 +254,146 @@ impl ContextExtractor for NativeTextAdapter {
     }
 }
 
+/// Code editor adapter - for Xcode, IntelliJ, PyCharm, etc.
+pub struct CodeAdapter;
+
+impl CodeAdapter {
+    pub fn new() -> Self {
+        Self
+    }
+    
+    /// Detect the programming language and file type from window title
+    fn detect_code_context(&self, app_ctx: &AppContext) -> (String, String) {
+        if let Some(ref window_title) = app_ctx.window_title {
+            let title_lower = window_title.to_lowercase();
+            
+            // Try to extract file extension from window title
+            if let Some(file_type) = self.extract_file_extension(&title_lower) {
+                let language = self.language_from_extension(&file_type);
+                return (language, file_type);
+            }
+            
+            // Try to infer from app-specific patterns
+            if app_ctx.bundle_id.contains("Xcode") {
+                // Xcode often shows the file name in the title
+                if title_lower.contains(".swift") {
+                    return ("swift".to_string(), "swift".to_string());
+                } else if title_lower.contains(".m") || title_lower.contains(".h") {
+                    return ("objective-c".to_string(), "m".to_string());
+                }
+            } else if app_ctx.bundle_id.contains("jetbrains") || app_ctx.bundle_id.contains("intellij") {
+                // JetBrains IDEs show file names
+                if title_lower.contains(".java") {
+                    return ("java".to_string(), "java".to_string());
+                } else if title_lower.contains(".kt") {
+                    return ("kotlin".to_string(), "kt".to_string());
+                } else if title_lower.contains(".py") {
+                    return ("python".to_string(), "py".to_string());
+                }
+            } else if app_ctx.bundle_id.contains("pycharm") {
+                return ("python".to_string(), "py".to_string());
+            }
+        }
+        
+        // Fallback based on bundle ID
+        let bundle_lower = app_ctx.bundle_id.to_lowercase();
+        if bundle_lower.contains("xcode") {
+            ("swift".to_string(), "swift".to_string())
+        } else if bundle_lower.contains("pycharm") {
+            ("python".to_string(), "py".to_string())
+        } else if bundle_lower.contains("intellij") {
+            ("java".to_string(), "java".to_string())
+        } else if bundle_lower.contains("android") {
+            ("kotlin".to_string(), "kt".to_string())
+        } else {
+            ("unknown".to_string(), String::new())
+        }
+    }
+    
+    /// Extract file extension from window title
+    fn extract_file_extension(&self, title: &str) -> Option<String> {
+        // Look for common patterns: "filename.ext" or "filename.ext - App Name"
+        let words: Vec<&str> = title.split_whitespace().collect();
+        
+        for word in words {
+            if let Some(dot_pos) = word.rfind('.') {
+                let ext = &word[dot_pos + 1..];
+                // Remove trailing punctuation
+                let ext_clean = ext.trim_end_matches(|c: char| !c.is_alphanumeric());
+                if ext_clean.len() >= 1 && ext_clean.len() <= 5 {
+                    return Some(ext_clean.to_string());
+                }
+            }
+        }
+        
+        None
+    }
+    
+    /// Map file extension to programming language
+    fn language_from_extension(&self, ext: &str) -> String {
+        match ext {
+            "rs" => "rust",
+            "py" => "python",
+            "js" => "javascript",
+            "ts" => "typescript",
+            "jsx" => "javascript",
+            "tsx" => "typescript",
+            "java" => "java",
+            "kt" | "kts" => "kotlin",
+            "swift" => "swift",
+            "m" | "mm" => "objective-c",
+            "h" | "hpp" => "c++",
+            "c" | "cpp" | "cc" | "cxx" => "c++",
+            "go" => "go",
+            "rb" => "ruby",
+            "php" => "php",
+            "cs" => "csharp",
+            "html" | "htm" => "html",
+            "css" | "scss" | "sass" => "css",
+            "sql" => "sql",
+            "sh" | "bash" | "zsh" => "shell",
+            "json" => "json",
+            "xml" => "xml",
+            "yaml" | "yml" => "yaml",
+            "md" | "markdown" => "markdown",
+            _ => "unknown",
+        }
+        .to_string()
+    }
+}
+
+impl ContextExtractor for CodeAdapter {
+    fn extract_context(&self, app_ctx: &AppContext) -> Result<CachedContext> {
+        let (language, file_type) = self.detect_code_context(app_ctx);
+        
+        Ok(CachedContext {
+            app_context: app_ctx.clone(),
+            activity_type: ActivityType::Code {
+                language,
+                file_type,
+            },
+            learned_patterns: vec![],
+            recent_actions: vec![],
+            timestamp: current_timestamp(),
+            ttl: 240, // 4 minutes (code context is relatively stable)
+        })
+    }
+    
+    fn should_trigger(&self, text: &str) -> bool {
+        // Trigger after typing 3+ characters in code editors
+        // Code completion should be more responsive
+        text.len() >= 3
+    }
+}
+
 /// Factory function to get the appropriate adapter based on app
 pub fn get_adapter(app_bundle_id: &str) -> Box<dyn ContextExtractor> {
     if is_chromium_based(app_bundle_id) {
         Box::new(BrowserAdapter::new())
     } else if is_terminal(app_bundle_id) {
         Box::new(TerminalAdapter::new())
+    } else if is_code_editor(app_bundle_id) {
+        Box::new(CodeAdapter::new())
     } else {
         Box::new(NativeTextAdapter::new())
     }
@@ -288,6 +418,22 @@ pub(crate) fn is_terminal(bundle_id: &str) -> bool {
     bundle_lower.contains("iterm") ||
     bundle_lower.contains("warp") ||
     bundle_lower.contains("alacritty")
+}
+
+pub(crate) fn is_code_editor(bundle_id: &str) -> bool {
+    let bundle_lower = bundle_id.to_lowercase();
+    bundle_lower.contains("xcode") ||
+    bundle_lower.contains("jetbrains") ||
+    bundle_lower.contains("intellij") ||
+    bundle_lower.contains("pycharm") ||
+    bundle_lower.contains("android studio") ||
+    bundle_lower.contains("webstorm") ||
+    bundle_lower.contains("phpstorm") ||
+    bundle_lower.contains("rubymine") ||
+    bundle_lower.contains("clion") ||
+    bundle_lower.contains("goland") ||
+    bundle_lower.contains("rider")
+    // Note: VSCode is already handled as chromium-based in is_chromium_based()
 }
 
 fn classify_page_from_bundle(bundle_id: &str) -> String {
@@ -326,12 +472,32 @@ mod tests {
     }
     
     #[test]
+    fn test_is_code_editor() {
+        assert!(is_code_editor("com.apple.dt.Xcode"));
+        assert!(is_code_editor("com.jetbrains.intellij"));
+        assert!(is_code_editor("com.jetbrains.pycharm"));
+        assert!(!is_code_editor("com.google.Chrome"));
+        assert!(!is_code_editor("com.apple.Terminal"));
+    }
+    
+    #[test]
     fn test_get_adapter() {
         let adapter = get_adapter("com.google.Chrome");
         let ctx = AppContext {
             name: "Chrome".to_string(),
             bundle_id: "com.google.Chrome".to_string(),
             window_title: None,
+        };
+        assert!(adapter.extract_context(&ctx).is_ok());
+    }
+    
+    #[test]
+    fn test_get_adapter_code_editor() {
+        let adapter = get_adapter("com.apple.dt.Xcode");
+        let ctx = AppContext {
+            name: "Xcode".to_string(),
+            bundle_id: "com.apple.dt.Xcode".to_string(),
+            window_title: Some("MyApp.swift".to_string()),
         };
         assert!(adapter.extract_context(&ctx).is_ok());
     }

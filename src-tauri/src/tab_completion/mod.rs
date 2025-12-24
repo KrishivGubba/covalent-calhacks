@@ -17,7 +17,7 @@ mod tab_completion_test;
 pub use model::ModelInvoker;
 pub use cache::{MultiTierCache, CachedContext, CacheResult, ActivityType, Pattern};
 pub use trigger::{CompletionTrigger, CompletionSuggestion};
-pub use adapters::{ContextExtractor, BrowserAdapter, TerminalAdapter, NativeTextAdapter};
+pub use adapters::{ContextExtractor, BrowserAdapter, TerminalAdapter, NativeTextAdapter, CodeAdapter};
 pub use injector::inject_completion_text;
 pub use prompt_builder::build_prompt;
 pub use api_client::{TabCompletionApiClient, PredictionRequest, PredictionResponse};
