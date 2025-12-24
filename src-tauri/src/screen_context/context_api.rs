@@ -12,9 +12,22 @@ pub struct ContextPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionItem {
+    pub action_uuid: String,
+    pub action_name: String,
+    pub action_plan: String,
+    pub action_prompt: String,
+    pub last_selected: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextResponse {
     pub message: String,
-    pub written: String,
+    pub action_name: Option<String>,
+    pub action_plan: Option<String>,
+    pub action_prompt: Option<String>,
+    pub action_uuid: Option<String>,
+    pub recent_actions: Option<Vec<ActionItem>>,
 }
 
 /// HTTP client for sending context data to Flask API
@@ -98,12 +111,12 @@ impl ContextApiClient {
     }
 
     /// Trigger an action by UUID via Flask API
-    pub async fn trigger_action(&self, action_uuid: String, action_description: String) -> Result<serde_json::Value> {
+    pub async fn trigger_action(&self, action_uuid: String, action_prompt: String) -> Result<serde_json::Value> {
         let url = format!("{}/trigger_action", self.base_url);
         
         let payload = serde_json::json!({
             "action_uuid": action_uuid,
-            "action": action_description
+            "action": action_prompt
         });
         
         let response = self.client

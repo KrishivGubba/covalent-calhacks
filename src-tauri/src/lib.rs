@@ -1,6 +1,5 @@
 // Module declarations
 pub mod screen_context;
-pub mod tab_completion;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::Manager;
 use std::process::{Child, Command};
@@ -12,8 +11,9 @@ use std::path::PathBuf;
 pub struct SuggestedAction {
     pub id: String,
     pub uuid: String,
-    pub title: String,
-    pub description: String,
+    pub title: String,           // action_name from Flask
+    pub description: String,     // action_plan from Flask
+    pub action_prompt: String,   // action_prompt from Flask
 }
 
 // Context collection state - controls whether context is being collected and sent
@@ -109,13 +109,13 @@ impl FlaskServer {
     fn start(&self, app_dir: PathBuf) -> Result<(), String> {
         let server_dir = app_dir.join("server");
         let start_script = server_dir.join("start_server.sh");
-
+        
         if !start_script.exists() {
             return Err(format!("Flask start script not found at {:?}", start_script));
         }
 
         println!("Starting Flask server from {:?}", start_script);
-
+        
         match Command::new("bash")
             .arg(&start_script)
             .current_dir(&server_dir)
@@ -125,7 +125,7 @@ impl FlaskServer {
                 println!("Flask server started with PID: {:?}", child.id());
                 let mut process_guard = self.process.lock().unwrap();
                 *process_guard = Some(child);
-
+                
                 // Give server a moment to start up
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 Ok(())
@@ -149,92 +149,6 @@ impl FlaskServer {
 }
 
 impl Drop for FlaskServer {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-// Ollama server state management
-struct OllamaServer {
-    process: Arc<Mutex<Option<Child>>>,
-    was_already_running: Arc<Mutex<bool>>,
-}
-
-impl OllamaServer {
-    fn new() -> Self {
-        Self {
-            process: Arc::new(Mutex::new(None)),
-            was_already_running: Arc::new(Mutex::new(false)),
-        }
-    }
-
-    fn is_running() -> bool {
-        // Check if Ollama is already running by trying to connect to the API
-        match std::process::Command::new("curl")
-            .args(["-s", "http://localhost:11434/api/tags"])
-            .output()
-        {
-            Ok(output) => output.status.success(),
-            Err(_) => false,
-        }
-    }
-
-    fn start(&self) -> Result<(), String> {
-        // Check if Ollama is already running
-        if Self::is_running() {
-            println!("✓ Ollama server is already running");
-            *self.was_already_running.lock().unwrap() = true;
-            return Ok(());
-        }
-
-        println!("Starting Ollama server...");
-
-        // Start Ollama serve
-        match Command::new("ollama")
-            .arg("serve")
-            .spawn()
-        {
-            Ok(child) => {
-                println!("Ollama server started with PID: {:?}", child.id());
-                let mut process_guard = self.process.lock().unwrap();
-                *process_guard = Some(child);
-
-                // Give Ollama a moment to start up
-                std::thread::sleep(std::time::Duration::from_secs(2));
-
-                // Verify it started successfully
-                if Self::is_running() {
-                    println!("✓ Ollama server started successfully");
-                    Ok(())
-                } else {
-                    Err("Ollama server started but is not responding".to_string())
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to start Ollama server: {}", e);
-                Err(format!("Failed to start Ollama server: {}. Make sure Ollama is installed (brew install ollama)", e))
-            }
-        }
-    }
-
-    fn stop(&self) {
-        // Only stop if we started it (don't kill user's existing Ollama process)
-        if *self.was_already_running.lock().unwrap() {
-            println!("ℹ️  Ollama was already running, leaving it running");
-            return;
-        }
-
-        if let Ok(mut process_guard) = self.process.lock() {
-            if let Some(mut child) = process_guard.take() {
-                println!("Stopping Ollama server (PID: {:?})", child.id());
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    }
-}
-
-impl Drop for OllamaServer {
     fn drop(&mut self) {
         self.stop();
     }
@@ -281,10 +195,10 @@ fn get_context_collection_status(state: tauri::State<ContextState>) -> bool {
 
 // Trigger action command
 #[tauri::command]
-async fn trigger_action(action_uuid: String, action_description: String, state: tauri::State<'_, ContextState>) -> Result<serde_json::Value, String> {
+async fn trigger_action(action_uuid: String, action_prompt: String, state: tauri::State<'_, ContextState>) -> Result<serde_json::Value, String> {
     use screen_context::ContextApiClient;
     
-    println!("🎬 Triggering action: {} ({})", action_description, action_uuid);
+    println!("🎬 Triggering action: {} ({})", action_prompt, action_uuid);
     
     // Disable context collection during action execution to prevent feedback loops
     state.disable();
@@ -292,9 +206,20 @@ async fn trigger_action(action_uuid: String, action_description: String, state: 
     let api_client = ContextApiClient::new();
     
     let result = api_client
-        .trigger_action(action_uuid, action_description)
+        .trigger_action(action_uuid, action_prompt)
         .await
         .map_err(|e| format!("Failed to trigger action: {}", e));
+    
+    // Print the result from Flask/Composio
+    match &result {
+        Ok(response) => {
+            println!("✅ Action execution response:");
+            println!("{}", serde_json::to_string_pretty(response).unwrap_or_else(|_| format!("{:?}", response)));
+        }
+        Err(e) => {
+            println!("❌ Action execution failed: {}", e);
+        }
+    }
     
     // Re-enable context collection after action completes
     // Note: You may want to add a delay here to avoid immediate re-collection
@@ -328,7 +253,6 @@ pub fn run() {
     } else {
         println!("✓ Loaded environment variables from .env file");
     }
-    
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -348,26 +272,14 @@ pub fn run() {
             };
             
             println!("App directory: {:?}", app_dir);
-
-            // Start Ollama server first (required by tab completion)
-            let ollama_server = OllamaServer::new();
-
-            match ollama_server.start() {
-                Ok(_) => println!("✓ Ollama server ready"),
-                Err(e) => eprintln!("✗ Failed to start Ollama server: {}", e),
-            }
-
-            // Store Ollama server in app state so it stays alive
-            app.manage(ollama_server);
-
-            // Start Flask server
+            
             let flask_server = FlaskServer::new();
-
-            match flask_server.start(app_dir.clone()) {
+            
+            match flask_server.start(app_dir) {
                 Ok(_) => println!("✓ Flask server started successfully"),
                 Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
             }
-
+            
             // Store flask server in app state so it stays alive
             app.manage(flask_server);
             
@@ -378,28 +290,6 @@ pub fn run() {
             // Create and manage actions store
             let actions_store = ActionsStore::new();
             app.manage(actions_store.clone());
-            
-            // Initialize tab completion system
-            println!("🚀 Initializing tab completion system...");
-            let graph_db_path = if cfg!(dev) {
-                app_dir.clone().join("../context-engine/graph.db")
-            } else {
-                app.path()
-                    .resource_dir()
-                    .unwrap_or_else(|_| std::env::current_dir().unwrap())
-                    .join("../context-engine/graph.db")
-            };
-            
-            match tab_completion::initialize(graph_db_path.to_string_lossy().to_string()) {
-                Ok(trigger) => {
-                    println!("✅ Tab completion initialized");
-                    trigger.start_listening();
-                    println!("⌨️  Cmd+Tab listener active");
-                }
-                Err(e) => {
-                    eprintln!("⚠️  Failed to initialize tab completion: {}", e);
-                }
-            }
             
             // Start context collection loop using Tauri's async runtime
             println!("🚀 Starting context loop spawn task...");
@@ -477,8 +367,7 @@ pub fn run() {
             get_context_collection_status,
             trigger_action,
             get_suggested_actions,
-            clear_suggested_actions,
-            tab_completion::injector::inject_completion_text
+            clear_suggested_actions
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -65,15 +65,36 @@ def screen():
         import json
         data_str = json.dumps(body)
         
-        # Call learn function - it's a regular function, not async
+        # Call learn function - returns list of recent actions
         print(f"\n📍 DEBUG: Calling tree.learn()...")
-        action, actionID = tree.learn(enhanced_description, data_str)
-        print(f"📍 DEBUG: tree.learn() returned - action={action}, actionID={actionID}")
+        recent_actions = tree.learn(enhanced_description, data_str)
+        print(f"📍 DEBUG: tree.learn() returned {len(recent_actions)} recent actions")
 
-        # Return in format expected by Rust code
+        # Format actions for frontend
+        actions_list = []
+        for action in recent_actions:
+            uuid, name, plan, prompt, node_uuid, last_selected = action
+            actions_list.append({
+                "action_uuid": str(uuid),
+                "action_name": name,
+                "action_plan": plan,
+                "action_prompt": prompt,
+                "last_selected": last_selected
+            })
+
+        # Get the most recent action (first in list) for legacy compatibility
+        primary_action = actions_list[0] if actions_list else None
+
+        # Return all recent actions to the frontend
         return jsonify({
-            "message": f"Context processed successfully. Suggested action: {action if action else 'None'}", 
-            "written": str(actionID) if actionID else "no-action-generated"
+            "message": f"Context processed successfully. {len(actions_list)} recent actions available.",
+            "primary_action": primary_action,
+            "recent_actions": actions_list,
+            # Legacy fields for backward compatibility
+            "action_name": primary_action["action_name"] if primary_action else None,
+            "action_plan": primary_action["action_plan"] if primary_action else None,
+            "action_prompt": primary_action["action_prompt"] if primary_action else None,
+            "action_uuid": primary_action["action_uuid"] if primary_action else None
         }), 200
     except Exception as e:
         print(f"Error in /screen endpoint: {e}")
@@ -96,11 +117,40 @@ def trigger_action():
         action_uuid = body.get("action_uuid", "")
         action = body.get("action", "")
         
-        success = tree.trigger_action(action_uuid)
-
-        # Use the description field as needed
-        return jsonify({"message": "Action triggered", "success": success}), 200
+        result = tree.trigger_action(action_uuid)
+        
+        # result is a tuple: (action_text, collected_data_string, graph_output)
+        if result and len(result) >= 3:
+            action_text, collected_data, graph_output = result
+            
+            # Convert graph_output to JSON-serializable format
+            serializable_output = {}
+            if graph_output:
+                for key, value in graph_output.items():
+                    # Handle Pydantic models and other non-serializable objects
+                    if hasattr(value, 'dict'):
+                        serializable_output[key] = value.dict()
+                    elif hasattr(value, '__dict__'):
+                        serializable_output[key] = value.__dict__
+                    elif isinstance(value, list):
+                        serializable_output[key] = [
+                            item.dict() if hasattr(item, 'dict') else 
+                            item.__dict__ if hasattr(item, '__dict__') else 
+                            str(item) for item in value
+                        ]
+                    else:
+                        serializable_output[key] = str(value)
+            
+            return jsonify({
+                "message": "Action triggered successfully",
+                "action_text": action_text,
+                "graph_output": serializable_output
+            }), 200
+        else:
+            return jsonify({"message": "Action triggered but no result returned"}), 200
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 

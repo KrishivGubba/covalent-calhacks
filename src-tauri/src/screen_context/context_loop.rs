@@ -246,34 +246,40 @@ impl ContextLoop {
                     Err(e) => println!("    ❌ Failed to serialize Flask response: {}", e),
                 }
                 
-                // Check if an action was generated (not "no-action-generated")
-                if response.written != "no-action-generated" && !response.written.is_empty() {
-                    // Extract action text from message (format: "Context processed successfully. Suggested action: <action>")
-                    let action_text = if let Some(action_part) = response.message.split("Suggested action: ").nth(1) {
-                        action_part.trim()
-                    } else {
-                        &response.message
-                    };
-                    
-                    // Only store if action is not "None"
-                    if action_text != "None" && !action_text.is_empty() {
+                
+                // Process the recent_actions list from the server
+                if let Some(recent_actions) = &response.recent_actions {
+                    if !recent_actions.is_empty() {
                         if let Some(ref store) = self.actions_store {
-                            let suggested_action = crate::SuggestedAction {
-                                id: response.written.clone(),
-                                uuid: response.written.clone(),
-                                title: if action_text.len() > 100 {
-                                    format!("{}...", &action_text[..100])
-                                } else {
-                                    action_text.to_string()
-                                },
-                                description: action_text.to_string(),
-                            };
+                            // Clear existing actions and replace with the new list
+                            store.clear_actions();
                             
-                            store.add_action(suggested_action);
-                            println!("  ✅ Action stored for frontend");
+                            println!("  📋 Received {} recent actions from server", recent_actions.len());
+                            
+                            // Add all recent actions to the store
+                            for action_item in recent_actions {
+                                let title = if action_item.action_name.len() > 100 {
+                                    format!("{}...", &action_item.action_name[..100])
+                                } else {
+                                    action_item.action_name.clone()
+                                };
+
+                                let suggested_action = crate::SuggestedAction {
+                                    id: action_item.action_uuid.clone(),
+                                    uuid: action_item.action_uuid.clone(),
+                                    title,
+                                    description: action_item.action_plan.clone(),
+                                    action_prompt: action_item.action_prompt.clone(),
+                                };
+
+                                store.add_action(suggested_action);
+                            }
+                            
+                            println!("  ✅ Replaced actions list with {} recent actions", recent_actions.len());
                         }
                     }
                 }
+
                 
                 Ok(())
             }

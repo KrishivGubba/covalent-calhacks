@@ -57,9 +57,7 @@ pub struct ClaudeClient {
 
 impl ClaudeClient {
     pub fn new() -> Result<Self> {
-        // Try to load .env file (ignore errors if it doesn't exist)
         let _ = dotenvy::dotenv();
-        
         let api_key = env::var("ANTHROPIC_API_KEY")
             .or_else(|_| env::var("CLAUDE_API_KEY"))
             .context("ANTHROPIC_API_KEY or CLAUDE_API_KEY environment variable not set")?;
