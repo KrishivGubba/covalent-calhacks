@@ -7,6 +7,7 @@ pub mod prompt_builder;
 pub mod api_client;
 pub mod graph_db;
 pub mod terminal_display;
+pub mod hotkey;
 
 #[cfg(target_os = "macos")]
 pub mod macos_keyboard;
@@ -22,6 +23,7 @@ pub use injector::inject_completion_text;
 pub use prompt_builder::build_prompt;
 pub use api_client::{TabCompletionApiClient, PredictionRequest, PredictionResponse};
 pub use graph_db::{GraphDatabase, NodeData, DataEntry};
+pub use hotkey::HotkeyHandler;
 
 use std::sync::Arc;
 use anyhow::Result;

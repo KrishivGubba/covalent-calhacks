@@ -1,7 +1,8 @@
 // Module declarations
 pub mod screen_context;
+pub mod tab_completion;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::Manager;
+use tauri::{Manager, Emitter};
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::path::PathBuf;
@@ -241,6 +242,35 @@ fn clear_suggested_actions(store: tauri::State<ActionsStore>) {
     store.clear_actions();
 }
 
+// Get cursor position for ghost text overlay
+#[tauri::command]
+fn get_cursor_position() -> Result<(i32, i32), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use core_graphics::display::CGDisplay;
+        use core_graphics::event::CGEvent;
+        use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+        
+        // Get mouse location (best approximation for cursor position)
+        if let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) {
+            if let Ok(event) = CGEvent::new(source) {
+                let location = event.location();
+                return Ok((location.x as i32, location.y as i32));
+            }
+        }
+        
+        // Fallback to display center
+        let main_display = CGDisplay::main();
+        let bounds = main_display.bounds();
+        Ok((bounds.size.width as i32 / 2, bounds.size.height as i32 / 2))
+    }
+    
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Cursor position only supported on macOS".to_string())
+    }
+}
+
 // #[cfg(target_os = "macos")]
 // use tauri_plugin_macos_permissions;
 
@@ -275,7 +305,7 @@ pub fn run() {
             
             let flask_server = FlaskServer::new();
             
-            match flask_server.start(app_dir) {
+            match flask_server.start(app_dir.clone()) {
                 Ok(_) => println!("✓ Flask server started successfully"),
                 Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
             }
@@ -320,6 +350,74 @@ pub fn run() {
                     }
                 }
             });
+            
+            // Initialize tab completion system
+            println!("⌨️  Initializing tab completion system...");
+            let graph_db_path = app_dir.clone().join("server/graph.db");
+            let graph_db_path_str = graph_db_path.to_string_lossy().to_string();
+            
+            match tab_completion::initialize(graph_db_path_str) {
+                Ok(trigger) => {
+                    println!("✓ Tab completion system initialized");
+                    
+                    // Create hotkey handler
+                    let hotkey_handler = std::sync::Arc::new(tab_completion::HotkeyHandler::new());
+                    
+                    // Set up callback to emit events to frontend and update hotkey handler
+                    let app_handle = app.handle().clone();
+                    let hotkey_handler_clone = hotkey_handler.clone();
+                    trigger.set_suggestion_callback(move |suggestion| {
+                        println!("📤 Emitting completion suggestion to frontend");
+                        
+                        // Update hotkey handler with new suggestion
+                        hotkey_handler_clone.set_suggestion(Some(suggestion.text.clone()));
+                        
+                        // Emit to all windows (Tauri v2 Emitter trait)
+                        if let Err(e) = app_handle.emit("show-completion", &suggestion) {
+                            eprintln!("⚠️  Failed to emit completion event: {}", e);
+                        }
+                    });
+                    
+                    // Set up hotkey callbacks
+                    let app_handle_accept = app.handle().clone();
+                    hotkey_handler.set_accept_callback(move |text| {
+                        println!("✅ Accepting completion via hotkey");
+                        // Inject the text
+                        if let Err(e) = tab_completion::inject_completion_text(text.clone()) {
+                            eprintln!("⚠️  Failed to inject text: {}", e);
+                        }
+                        // Emit hide event to all windows (Tauri v2 Emitter trait)
+                        let _ = app_handle_accept.emit("hide-completion", ());
+                    });
+                    
+                    let app_handle_dismiss = app.handle().clone();
+                    hotkey_handler.set_dismiss_callback(move || {
+                        println!("❌ Dismissing completion via hotkey");
+                        // Emit hide event to all windows (Tauri v2 Emitter trait)
+                        let _ = app_handle_dismiss.emit("hide-completion", ());
+                    });
+                    
+                    // Start hotkey listener
+                    if let Err(e) = hotkey_handler.clone().start_listening() {
+                        eprintln!("⚠️  Failed to start hotkey listener: {}", e);
+                        eprintln!("   Hotkeys will not be available");
+                    }
+                    
+                    // Start listening for keystrokes
+                    let trigger_clone = trigger.clone();
+                    trigger_clone.start_listening();
+                    
+                    // Store trigger and hotkey handler in app state to keep them alive
+                    app.manage(trigger);
+                    app.manage(hotkey_handler);
+                    
+                    println!("✓ Tab completion listener started");
+                }
+                Err(e) => {
+                    eprintln!("✗ Failed to initialize tab completion: {}", e);
+                    eprintln!("   Tab completion will not be available");
+                }
+            }
             
             // Create menu items
             let open_profile = MenuItem::with_id(app, "open_profile", "Open Profile", true, None::<&str>)?;
@@ -367,7 +465,9 @@ pub fn run() {
             get_context_collection_status,
             trigger_action,
             get_suggested_actions,
-            clear_suggested_actions
+            clear_suggested_actions,
+            tab_completion::injector::inject_completion_text,
+            get_cursor_position
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
