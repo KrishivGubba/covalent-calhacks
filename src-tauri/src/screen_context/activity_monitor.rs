@@ -2,10 +2,10 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, RwLock, mpsc};
 use tokio::time::interval;
 use crate::screen_context::macos_app_detector::MacOSAppDetector;
 use crate::screen_context::context_data::AppInfo;
@@ -15,6 +15,86 @@ use crate::screen_context::context_data::{
     ScrollActivity, ScrollDirection, TransitionType, TypingActivity, TypingPatterns,
 };
 use crate::screen_context::context_type::{ContextType, DevelopmentType, ResearchType};
+
+// CGEventTap implementation for macOS using rdev (already in dependencies)
+#[cfg(target_os = "macos")]
+mod cg_event_tap {
+    use super::*;
+    use rdev::{listen, Event, EventType};
+    use std::sync::mpsc as std_mpsc;
+    use std::thread;
+
+    pub struct EventTapHandle {
+        running: Arc<AtomicBool>,
+    }
+
+    impl Drop for EventTapHandle {
+        fn drop(&mut self) {
+            self.running.store(false, Ordering::SeqCst);
+        }
+    }
+
+    pub fn start_event_tap(event_sender: std_mpsc::Sender<ActivityEvent>) -> Result<EventTapHandle> {
+        let running = Arc::new(AtomicBool::new(true));
+        let running_clone = Arc::clone(&running);
+
+        thread::spawn(move || {
+            let sender = event_sender;
+            let running = running_clone;
+            
+            // Callback for rdev events
+            let callback = move |event: Event| {
+                if !running.load(Ordering::SeqCst) {
+                    return;
+                }
+                
+                let activity_event = match event.event_type {
+                    EventType::KeyPress(_) => {
+                        Some(ActivityEvent {
+                            timestamp: Instant::now(),
+                            event_type: ActivityEventType::KeyPressed,
+                        })
+                    }
+                    EventType::ButtonPress(_) => {
+                        // rdev doesn't give position on button press, use 0,0 as placeholder
+                        // The position will be updated by MouseMove events
+                        Some(ActivityEvent {
+                            timestamp: Instant::now(),
+                            event_type: ActivityEventType::MouseClicked { x: 0.0, y: 0.0 },
+                        })
+                    }
+                    EventType::MouseMove { x, y } => {
+                        Some(ActivityEvent {
+                            timestamp: Instant::now(),
+                            event_type: ActivityEventType::MouseMoved { x, y },
+                        })
+                    }
+                    EventType::Wheel { delta_x, delta_y } => {
+                        Some(ActivityEvent {
+                            timestamp: Instant::now(),
+                            event_type: ActivityEventType::ScrollEvent { 
+                                delta_x: delta_x as f64, 
+                                delta_y: delta_y as f64 
+                            },
+                        })
+                    }
+                    _ => None,
+                };
+
+                if let Some(evt) = activity_event {
+                    let _ = sender.send(evt);
+                }
+            };
+
+            // Start listening for events
+            if let Err(e) = listen(callback) {
+                eprintln!("Failed to start rdev event listener: {:?}. Make sure the app has Accessibility permissions.", e);
+            }
+        });
+
+        Ok(EventTapHandle { running })
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ActivityEvent {
@@ -59,6 +139,13 @@ pub struct ActivityMonitor {
     idle_threshold: Duration,
     activity_window: Duration,
     max_history_size: usize,
+    
+    // CGEventTap handle
+    #[cfg(target_os = "macos")]
+    event_tap_handle: Arc<Mutex<Option<cg_event_tap::EventTapHandle>>>,
+    
+    // Channel for receiving events from CGEventTap
+    event_receiver: Arc<Mutex<Option<std::sync::mpsc::Receiver<ActivityEvent>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +161,23 @@ struct ContextEntry {
 impl ActivityMonitor {
     pub fn new() -> Result<Self> {
         let (app_switch_tx, _) = broadcast::channel(100);
+        
+        // Create channel for CGEventTap events
+        let (event_sender, event_receiver) = std::sync::mpsc::channel();
+        
+        // Start CGEventTap on macOS
+        #[cfg(target_os = "macos")]
+        let event_tap_handle = match cg_event_tap::start_event_tap(event_sender) {
+            Ok(handle) => {
+                println!("✓ CGEventTap started successfully - activity monitoring enabled");
+                Some(handle)
+            }
+            Err(e) => {
+                eprintln!("⚠ Failed to start CGEventTap: {}. Activity detection will be limited.", e);
+                eprintln!("  Make sure the app has Accessibility permissions in System Settings.");
+                None
+            }
+        };
         
         Ok(Self {
             recent_events: Arc::new(Mutex::new(VecDeque::new())),
@@ -102,6 +206,10 @@ impl ActivityMonitor {
             idle_threshold: Duration::from_secs(30),
             activity_window: Duration::from_secs(60),
             max_history_size: 1000,
+            
+            #[cfg(target_os = "macos")]
+            event_tap_handle: Arc::new(Mutex::new(event_tap_handle)),
+            event_receiver: Arc::new(Mutex::new(Some(event_receiver))),
         })
     }
 
@@ -117,64 +225,77 @@ impl ActivityMonitor {
     
     /// Start monitoring system activity
     pub async fn start_monitoring(&self) -> Result<()> {
-        // Start event collection task
+        // Take ownership of the event receiver
+        let event_receiver = {
+            let mut receiver_guard = self.event_receiver.lock().await;
+            receiver_guard.take()
+        };
+        
+        // Start event collection task from CGEventTap
         let events_clone = Arc::clone(&self.recent_events);
         let last_activity_clone = Arc::clone(&self.last_activity);
         let keystroke_count_clone = Arc::clone(&self.keystroke_count);
         let mouse_click_count_clone = Arc::clone(&self.mouse_click_count);
         let scroll_count_clone = Arc::clone(&self.scroll_count);
         
-        tokio::spawn(async move {
-            let mut interval = interval(Duration::from_millis(100));
-            
-            loop {
-                interval.tick().await;
-                
-                // In a real implementation, you would tap into macOS events
-                // For now, we simulate activity detection
-                let simulated_activity = Self::detect_system_activity().await;
-                
-                if let Some(event) = simulated_activity {
-                    let now = Instant::now();
-                    
-                    // Update counters based on event type
-                    match &event.event_type {
-                        ActivityEventType::KeyPressed => {
-                            keystroke_count_clone.fetch_add(1, Ordering::Relaxed);
-                        }
-                        ActivityEventType::MouseClicked { .. } => {
-                            mouse_click_count_clone.fetch_add(1, Ordering::Relaxed);
-                        }
-                        ActivityEventType::ScrollEvent { .. } => {
-                            scroll_count_clone.fetch_add(1, Ordering::Relaxed);
-                        }
-                        _ => {}
-                    }
-                    
-                    // Update last activity time
-                    {
-                        let mut last_activity = last_activity_clone.lock().await;
-                        *last_activity = now;
-                    }
-                    
-                    // Add to event queue
-                    {
-                        let mut events = events_clone.lock().await;
-                        events.push_back(event);
-                        
-                        // Keep only recent events
-                        let cutoff = now - Duration::from_secs(300);
-                        while let Some(front) = events.front() {
-                            if front.timestamp < cutoff {
-                                events.pop_front();
-                            } else {
-                                break;
+        if let Some(receiver) = event_receiver {
+            tokio::spawn(async move {
+                loop {
+                    // Try to receive events from CGEventTap (non-blocking with timeout)
+                    match receiver.recv_timeout(Duration::from_millis(50)) {
+                        Ok(event) => {
+                            let now = Instant::now();
+                            
+                            // Update counters based on event type
+                            match &event.event_type {
+                                ActivityEventType::KeyPressed => {
+                                    keystroke_count_clone.fetch_add(1, Ordering::Relaxed);
+                                }
+                                ActivityEventType::MouseClicked { .. } => {
+                                    mouse_click_count_clone.fetch_add(1, Ordering::Relaxed);
+                                }
+                                ActivityEventType::ScrollEvent { .. } => {
+                                    scroll_count_clone.fetch_add(1, Ordering::Relaxed);
+                                }
+                                _ => {}
                             }
+                            
+                            // Update last activity time
+                            {
+                                let mut last_activity = last_activity_clone.lock().await;
+                                *last_activity = now;
+                            }
+                            
+                            // Add to event queue
+                            {
+                                let mut events = events_clone.lock().await;
+                                events.push_back(event);
+                                
+                                // Keep only recent events (5 minutes)
+                                let cutoff = now - Duration::from_secs(300);
+                                while let Some(front) = events.front() {
+                                    if front.timestamp < cutoff {
+                                        events.pop_front();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            // No events, continue
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            eprintln!("CGEventTap channel disconnected");
+                            break;
                         }
                     }
                 }
-            }
-        });
+            });
+        } else {
+            eprintln!("⚠ No event receiver available - activity monitoring disabled");
+        }
         
         let mut interval = interval(Duration::from_secs(1));
         let mut app_switch_rx = self.app_switch_tx.subscribe();
@@ -182,10 +303,8 @@ impl ActivityMonitor {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    // Regular activity check
-                    if self.is_user_active().await {
-                        *self.last_activity.lock().await = Instant::now();
-                    }
+                    // Regular activity check - no longer needed to update last_activity
+                    // as CGEventTap handles it
                 }
                 
                 result = app_switch_rx.recv() => {
@@ -197,6 +316,7 @@ impl ActivityMonitor {
             }
         }
         
+        #[allow(unreachable_code)]
         Ok(())
     }
     
@@ -395,8 +515,9 @@ impl ActivityMonitor {
         Ok(())
     }
     
+    #[allow(dead_code)]
     async fn detect_system_activity() -> Option<ActivityEvent> {
-        // This is now handled by the app switch detection
+        // This is now handled by CGEventTap
         None
     }
     
