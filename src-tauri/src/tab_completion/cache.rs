@@ -410,6 +410,128 @@ impl MultiTierCache {
     pub fn get_detailed_stats(&self) -> CacheStats {
         self.stats.read().unwrap().clone()
     }
+    
+    /// Print a visual representation of the current cache state
+    pub fn visualize(&self) {
+        let stats = self.stats.read().unwrap();
+        let exact_size = self.exact_cache.read().unwrap().len();
+        let context_size = self.context_cache.read().unwrap().len();
+        
+        // Calculate hit rates
+        let l0_total = stats.l0_hits + stats.l0_misses;
+        let l1_total = stats.l1_hits + stats.l1_misses;
+        let l2_total = stats.l2_hits + stats.l2_misses;
+        
+        let l0_rate = if l0_total > 0 { stats.l0_hits as f64 / l0_total as f64 } else { 0.0 };
+        let l1_rate = if l1_total > 0 { stats.l1_hits as f64 / l1_total as f64 } else { 0.0 };
+        let l2_rate = if l2_total > 0 { stats.l2_hits as f64 / l2_total as f64 } else { 0.0 };
+        
+        fn make_bar(value: usize, max: usize, width: usize) -> String {
+            let filled = if max > 0 { (value * width) / max } else { 0 };
+            let empty = width.saturating_sub(filled);
+            format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
+        }
+        
+        println!("\n╔══════════════════════════════════════════════════════════════╗");
+        println!("║            📦 TAB COMPLETION CACHE STATE                     ║");
+        println!("╠══════════════════════════════════════════════════════════════╣");
+        
+        // L0 - Exact Cache
+        println!("║                                                              ║");
+        println!("║  ┌─────────────────────────────────────────────────────────┐ ║");
+        println!("║  │ L0: EXACT PREDICTIONS                                   │ ║");
+        println!("║  │ ════════════════════                                    │ ║");
+        println!("║  │ Entries: {:>4} / 1000  {}                     │ ║", 
+            exact_size, 
+            make_bar(exact_size, 1000, 20)
+        );
+        println!("║  │ Hit Rate: {:>5.1}%      {}                     │ ║",
+            l0_rate * 100.0,
+            make_bar((l0_rate * 100.0) as usize, 100, 20)
+        );
+        println!("║  │ Hits: {:>5}  Misses: {:>5}                              │ ║",
+            stats.l0_hits, stats.l0_misses
+        );
+        println!("║  └─────────────────────────────────────────────────────────┘ ║");
+        
+        // L1 - Context Cache
+        println!("║                          ↓                                   ║");
+        println!("║  ┌─────────────────────────────────────────────────────────┐ ║");
+        println!("║  │ L1: CONTEXT CACHE                                       │ ║");
+        println!("║  │ ═══════════════════                                     │ ║");
+        println!("║  │ Entries: {:>4} / 100   {}                     │ ║",
+            context_size,
+            make_bar(context_size, 100, 20)
+        );
+        println!("║  │ Hit Rate: {:>5.1}%      {}                     │ ║",
+            l1_rate * 100.0,
+            make_bar((l1_rate * 100.0) as usize, 100, 20)
+        );
+        println!("║  │ Hits: {:>5}  Misses: {:>5}                              │ ║",
+            stats.l1_hits, stats.l1_misses
+        );
+        println!("║  └─────────────────────────────────────────────────────────┘ ║");
+        
+        // L2 - Graph DB
+        println!("║                          ↓                                   ║");
+        println!("║  ┌─────────────────────────────────────────────────────────┐ ║");
+        println!("║  │ L2: GRAPH DATABASE                                      │ ║");
+        println!("║  │ ═══════════════════                                     │ ║");
+        println!("║  │ Status: {}                                    │ ║",
+            if self.graph_db.is_some() { "🟢 Connected  " } else { "🔴 Disconnected" }
+        );
+        println!("║  │ Hit Rate: {:>5.1}%      {}                     │ ║",
+            l2_rate * 100.0,
+            make_bar((l2_rate * 100.0) as usize, 100, 20)
+        );
+        println!("║  │ Hits: {:>5}  Misses: {:>5}                              │ ║",
+            stats.l2_hits, stats.l2_misses
+        );
+        println!("║  └─────────────────────────────────────────────────────────┘ ║");
+        
+        // L3 - Full Extraction
+        println!("║                          ↓                                   ║");
+        println!("║  ┌─────────────────────────────────────────────────────────┐ ║");
+        println!("║  │ L3: FULL EXTRACTION (Fallback)                          │ ║");
+        println!("║  │ ═══════════════════════════════                         │ ║");
+        println!("║  │ Calls: {:>5}                                            │ ║",
+            stats.l3_calls
+        );
+        println!("║  └─────────────────────────────────────────────────────────┘ ║");
+        
+        // Overall stats
+        let total_requests = l0_total;
+        let total_hits = stats.l0_hits + stats.l1_hits + stats.l2_hits;
+        let overall_rate = if total_requests > 0 { 
+            total_hits as f64 / total_requests as f64 
+        } else { 0.0 };
+        
+        println!("║                                                              ║");
+        println!("╠══════════════════════════════════════════════════════════════╣");
+        println!("║  OVERALL: {:>5} requests, {:>5.1}% served from cache         ║",
+            total_requests, overall_rate * 100.0
+        );
+        println!("╚══════════════════════════════════════════════════════════════╝\n");
+    }
+    
+    /// Get cache state as JSON for external tools
+    pub fn get_state_json(&self) -> String {
+        let stats = self.stats.read().unwrap();
+        let exact_size = self.exact_cache.read().unwrap().len();
+        let context_size = self.context_cache.read().unwrap().len();
+        
+        format!(r#"{{
+  "l0": {{ "size": {}, "max": 1000, "hits": {}, "misses": {} }},
+  "l1": {{ "size": {}, "max": 100, "hits": {}, "misses": {} }},
+  "l2": {{ "connected": {}, "hits": {}, "misses": {} }},
+  "l3": {{ "calls": {} }}
+}}"#,
+            exact_size, stats.l0_hits, stats.l0_misses,
+            context_size, stats.l1_hits, stats.l1_misses,
+            self.graph_db.is_some(), stats.l2_hits, stats.l2_misses,
+            stats.l3_calls
+        )
+    }
 }
 
 impl CachedContext {

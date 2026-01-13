@@ -242,6 +242,15 @@ fn clear_suggested_actions(store: tauri::State<ActionsStore>) {
     store.clear_actions();
 }
 
+// Get cache state visualization (for observability)
+#[tauri::command]
+fn get_cache_state(trigger: tauri::State<std::sync::Arc<tab_completion::CompletionTrigger>>) -> String {
+    // Print to terminal
+    trigger.visualize_cache();
+    // Return JSON for frontend
+    trigger.get_cache_state_json()
+}
+
 // Get cursor position for ghost text overlay
 #[tauri::command]
 fn get_cursor_position() -> Result<(i32, i32), String> {
@@ -473,7 +482,8 @@ pub fn run() {
             get_suggested_actions,
             clear_suggested_actions,
             tab_completion::injector::inject_completion_text,
-            get_cursor_position
+            get_cursor_position,
+            get_cache_state
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

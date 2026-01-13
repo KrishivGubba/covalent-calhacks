@@ -721,6 +721,16 @@ impl CompletionTrigger {
     pub fn get_stats(&self) {
         self.cache.print_stats();
     }
+    
+    /// Visualize cache state to terminal
+    pub fn visualize_cache(&self) {
+        self.cache.visualize();
+    }
+    
+    /// Get cache state as JSON
+    pub fn get_cache_state_json(&self) -> String {
+        self.cache.get_state_json()
+    }
 }
 
 #[cfg(test)]
