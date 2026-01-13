@@ -360,41 +360,46 @@ pub fn run() {
                 Ok(trigger) => {
                     println!("✓ Tab completion system initialized");
                     
+                    // Create window manager for ghost text and popup
+                    let window_manager = std::sync::Arc::new(
+                        tab_completion::CompletionWindowManager::new(app.handle().clone())
+                    );
+                    
                     // Create hotkey handler
                     let hotkey_handler = std::sync::Arc::new(tab_completion::HotkeyHandler::new());
                     
-                    // Set up callback to emit events to frontend and update hotkey handler
-                    let app_handle = app.handle().clone();
+                    // Set up callback to show suggestions via window manager
+                    let window_manager_clone = window_manager.clone();
                     let hotkey_handler_clone = hotkey_handler.clone();
                     trigger.set_suggestion_callback(move |suggestion| {
-                        println!("📤 Emitting completion suggestion to frontend");
+                        println!("📤 Showing completion suggestion");
                         
                         // Update hotkey handler with new suggestion
                         hotkey_handler_clone.set_suggestion(Some(suggestion.text.clone()));
                         
-                        // Emit to all windows (Tauri v2 Emitter trait)
-                        if let Err(e) = app_handle.emit("show-completion", &suggestion) {
-                            eprintln!("⚠️  Failed to emit completion event: {}", e);
+                        // Show suggestion using window manager (ghost text or popup)
+                        if let Err(e) = window_manager_clone.show_suggestion(&suggestion) {
+                            eprintln!("⚠️  Failed to show completion: {}", e);
                         }
                     });
                     
                     // Set up hotkey callbacks
-                    let app_handle_accept = app.handle().clone();
+                    let window_manager_accept = window_manager.clone();
                     hotkey_handler.set_accept_callback(move |text| {
                         println!("✅ Accepting completion via hotkey");
                         // Inject the text
                         if let Err(e) = tab_completion::inject_completion_text(text.clone()) {
                             eprintln!("⚠️  Failed to inject text: {}", e);
                         }
-                        // Emit hide event to all windows (Tauri v2 Emitter trait)
-                        let _ = app_handle_accept.emit("hide-completion", ());
+                        // Hide all completion windows
+                        let _ = window_manager_accept.hide_all();
                     });
                     
-                    let app_handle_dismiss = app.handle().clone();
+                    let window_manager_dismiss = window_manager.clone();
                     hotkey_handler.set_dismiss_callback(move || {
                         println!("❌ Dismissing completion via hotkey");
-                        // Emit hide event to all windows (Tauri v2 Emitter trait)
-                        let _ = app_handle_dismiss.emit("hide-completion", ());
+                        // Hide all completion windows
+                        let _ = window_manager_dismiss.hide_all();
                     });
                     
                     // Start hotkey listener
@@ -407,9 +412,10 @@ pub fn run() {
                     let trigger_clone = trigger.clone();
                     trigger_clone.start_listening();
                     
-                    // Store trigger and hotkey handler in app state to keep them alive
+                    // Store trigger, hotkey handler, and window manager in app state
                     app.manage(trigger);
                     app.manage(hotkey_handler);
+                    app.manage(window_manager);
                     
                     println!("✓ Tab completion listener started");
                 }

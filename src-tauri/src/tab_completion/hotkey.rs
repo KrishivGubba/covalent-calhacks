@@ -82,29 +82,29 @@ impl HotkeyHandler {
                     let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
                     let flags = event.get_flags();
                     
-                    // Check for Tab key (keycode 0x30)
-                    if keycode == 0x30 {
-                        // Check if there's a suggestion to accept
-                        if let Some(suggestion) = handler.current_suggestion.lock().clone() {
-                            println!("✅ Tab pressed - accepting suggestion");
-                            
-                            // Call accept callback
-                            if let Some(ref callback) = *handler.accept_callback.lock() {
-                                callback(suggestion);
-                            }
-                            
-                            // Clear suggestion
-                            *handler.current_suggestion.lock() = None;
-                            
-                            // Suppress the Tab key event
-                            return None;
-                        }
-                    }
+                    // Check if we have an active suggestion
+                    let has_suggestion = handler.current_suggestion.lock().is_some();
                     
-                    // Check for Escape key (keycode 0x35)
-                    if keycode == 0x35 {
-                        // Check if there's a suggestion to dismiss
-                        if handler.current_suggestion.lock().is_some() {
+                    if has_suggestion {
+                        // Check for Tab key (keycode 0x30)
+                        if keycode == 0x30 {
+                            if let Some(suggestion) = handler.current_suggestion.lock().clone() {
+                                println!("✅ Tab pressed - accepting suggestion");
+                                
+                                // Call accept callback
+                                if let Some(ref callback) = *handler.accept_callback.lock() {
+                                    callback(suggestion);
+                                }
+                                
+                                // Clear suggestion
+                                *handler.current_suggestion.lock() = None;
+                                
+                                // Suppress the Tab key event
+                                return None;
+                            }
+                        }
+                        // Check for Escape key (keycode 0x35)
+                        else if keycode == 0x35 {
                             println!("❌ Escape pressed - dismissing suggestion");
                             
                             // Call dismiss callback
@@ -117,9 +117,28 @@ impl HotkeyHandler {
                             
                             // Let Escape pass through
                         }
+                        // Any other key: auto-dismiss the suggestion
+                        else {
+                            // Ignore modifier keys (Shift, Cmd, Ctrl, Option)
+                            let is_modifier = matches!(keycode, 
+                                0x37 | 0x38 | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x3F // Cmd, Shift, Option, Ctrl
+                            );
+                            
+                            if !is_modifier {
+                                println!("⏭️  Other key pressed - auto-dismissing suggestion");
+                                
+                                // Call dismiss callback
+                                if let Some(ref callback) = *handler.dismiss_callback.lock() {
+                                    callback();
+                                }
+                                
+                                // Clear suggestion
+                                *handler.current_suggestion.lock() = None;
+                            }
+                        }
                     }
                     
-                    // Pass through all other events
+                    // Pass through all events
                     Some(event.to_owned())
                 })
             },
@@ -147,4 +166,6 @@ impl Default for HotkeyHandler {
         Self::new()
     }
 }
+
+
 

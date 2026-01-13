@@ -13,6 +13,7 @@ pub struct CachedContext {
     pub activity_type: ActivityType,
     pub learned_patterns: Vec<Pattern>,
     pub recent_actions: Vec<String>,
+    pub screen_context: Option<String>, // OCR or visible text from screen
     pub timestamp: u64,
     pub ttl: u64,
 }
@@ -226,6 +227,7 @@ impl MultiTierCache {
                         activity_type,
                         learned_patterns,
                         recent_actions,
+                        screen_context: None,
                         timestamp: current_timestamp(),
                         ttl: 300,
                     });
@@ -256,6 +258,7 @@ impl MultiTierCache {
                                 activity_type,
                                 learned_patterns: vec![],
                                 recent_actions,
+                                screen_context: None,
                                 timestamp: current_timestamp(),
                                 ttl: 300,
                             });
@@ -279,6 +282,7 @@ impl MultiTierCache {
             activity_type,
             learned_patterns: vec![],
             recent_actions: vec![],
+            screen_context: None,
             timestamp: current_timestamp(),
             ttl: 300,
         })

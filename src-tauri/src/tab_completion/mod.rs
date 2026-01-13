@@ -8,6 +8,8 @@ pub mod api_client;
 pub mod graph_db;
 pub mod terminal_display;
 pub mod hotkey;
+pub mod cursor_position;
+pub mod window_manager;
 
 #[cfg(target_os = "macos")]
 pub mod macos_keyboard;
@@ -24,6 +26,8 @@ pub use prompt_builder::build_prompt;
 pub use api_client::{TabCompletionApiClient, PredictionRequest, PredictionResponse};
 pub use graph_db::{GraphDatabase, NodeData, DataEntry};
 pub use hotkey::HotkeyHandler;
+pub use cursor_position::{CursorPosition, get_cursor_position_with_fallback};
+pub use window_manager::CompletionWindowManager;
 
 use std::sync::Arc;
 use anyhow::Result;

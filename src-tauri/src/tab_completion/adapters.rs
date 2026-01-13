@@ -66,6 +66,7 @@ impl ContextExtractor for BrowserAdapter {
                     },
                     learned_patterns: vec![],
                     recent_actions,
+                    screen_context: None, // TODO: Add OCR/DOM text extraction
                     timestamp: current_timestamp(),
                     ttl: 120, // 2 minutes for browser (pages change fast)
                 })
@@ -82,6 +83,7 @@ impl ContextExtractor for BrowserAdapter {
                     },
                     learned_patterns: vec![],
                     recent_actions: vec![],
+                    screen_context: None,
                     timestamp: current_timestamp(),
                     ttl: 120,
                 })
@@ -201,6 +203,7 @@ impl ContextExtractor for TerminalAdapter {
             },
             learned_patterns: vec![],
             recent_actions: vec![],
+            screen_context: None,
             timestamp: current_timestamp(),
             ttl: 300, // 5 minutes (terminal context is stable)
         })
@@ -243,6 +246,7 @@ impl ContextExtractor for NativeTextAdapter {
             },
             learned_patterns: vec![],
             recent_actions: vec![],
+            screen_context: None,
             timestamp: current_timestamp(),
             ttl: 180, // 3 minutes
         })
@@ -374,6 +378,7 @@ impl ContextExtractor for CodeAdapter {
             },
             learned_patterns: vec![],
             recent_actions: vec![],
+            screen_context: None,
             timestamp: current_timestamp(),
             ttl: 240, // 4 minutes (code context is relatively stable)
         })

@@ -644,6 +644,7 @@ impl CompletionTrigger {
             activity_type: ActivityType::from_app(app),
             learned_patterns: vec![],
             recent_actions: vec![],
+            screen_context: None, // TODO: Add OCR/screen capture here
             timestamp: current_timestamp(),
             ttl: 180, // 3 minutes
         }

@@ -58,6 +58,21 @@ pub fn build_prompt(context: &CachedContext, text: &str) -> String {
         }
     }
     
+    // Add screen/document context if available (most important for quality)
+    if let Some(ref screen_text) = context.screen_context {
+        if !screen_text.is_empty() {
+            prompt.push_str("\n# Surrounding document context:\n");
+            // Limit to last 500 chars to avoid overwhelming the model
+            let context_snippet = if screen_text.len() > 500 {
+                &screen_text[screen_text.len() - 500..]
+            } else {
+                screen_text
+            };
+            prompt.push_str(context_snippet);
+            prompt.push_str("\n\n# Continue from here:\n");
+        }
+    }
+    
     // Add separator and the actual text to complete
     prompt.push_str("\n");
     prompt.push_str(text);
