@@ -5,7 +5,7 @@ Run this file to start the MCP server:
     python -m mcp.server
 """
 from fastmcp import FastMCP
-from tools import register_tools
+from .tools import register_tools
 
 # Create the MCP server
 mcp = FastMCP("Covalent MCP Server")
