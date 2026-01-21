@@ -8,14 +8,14 @@ use crate::screen_context::chromium_bridge::DOMChangeAnalysis;
 use crate::screen_context::context_data::RawContext;
 use crate::screen_context::context_type::{ContextType, IntentAnalysis};
 use crate::screen_context::region_analyzer::RegionChangeAnalysis;
-use crate::screen_context::claude_client::ClaudeClient;
 use crate::screen_context::screen_capture::ScreenCapture;
+use crate::ai_provider::{LLMProvider, ClaudeProvider};
 
 /// LLM-powered context analyzer that generates structured output
 pub struct LLMAnalyzer {
     session_start: SystemTime,
     last_analysis: Option<ContextAnalysisOutput>,
-    claude_client: Option<Arc<ClaudeClient>>,
+    llm_provider: Option<Arc<dyn LLMProvider>>,
     screen_capture: Arc<ScreenCapture>,
 }
 
@@ -49,20 +49,22 @@ pub struct AnalysisMetadata {
 
 impl LLMAnalyzer {
     pub fn new() -> Self {
-        let claude_client = ClaudeClient::new().ok().map(Arc::new);
+        // Try to create fallback provider (will use Claude by default if available)
+        let llm_provider = crate::ai_provider::create_default_provider().ok().map(Arc::from);
+        
         let screen_capture = Arc::new(ScreenCapture::new().unwrap_or_else(|_| {
             // Create a default ScreenCapture if it fails
             panic!("Failed to create ScreenCapture");
         }));
         
-        if claude_client.is_none() {
-            eprintln!("⚠️  Warning: Claude API key not found. Set ANTHROPIC_API_KEY or CLAUDE_API_KEY environment variable.");
+        if llm_provider.is_none() {
+            eprintln!("⚠️  Warning: No AI providers available. Set API keys in environment.");
         }
         
         Self {
             session_start: SystemTime::now(),
             last_analysis: None,
-            claude_client,
+            llm_provider,
             screen_capture,
         }
     }
@@ -167,7 +169,7 @@ impl LLMAnalyzer {
         }
     }
     
-    /// Generate description using Claude API with screenshot fallback
+    /// Generate description using LLM provider with screenshot fallback
     async fn generate_description_with_claude(
         &self,
         raw_context: &RawContext,
@@ -175,8 +177,8 @@ impl LLMAnalyzer {
         dom_changes: Option<&DOMChangeAnalysis>,
         region_changes: Option<&RegionChangeAnalysis>,
     ) -> Result<String> {
-        let claude_client = self.claude_client.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Claude client not available"))?;
+        let llm_provider = self.llm_provider.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("LLM provider not available"))?;
         
         // Build context metadata for Claude
         let metadata = self.build_metadata_for_claude(raw_context, context_type, dom_changes, region_changes);
@@ -192,14 +194,14 @@ impl LLMAnalyzer {
         );
         
         // Always use screenshot for MVP
-        eprintln!("📸 Using screenshot + Claude for richer context...");
-        return self.generate_with_screenshot(claude_client, &metadata).await;
+        eprintln!("📸 Using screenshot + LLM for richer context...");
+        return self.generate_with_screenshot(llm_provider, &metadata).await;
     }
     
-    /// Generate description with screenshot using Claude vision
+    /// Generate description with screenshot using LLM vision
     async fn generate_with_screenshot(
         &self,
-        claude_client: &Arc<ClaudeClient>,
+        llm_provider: &Arc<dyn LLMProvider>,
         metadata: &str,
     ) -> Result<String> {
         // Capture screenshot
@@ -212,7 +214,7 @@ impl LLMAnalyzer {
             .map_err(|e| anyhow::anyhow!("Failed to encode screenshot: {}", e))?;
         
         // Encode to base64
-        let screenshot_base64 = ClaudeClient::encode_image_to_base64(&png_bytes);
+        let screenshot_base64 = ClaudeProvider::encode_image_to_base64(&png_bytes);
         
         let system_prompt = "You are an AI assistant that analyzes user activity from screenshots and metadata. \
             Generate a concise, natural description (max 200 words) of what the user is currently doing. \
@@ -224,7 +226,7 @@ impl LLMAnalyzer {
             metadata
         );
         
-        claude_client.generate_description_with_image(
+        llm_provider.generate_with_image(
             system_prompt,
             &user_prompt,
             &screenshot_base64

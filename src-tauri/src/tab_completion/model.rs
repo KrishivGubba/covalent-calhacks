@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::time::Instant;
 use serde::{Deserialize, Serialize};
+use crate::ai_provider::ProviderConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelResponse {
@@ -26,12 +27,13 @@ enum ModelType {
 
 impl ModelInvoker {
     pub fn new() -> Result<Self> {
-        // Try to detect available model backend
-        // For now, use Ollama as fallback
+        // Load configuration from ai_provider
+        let config = ProviderConfig::from_env();
+        
         Ok(Self {
             model_type: ModelType::Ollama {
-                base_url: "http://localhost:11434".to_string(),
-                model: "qwen2.5-coder:3b".to_string(),
+                base_url: config.ollama_base_url,
+                model: config.ollama_model,
             },
         })
     }

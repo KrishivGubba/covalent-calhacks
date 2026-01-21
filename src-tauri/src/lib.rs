@@ -1,4 +1,5 @@
 // Module declarations
+pub mod ai_provider;
 pub mod screen_context;
 pub mod tab_completion;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
