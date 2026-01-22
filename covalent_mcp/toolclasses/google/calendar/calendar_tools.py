@@ -7,7 +7,7 @@ import json
 from typing import Optional, List
 from covalent_mcp.toolclasses.base import MCPToolModule
 from covalent_mcp.toolclasses.google.calendar.calendar_client import CalendarService
-from covalent_mcp.toolclasses.google.calendar.gauth import GoogleCalendarAuth
+from covalent_mcp.toolclasses.google.gauth import GoogleAuth, DEFAULT_SCOPES
 from fastmcp import FastMCP
 
 
@@ -35,7 +35,8 @@ class CalendarToolModule(MCPToolModule):
     def _ensure_client(self) -> CalendarService:
         """Ensure Calendar client is initialized."""
         if self.client is None:
-            self.auth = GoogleCalendarAuth()
+            # Use DEFAULT_SCOPES to include both Calendar and Gmail scopes
+            self.auth = GoogleAuth(scopes=DEFAULT_SCOPES)
             self.client = CalendarService(auth=self.auth)
         return self.client
     

@@ -11,12 +11,12 @@ covalent_mcp_dir = Path(__file__).parent.parent.parent.parent  # Gets to covalen
 project_root = covalent_mcp_dir.parent  # Gets to project root
 sys.path.insert(0, str(project_root))
 
-from covalent_mcp.toolclasses.google.calendar.gauth import GoogleCalendarAuth
+from covalent_mcp.toolclasses.google.gauth import GoogleAuth, DEFAULT_SCOPES
 from covalent_mcp.toolclasses.google.calendar.calendar_client import CalendarService
 
 
 # Initialize client (shared across all tests)
-auth = GoogleCalendarAuth()
+auth = GoogleAuth(scopes=DEFAULT_SCOPES)
 client = CalendarService(auth=auth)
 
 

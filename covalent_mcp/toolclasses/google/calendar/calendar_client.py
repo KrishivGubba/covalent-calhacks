@@ -15,7 +15,7 @@ try:
 except ImportError:
     raise ImportError("Google API client not installed. Install with: pip install google-api-python-client")
 
-from covalent_mcp.toolclasses.google.calendar.gauth import get_stored_credentials, GoogleCalendarAuth
+from covalent_mcp.toolclasses.google.gauth import get_stored_credentials, GoogleAuth, DEFAULT_SCOPES
 
 
 class CalendarService:
@@ -25,13 +25,13 @@ class CalendarService:
     This wraps the user's CalendarService code and provides a clean interface.
     """
     
-    def __init__(self, user_id: str = "default", auth: Optional[GoogleCalendarAuth] = None):
+    def __init__(self, user_id: str = "default", auth: Optional[GoogleAuth] = None):
         """
         Initialize Calendar service.
         
         Args:
             user_id: User identifier
-            auth: GoogleCalendarAuth instance (will get credentials automatically if not provided)
+            auth: GoogleAuth instance (will get credentials automatically if not provided)
         """
         if auth:
             self.credentials = auth.get_credentials(user_id)
@@ -40,7 +40,8 @@ class CalendarService:
             self.credentials = get_stored_credentials(user_id)
             if not self.credentials:
                 # No stored credentials, need to authenticate
-                auth = GoogleCalendarAuth()
+                # Use DEFAULT_SCOPES to include both Calendar and Gmail scopes
+                auth = GoogleAuth(scopes=DEFAULT_SCOPES)
                 self.credentials = auth.get_credentials(user_id)
         
         self.service = build('calendar', 'v3', credentials=self.credentials)
