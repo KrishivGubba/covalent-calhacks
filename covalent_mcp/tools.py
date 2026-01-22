@@ -17,10 +17,10 @@ from fastmcp import FastMCP
 
 
 # Add new tool modules here - each must be an instance of MCPToolModule
+from covalent_mcp.toolclasses import github_module
+
 TOOL_MODULES: list[MCPToolModule] = [
-    # Example (once you create it):
-    # from covalent_mcp.toolclasses.weather import module as weather_module
-    # weather_module,
+    github_module,
 ]
 
 
