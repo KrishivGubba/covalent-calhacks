@@ -12,15 +12,15 @@ To add a new tool module:
   6. Import here: from mcp.toolclasses import my_tool_module
   7. Add to TOOL_MODULES list below
 """
-from covalent_mcp.toolclasses import weather_module, email_module
 from covalent_mcp.toolclasses.base import MCPToolModule
 from fastmcp import FastMCP
 
 
 # Add new tool modules here - each must be an instance of MCPToolModule
 TOOL_MODULES: list[MCPToolModule] = [
-    weather_module,
-    email_module,
+    # Example (once you create it):
+    # from covalent_mcp.toolclasses.weather import module as weather_module
+    # weather_module,
 ]
 
 

@@ -1,14 +1,10 @@
 """
-Tool Modules - All MCP tool modules.
+Tool Modules package.
 
-Each module must:
-  1. Inherit from MCPToolModule
-  2. Implement register(mcp) method
-  3. Export a 'module' instance
+Note: Tool modules are optional and may be added/removed during development.
+Keep this file import-safe: do not import non-existent tool modules here.
 
-Import modules here and add to __all__.
+Add your tool modules (e.g. `weather.py`) and then import them here when they exist.
 """
-from covalent_mcp.toolclasses.weather import module as weather_module
-from covalent_mcp.toolclasses.email_tool import module as email_module
 
-__all__ = ["weather_module", "email_module"]
+__all__ = []

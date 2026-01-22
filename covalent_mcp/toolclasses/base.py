@@ -5,7 +5,11 @@ All tool modules MUST inherit from this and implement the register() method.
 This enforces the contract that every tool module must define how to register its tools.
 """
 from abc import ABC, abstractmethod
-from fastmcp import FastMCP
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Only needed for type-checking; avoid import-time dependency.
+    from fastmcp import FastMCP
 
 
 class MCPToolModule(ABC):
@@ -24,7 +28,7 @@ class MCPToolModule(ABC):
     """
     
     @abstractmethod
-    def register(self, mcp: FastMCP) -> None:
+    def register(self, mcp: "FastMCP") -> None:
         """
         Register this module's tools with the MCP server.
         
