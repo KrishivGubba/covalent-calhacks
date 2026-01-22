@@ -7,5 +7,6 @@ Keep this file import-safe: do not import non-existent tool modules here.
 Add your tool modules (e.g. `weather.py`) and then import them here when they exist.
 """
 from covalent_mcp.toolclasses.github import github_module
+from covalent_mcp.toolclasses.google.calendar import calendar_module
 
-__all__ = ["github_module"]
+__all__ = ["github_module", "calendar_module"]

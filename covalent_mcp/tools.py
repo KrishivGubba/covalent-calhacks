@@ -17,10 +17,11 @@ from fastmcp import FastMCP
 
 
 # Add new tool modules here - each must be an instance of MCPToolModule
-from covalent_mcp.toolclasses import github_module
+from covalent_mcp.toolclasses import github_module, calendar_module
 
 TOOL_MODULES: list[MCPToolModule] = [
     github_module,
+    calendar_module,
 ]
 
 
