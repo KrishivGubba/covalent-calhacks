@@ -67,7 +67,9 @@ class GitHubClient:
         owner: Optional[str] = None,
         private: bool = False,
         description: Optional[str] = None,
-        auto_init: bool = False
+        auto_init: bool = False,
+        gitignore_template: Optional[str] = None,
+        license_template: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create a new repository.
@@ -78,6 +80,8 @@ class GitHubClient:
             description: Repository description
             private: Whether repo should be private
             auto_init: Initialize with README
+            gitignore_template: .gitignore template name (e.g., "Node", "Python")
+            license_template: License template name (e.g., "mit", "apache-2.0")
         
         Returns:
             Repository data dict
@@ -89,12 +93,49 @@ class GitHubClient:
         }
         if description:
             data["description"] = description
+        if gitignore_template:
+            data["gitignore_template"] = gitignore_template
+        if license_template:
+            data["license_template"] = license_template
         
         if owner:
             endpoint = f"/orgs/{owner}/repos"
         else:
             endpoint = "/user/repos"
         
+        return self._request("POST", endpoint, json=data)
+    
+    def create_repo_from_template(
+        self,
+        template_owner: str,
+        template_repo: str,
+        name: str,
+        owner: Optional[str] = None,
+        private: bool = False,
+        description: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a repository from a template.
+        
+        Args:
+            template_owner: Owner of the template repository
+            template_repo: Name of the template repository
+            name: Name for the new repository
+            owner: Organization/user to create repo under (default: authenticated user)
+            private: Whether repo should be private
+            description: Repository description
+        
+        Returns:
+            Repository data dict
+        """
+        data = {
+            "name": name,
+            "private": private
+        }
+        if description:
+            data["description"] = description
+        
+        endpoint = f"/repos/{template_owner}/{template_repo}/generate"
         return self._request("POST", endpoint, json=data)
     
     def get_repo(self, owner: str, repo: str) -> Dict[str, Any]:
@@ -205,3 +246,55 @@ class GitHubClient:
             data["body"] = body
         
         return self._request("POST", f"/repos/{owner}/{repo}/pulls", json=data)
+    
+    # Repository update operations
+    
+    def update_repo_description(self, owner: str, repo: str, description: str) -> Dict[str, Any]:
+        """
+        Update repository description.
+        
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            description: New description
+        
+        Returns:
+            Updated repository data dict
+        """
+        data = {"description": description}
+        return self._request("PATCH", f"/repos/{owner}/{repo}", json=data)
+    
+    def set_repo_topics(self, owner: str, repo: str, topics: List[str]) -> Dict[str, Any]:
+        """
+        Set repository topics.
+        
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            topics: List of topic names
+        
+        Returns:
+            Response dict with topics
+        """
+        data = {"names": topics}
+        return self._request("PUT", f"/repos/{owner}/{repo}/topics", json=data)
+    
+    def rename_default_branch(self, owner: str, repo: str, new_name: str) -> Dict[str, Any]:
+        """
+        Rename the default branch of a repository.
+        
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            new_name: New name for the default branch
+        
+        Returns:
+            Response dict
+        """
+        # First get current default branch
+        repo_data = self.get_repo(owner, repo)
+        current_branch = repo_data["default_branch"]
+        
+        # Rename the branch
+        data = {"new_name": new_name}
+        return self._request("POST", f"/repos/{owner}/{repo}/branches/{current_branch}/rename", json=data)

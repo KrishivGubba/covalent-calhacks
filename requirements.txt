@@ -20,3 +20,4 @@ google-generativeai
 playwright
 langchain-anthropic
 Pillow
+requests

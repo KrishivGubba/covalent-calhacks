@@ -3,6 +3,7 @@ GitHub MCP Tools - Repository, Issue, and PR operations.
 
 Exposes GitHub operations as MCP tools for LLM agents.
 """
+import json
 from typing import Optional, List
 from covalent_mcp.toolclasses.base import MCPToolModule
 from covalent_mcp.toolclasses.github.github_client import GitHubClient
@@ -41,7 +42,10 @@ class GitHubToolModule(MCPToolModule):
             name: str,
             owner: Optional[str] = None,
             private: bool = False,
-            description: Optional[str] = None
+            description: Optional[str] = None,
+            auto_init: bool = False,
+            gitignore_template: Optional[str] = None,
+            license_template: Optional[str] = None
         ) -> dict:
             """
             Create a new GitHub repository.
@@ -51,11 +55,56 @@ class GitHubToolModule(MCPToolModule):
                 owner: Organization/user to create repo under (default: authenticated user)
                 private: Whether repository should be private
                 description: Repository description
+                auto_init: Initialize with README
+                gitignore_template: .gitignore template name (e.g., "Node", "Python")
+                license_template: License template name (e.g., "mit", "apache-2.0")
             
             Returns:
                 Repository information including URL and name
             """
             repo = client.create_repo(
+                name=name,
+                owner=owner,
+                private=private,
+                description=description,
+                auto_init=auto_init,
+                gitignore_template=gitignore_template,
+                license_template=license_template
+            )
+            return {
+                "success": True,
+                "name": repo["name"],
+                "full_name": repo["full_name"],
+                "url": repo["html_url"],
+                "private": repo["private"]
+            }
+        
+        @mcp.tool()
+        def create_repo_from_template(
+            template_owner: str,
+            template_repo: str,
+            name: str,
+            owner: Optional[str] = None,
+            private: bool = False,
+            description: Optional[str] = None
+        ) -> dict:
+            """
+            Create a new GitHub repository from a template repository.
+            
+            Args:
+                template_owner: Owner of the template repository
+                template_repo: Name of the template repository
+                name: Name for the new repository
+                owner: Organization/user to create repo under (default: authenticated user)
+                private: Whether repository should be private
+                description: Repository description
+            
+            Returns:
+                Repository information including URL and name
+            """
+            repo = client.create_repo_from_template(
+                template_owner=template_owner,
+                template_repo=template_repo,
                 name=name,
                 owner=owner,
                 private=private,
@@ -69,56 +118,6 @@ class GitHubToolModule(MCPToolModule):
                 "private": repo["private"]
             }
         
-        @mcp.tool()
-        def get_repo(owner: str, repo: str) -> dict:
-            """
-            Get information about a GitHub repository.
-            
-            Args:
-                owner: Repository owner (user or organization)
-                repo: Repository name
-            
-            Returns:
-                Repository information including description, stars, language, etc.
-            """
-            repo_data = client.get_repo(owner, repo)
-            return {
-                "name": repo_data["name"],
-                "full_name": repo_data["full_name"],
-                "url": repo_data["html_url"],
-                "description": repo_data.get("description"),
-                "private": repo_data["private"],
-                "stars": repo_data["stargazers_count"],
-                "language": repo_data.get("language"),
-                "default_branch": repo_data["default_branch"]
-            }
-        
-        @mcp.tool()
-        def list_repos(owner: Optional[str] = None, type: str = "all") -> dict:
-            """
-            List GitHub repositories.
-            
-            Args:
-                owner: User/org to list repos for (default: authenticated user)
-                type: Type of repos (all, owner, member, public, private)
-            
-            Returns:
-                List of repositories with names and URLs
-            """
-            repos = client.list_repos(owner=owner, type=type)
-            return {
-                "count": len(repos),
-                "repos": [
-                    {
-                        "name": r["name"],
-                        "full_name": r["full_name"],
-                        "url": r["html_url"],
-                        "private": r["private"],
-                        "description": r.get("description")
-                    }
-                    for r in repos
-                ]
-            }
         
         @mcp.tool()
         def create_issue(
@@ -198,6 +197,135 @@ class GitHubToolModule(MCPToolModule):
                 "state": pr["state"],
                 "draft": pr["draft"]
             }
+        
+        @mcp.tool()
+        def update_repo_description(owner: str, repo: str, description: str) -> dict:
+            """
+            Update the description of an existing GitHub repository.
+            
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                description: New description
+            
+            Returns:
+                Updated repository information
+            """
+            repo_data = client.update_repo_description(owner, repo, description)
+            return {
+                "success": True,
+                "name": repo_data["name"],
+                "full_name": repo_data["full_name"],
+                "url": repo_data["html_url"],
+                "description": repo_data.get("description")
+            }
+        
+        @mcp.tool()
+        def set_repo_topics(owner: str, repo: str, topics: List[str]) -> dict:
+            """
+            Set topics (tags) for an existing GitHub repository.
+            
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                topics: List of topic names (e.g., ["python", "api", "web"])
+            
+            Returns:
+                Response with topics that were set
+            """
+            result = client.set_repo_topics(owner, repo, topics)
+            return {
+                "success": True,
+                "topics": result.get("names", topics)
+            }
+        
+        @mcp.tool()
+        def rename_default_branch(owner: str, repo: str, new_name: str) -> dict:
+            """
+            Rename the default branch of an existing GitHub repository.
+            
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                new_name: New name for the default branch (e.g., "main", "master")
+            
+            Returns:
+                Response indicating success
+            """
+            result = client.rename_default_branch(owner, repo, new_name)
+            return {
+                "success": True,
+                "message": f"Default branch renamed to {new_name}",
+                "new_name": new_name
+            }
+    
+    def register_resources(self, mcp: FastMCP) -> None:
+        """Register GitHub resources (read-only operations) with MCP server."""
+        client = self._ensure_client()
+        
+        @mcp.resource("github://repo/{owner}/{repo}")
+        def get_repo_resource(owner: str, repo: str) -> str:
+            """
+            Get information about a GitHub repository.
+            
+            URI: github://repo/{owner}/{repo}
+            """
+            repo_data = client.get_repo(owner, repo)
+            return json.dumps({
+                "name": repo_data["name"],
+                "full_name": repo_data["full_name"],
+                "url": repo_data["html_url"],
+                "description": repo_data.get("description"),
+                "private": repo_data["private"],
+                "stars": repo_data["stargazers_count"],
+                "language": repo_data.get("language"),
+                "default_branch": repo_data["default_branch"]
+            }, indent=2)
+        
+        @mcp.resource("github://repos")
+        def list_repos_resource() -> str:
+            """
+            List repositories for the authenticated user.
+            
+            URI: github://repos
+            """
+            repos = client.list_repos()
+            return json.dumps({
+                "count": len(repos),
+                "repos": [
+                    {
+                        "name": r["name"],
+                        "full_name": r["full_name"],
+                        "url": r["html_url"],
+                        "private": r["private"],
+                        "description": r.get("description")
+                    }
+                    for r in repos
+                ]
+            }, indent=2)
+        
+        @mcp.resource("github://repos/{owner}")
+        def list_repos_by_owner_resource(owner: str) -> str:
+            """
+            List repositories for a specific user or organization.
+            
+            URI: github://repos/{owner}
+            """
+            repos = client.list_repos(owner=owner)
+            return json.dumps({
+                "count": len(repos),
+                "owner": owner,
+                "repos": [
+                    {
+                        "name": r["name"],
+                        "full_name": r["full_name"],
+                        "url": r["html_url"],
+                        "private": r["private"],
+                        "description": r.get("description")
+                    }
+                    for r in repos
+                ]
+            }, indent=2)
 
 
 # Create module instance (required for registry pattern)

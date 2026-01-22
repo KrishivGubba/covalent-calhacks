@@ -17,6 +17,7 @@ class MCPToolModule(ABC):
     Abstract base class for MCP tool modules.
     
     Every tool module must inherit from this and implement register(mcp).
+    Optionally, implement register_resources(mcp) to expose read-only resources.
     This ensures a consistent interface across all tool modules.
     
     Example:
@@ -25,6 +26,11 @@ class MCPToolModule(ABC):
                 @mcp.tool()
                 def my_tool(param: str) -> str:
                     return f"Result: {param}"
+            
+            def register_resources(self, mcp: FastMCP) -> None:
+                @mcp.resource()
+                def my_resource(uri: str) -> str:
+                    return "Resource content"
     """
     
     @abstractmethod
@@ -44,3 +50,21 @@ class MCPToolModule(ABC):
         raise NotImplementedError(
             f"{self.__class__.__name__} must implement register(mcp) method"
         )
+    
+    def register_resources(self, mcp: "FastMCP") -> None:
+        """
+        Register this module's resources with the MCP server.
+        
+        This method is OPTIONAL. Override it if your module provides resources.
+        Use @mcp.resource() decorator to register each resource function.
+        
+        Resources are read-only data that clients can fetch for context.
+        They are application-controlled (client decides when to load them),
+        unlike tools which are model-controlled (model decides when to invoke).
+        
+        Args:
+            mcp: The FastMCP server instance to register resources with
+        
+        Default implementation: Does nothing (no resources).
+        """
+        pass  # Default: no resources

@@ -26,10 +26,11 @@ TOOL_MODULES: list[MCPToolModule] = [
 
 def register_tools(mcp: FastMCP) -> None:
     """
-    Register all tools from TOOL_MODULES with the MCP server.
+    Register all tools and resources from TOOL_MODULES with the MCP server.
     
     This will call register(mcp) on each module, which must be implemented
     (enforced by MCPToolModule abstract base class).
+    It will also call register_resources(mcp) if the module provides resources.
     
     Args:
         mcp: The FastMCP server instance
@@ -47,3 +48,6 @@ def register_tools(mcp: FastMCP) -> None:
         
         # Register tools (will raise NotImplementedError if not implemented)
         tool_module.register(mcp)
+        
+        # Register resources (optional - default implementation does nothing)
+        tool_module.register_resources(mcp)
