@@ -86,7 +86,7 @@ class GmailToolModule(MCPToolModule):
         """Register Gmail resources (read operations) with MCP server."""
         client = self._ensure_client()
         
-        @mcp.resource("gmail://messages")
+        @mcp.resource("gmail://messages{?query,max_results,label_ids}")
         def list_messages_resource(
             query: Optional[str] = None,
             max_results: int = 10,
@@ -95,7 +95,7 @@ class GmailToolModule(MCPToolModule):
             """
             List messages from Gmail.
             
-            URI: gmail://messages
+            URI: gmail://messages{?query,max_results,label_ids}
             Optional query params:
             - query: Gmail search query (e.g., "from:example@gmail.com", "subject:test")
             - max_results: Maximum number of messages (1-500, default: 10)

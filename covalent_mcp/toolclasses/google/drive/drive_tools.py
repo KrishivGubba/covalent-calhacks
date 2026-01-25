@@ -214,7 +214,7 @@ class DriveToolModule(MCPToolModule):
         """Register Drive resources (read operations) with MCP server."""
         client = self._ensure_client()
         
-        @mcp.resource("gdrive://search")
+        @mcp.resource("gdrive://search/{query}{?max_results,page_token}")
         def search_files_resource(
             query: str,
             max_results: int = 50,
@@ -223,11 +223,9 @@ class DriveToolModule(MCPToolModule):
             """
             Search for files in Google Drive.
             
-            URI: gdrive://search
-            Query params:
-            - query: Search query (required, e.g., "name contains 'test'")
-            - max_results: Maximum results (1-100, default: 50)
-            - page_token: Token for pagination (optional)
+            URI: gdrive://search/{query}{?max_results,page_token}
+            Path param: query - Search query (e.g., "name contains 'test'")
+            Optional query params: max_results (1-100, default 50), page_token (pagination)
             """
             result = client.search_files(
                 query=query,

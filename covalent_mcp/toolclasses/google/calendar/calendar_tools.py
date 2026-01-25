@@ -224,14 +224,15 @@ class CalendarToolModule(MCPToolModule):
         """Register Google Calendar resources (read operations) with MCP server."""
         client = self._ensure_client()
         
-        @mcp.resource("google://calendars")
-        def list_calendars_resource() -> str:
+        @mcp.resource("google://calendars{?view}")
+        def list_calendars_resource(view: Optional[str] = None) -> str:
             """
             List all calendars accessible by the user.
             
             ⚠️ NOT WORKING: Requires additional OAuth scopes (insufficient permissions).
             
-            URI: google://calendars
+            URI: google://calendars{?view}
+            Optional query param: view - reserved for future use (e.g. filter)
             """
             calendars = client.list_calendars()
             return json.dumps({

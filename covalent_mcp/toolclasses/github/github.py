@@ -282,14 +282,15 @@ class GitHubToolModule(MCPToolModule):
                 "default_branch": repo_data["default_branch"]
             }, indent=2)
         
-        @mcp.resource("github://repos")
-        def list_repos_resource() -> str:
+        @mcp.resource("github://repos{?type}")
+        def list_repos_resource(type: str = "all") -> str:
             """
             List repositories for the authenticated user.
             
-            URI: github://repos
+            URI: github://repos{?type}
+            Optional query param: type - "all", "owner", "member", "public", "private" (default: "all")
             """
-            repos = client.list_repos()
+            repos = client.list_repos(type=type)
             return json.dumps({
                 "count": len(repos),
                 "repos": [
