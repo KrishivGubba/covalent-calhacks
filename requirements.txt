@@ -20,4 +20,5 @@ google-generativeai
 playwright
 langchain-anthropic
 Pillow
+pypdf
 requests
