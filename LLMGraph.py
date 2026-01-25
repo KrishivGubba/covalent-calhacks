@@ -23,8 +23,8 @@ composio = Composio(
 gmail_auth_config_id = os.getenv("GOOGLE_AUTH_CONFIG_ID")
 
 llm = init_chat_model(
-    model_provider="anthropic",
-    model="claude-sonnet-4-5-20250929",
+    model_provider="google_genai", # MODEL DECLARATION
+    model="gemini-2.5-flash",
 )
 
 # Always the kind of task used for the mcp server
@@ -79,7 +79,7 @@ class LLMTasks(BaseModel):
 
 
 model = llm.with_structured_output(LLMTasks)
-worker_agent = Anthropic()
+# worker_agent = Anthropic()
 
 # Orchestrator node assigns tasks to specific workers explicitly
 def orchestrator(state: State):
@@ -171,7 +171,7 @@ async def gsuite(state : State):
         tools = await client.get_tools()
 
         agent = create_agent(
-            "anthropic:claude-sonnet-4-5",
+            "google_genai:gemini-2.5-flash", # MODEL DECLARATION
             tools
         )
 
@@ -226,8 +226,15 @@ def synthesizer(state: State):
     final_outputs = []
     for output in state['mcp_outputs']:
         if isinstance(output.result, dict):
-            # Extract the response from the dict
-            final_outputs.append(output.result.get('response', str(output.result)))
+            response = output.result.get('response', str(output.result))
+            # Handle case where response is a list
+            if isinstance(response, list):
+                # Extract text from list items
+                response = " ".join(
+                    item.get('text', str(item)) if isinstance(item, dict) else str(item)
+                    for item in response
+                )
+            final_outputs.append(str(response))
         else:
             final_outputs.append(str(output.result))
 
@@ -269,8 +276,8 @@ async def run_graph(user_query : str = "No task provided", data : str = "No data
     print(final_output["final_outputs"])
 
 user_query = """
-    send a connection request
+    Send an email to strangerinthenight311@gmail.com congratulating him on his birthday and create a doc with a list of things to possibly buy him
     """
-data = "the user is looking at the profile of ritesh neela on linkedin"
+data = ""
 
 asyncio.run(run_graph(user_query))
