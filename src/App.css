@@ -114,3 +114,20 @@ button {
     background-color: #0f0f0f69;
   }
 }
+
+
+.ghost-text-overlay {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  user-select: none;
+}
+
+
+.ghost-text {
+  color: #888;
+  opacity: 0.4;
+  font-family: inherit; /* Inherit from wherever cursor is */
+  font-size: inherit;
+  white-space: pre; /* Preserve spacing */
+}

@@ -1,4 +1,5 @@
 use core_foundation::base::{CFRelease, CFTypeRef};
+use core_foundation::data;
 use core_graphics::display::{
     CGDisplayBounds, CGDisplayCreateImage, CGDisplayCreateImageForRect, CGDisplayPixelsHigh,
     CGDisplayPixelsWide, CGGetActiveDisplayList, CGMainDisplayID, CGRect, CGSize,
@@ -149,10 +150,50 @@ impl ScreenCapture {
     
     /// Capture full screen from the main display
     pub fn capture_full_screen(&self) -> Result<DynamicImage> {
-        unsafe {
-            let main_display = CGMainDisplayID();
-            self.capture_display(main_display)
+        use screenshots::Screen;
+        
+        // Get all screens
+        let screens = Screen::all().map_err(|e| {
+            anyhow::anyhow!("Failed to get screens: {}", e)
+        })?;
+        
+        // Get the primary screen
+        let primary_screen = screens.into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No screens found"))?;
+        
+        // Capture the screen
+        let screenshot = primary_screen.capture().map_err(|e| {
+            anyhow::anyhow!("Failed to capture screen: {}", e)
+        })?;
+        
+        // Convert to DynamicImage
+        let width = screenshot.width();
+        let height = screenshot.height();
+        
+        // Get pixel data - the screenshots crate returns RGBA data  
+        let rgba_data = screenshot.rgba();
+        
+        // Convert RGBA to RGB
+        let mut rgb_data = Vec::with_capacity((width * height * 3) as usize);
+        for rgba_chunk in rgba_data.chunks(4) {
+            if rgba_chunk.len() >= 3 {
+                rgb_data.push(rgba_chunk[0]); // R
+                rgb_data.push(rgba_chunk[1]); // G  
+                rgb_data.push(rgba_chunk[2]); // B
+                // Skip alpha channel
+            }
         }
+        
+        let image_buffer = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(
+            width, height, rgb_data
+        ).ok_or_else(|| ScreenCaptureError::ImageConversionError(
+            image::ImageError::Parameter(image::error::ParameterError::from_kind(
+                image::error::ParameterErrorKind::DimensionMismatch
+            ))
+        ))?;
+        
+        Ok(DynamicImage::ImageRgb8(image_buffer))
     }
     
     /// Capture a specific region of the screen
@@ -374,23 +415,9 @@ impl ScreenCapture {
     }
     
     fn cg_image_to_dynamic_image(&self, _cg_image: CGImage) -> Result<DynamicImage> {
-        // Simplified implementation to avoid Core Graphics complications
-        // In a real implementation, you would extract pixel data from CGImage
-        let width = 100u32;
-        let height = 100u32;
-        
-        // Create a placeholder image
-        let rgb_buffer = vec![128u8; (width * height * 3) as usize];
-        
-        let image_buffer = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(
-            width, height, rgb_buffer
-        ).ok_or_else(|| ScreenCaptureError::ImageConversionError(
-            image::ImageError::Parameter(image::error::ParameterError::from_kind(
-                image::error::ParameterErrorKind::DimensionMismatch
-            ))
-        ))?;
-        
-        Ok(DynamicImage::ImageRgb8(image_buffer))
+        // This method is no longer used since we switched to the screenshots crate
+        // for better cross-platform screenshot support
+        Err(anyhow::anyhow!("CG Image conversion deprecated - use capture_full_screen instead"))
     }
     
     fn get_display_list(&self) -> Result<Vec<u32>> {

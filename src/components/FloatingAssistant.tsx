@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, memo } from 'react';
 import type { Action } from './SuggestedActions';
 
 interface FloatingAssistantProps {
@@ -11,7 +11,7 @@ interface FloatingAssistantProps {
 type ViewState = 'collapsed' | 'prompt' | 'expanded';
 type ActionStatus = 'idle' | 'playing' | 'done';
 
-const FloatingAssistant: React.FC<FloatingAssistantProps> = ({ 
+const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({ 
   actions, 
   isRunning, 
   onStart, 
@@ -20,6 +20,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = ({
   const [viewState, setViewState] = useState<ViewState>('collapsed');
   const [actionStatuses, setActionStatuses] = useState<Record<string, ActionStatus>>({});
   const [isAnimating, setIsAnimating] = useState(false);
+  const [hoveredActionId, setHoveredActionId] = useState<string | null>(null);
 
   // Simulate action detection - expand to prompt
   useEffect(() => {
@@ -66,23 +67,37 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = ({
     }, 100);
   };
 
-  const handleActionClick = (actionId: string) => {
-    const currentStatus = actionStatuses[actionId] || 'idle';
+  const handleActionClick = async (action: Action) => {
+    const currentStatus = actionStatuses[action.id] || 'idle';
     
     if (currentStatus === 'idle') {
-      setActionStatuses({ ...actionStatuses, [actionId]: 'playing' });
-      setTimeout(() => {
-        setActionStatuses(prev => ({ ...prev, [actionId]: 'done' }));
-      }, 3000);
+      setActionStatuses({ ...actionStatuses, [action.id]: 'playing' });
+      
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        console.log(`🎬 Triggering action: ${action.title} (${action.uuid})`);
+        
+        await invoke('trigger_action', {
+          actionUuid: action.uuid,
+          actionPrompt: action.action_prompt,
+        });
+        
+        console.log(`✅ Action completed successfully`);
+        setActionStatuses(prev => ({ ...prev, [action.id]: 'done' }));
+      } catch (error) {
+        console.error(`❌ Action failed:`, error);
+        setActionStatuses(prev => ({ ...prev, [action.id]: 'idle' }));
+      }
     } else if (currentStatus === 'playing') {
-      setActionStatuses({ ...actionStatuses, [actionId]: 'idle' });
+      // Can't cancel while playing
+      console.log('⏸️  Action is already executing');
     } else if (currentStatus === 'done') {
-      setActionStatuses({ ...actionStatuses, [actionId]: 'idle' });
+      setActionStatuses({ ...actionStatuses, [action.id]: 'idle' });
     }
   };
 
-  const renderActionButton = (actionId: string) => {
-    const status = actionStatuses[actionId] || 'idle';
+  const renderActionButton = (action: Action) => {
+    const status = actionStatuses[action.id] || 'idle';
     
     if (status === 'idle') {
       return (
@@ -90,13 +105,13 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = ({
           style={styles.playButton}
           onClick={(e) => {
             e.stopPropagation();
-            handleActionClick(actionId);
+            handleActionClick(action);
           }}
           onMouseEnter={(e) => {
-            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(255, 255, 255, 1)';
+            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(120, 120, 120, 0.65)';
           }}
           onMouseLeave={(e) => {
-            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(245, 245, 248, 0.9)';
+            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(100, 100, 100, 0.45)';
           }}
         >
           ▶
@@ -106,10 +121,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = ({
       return (
         <button 
           style={styles.loadingButton}
-          onClick={(e) => {
-            e.stopPropagation();
-            handleActionClick(actionId);
-          }}
+          disabled={true}
         >
           <span style={styles.loadingDots}>
             <span style={styles.dot1}>.</span>
@@ -124,7 +136,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = ({
           style={styles.doneButton}
           onClick={(e) => {
             e.stopPropagation();
-            handleActionClick(actionId);
+            handleActionClick(action);
           }}
         >
           ✓
@@ -144,7 +156,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = ({
   const getContainerStyle = () => {
     const baseStyle = {
       ...styles.container,
-      transition: 'all 1s cubic-bezier(0.4, 0, 0.2, 1)',
+      transition: 'width 0.5s cubic-bezier(0.4, 0, 0.2, 1), height 0.5s cubic-bezier(0.4, 0, 0.2, 1), border-radius 0.5s cubic-bezier(0.4, 0, 0.2, 1)',
     };
 
     if (viewState === 'collapsed') {
@@ -173,15 +185,15 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = ({
 
   return (
     <div style={getContainerStyle()}>
-      {/* Icon - always visible in corner */}
-      <div style={styles.iconContainer}>
-        <img 
-          src="/icon.png" 
-          alt="Covalent" 
-          style={styles.icon}
-          onClick={handleIconClick}
-        />
-      </div>
+        {/* Icon - always visible in corner */}
+        <div style={styles.iconContainer}>
+          <img 
+            src="/icon.png" 
+            alt="Covalent" 
+            style={styles.icon}
+            onClick={handleIconClick}
+          />
+        </div>
 
       {/* Prompt State */}
       {viewState === 'prompt' && (
@@ -232,34 +244,61 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = ({
             </button>
           </div>
           <div style={styles.actionsList}>
-            {actions.map((action) => (
-              <div key={action.id} style={styles.actionItem}>
-                <div style={styles.actionText}>
-                  <h4 style={styles.actionTitle}>{action.title}</h4>
-                  <p style={styles.actionDescription}>{action.description}</p>
+            {actions.map((action) => {
+              const isHovered = hoveredActionId === action.id;
+              return (
+                <div 
+                  key={action.id} 
+                  style={{
+                    ...styles.actionItem,
+                    maxHeight: isHovered ? '300px' : '60px',
+                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    overflow: 'hidden',
+                  }}
+                  onMouseEnter={() => setHoveredActionId(action.id)}
+                  onMouseLeave={() => setHoveredActionId(null)}
+                >
+                  <div style={styles.actionText}>
+                    <h4 style={styles.actionTitle}>{action.title}</h4>
+                    <p style={{
+                      ...styles.actionDescription,
+                      maxHeight: isHovered ? '200px' : '0px',
+                      opacity: isHovered ? 1 : 0,
+                      transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                      overflow: 'hidden',
+                    }}>
+                      {action.description}
+                    </p>
+                  </div>
+                  {renderActionButton(action)}
                 </div>
-                {renderActionButton(action.id)}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
     </div>
   );
-};
+});
+
+FloatingAssistant.displayName = 'FloatingAssistant';
 
 const styles = {
   container: {
     position: 'fixed' as const,
     top: '20px',
     left: '20px',
-    backgroundColor: 'rgba(242, 242, 247, 0.78)',
+    backgroundColor: 'rgba(66, 66, 66, 0.65)',
     backdropFilter: 'blur(60px) saturate(180%)',
     WebkitBackdropFilter: 'blur(60px) saturate(180%)',
-    border: '1px solid rgba(255, 255, 255, 0.6)',
-    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.15)',
+    border: 'none',
+    boxShadow: '0 2px 12px rgba(0, 0, 0, 0.02), 0 1px 0 rgba(255, 255, 255, 0.05) inset',
     overflow: 'hidden',
     zIndex: 999,
+    outline: 'none',
+    willChange: 'transform, opacity',
+    transform: 'translateZ(0)',
+    WebkitTransform: 'translateZ(0)',
   },
   iconContainer: {
     position: 'absolute' as const,
@@ -286,7 +325,7 @@ const styles = {
   promptText: {
     fontSize: '1rem',
     fontWeight: '600',
-    color: 'rgba(0, 0, 0, 0.95)',
+    color: 'rgba(255, 255, 255, 0.95)',
     flex: 1,
   },
   promptButtons: {
@@ -339,7 +378,7 @@ const styles = {
   expandedTitle: {
     fontSize: '1.2rem',
     fontWeight: '600',
-    color: 'rgba(0, 0, 0, 0.95)',
+    color: 'rgba(255, 255, 255, 0.95)',
     margin: 0,
   },
   learningButton: {
@@ -373,11 +412,11 @@ const styles = {
     justifyContent: 'space-between',
     gap: '0.75rem',
     padding: '1rem',
-    backgroundColor: 'rgba(250, 250, 252, 0.6)',
+    backgroundColor: 'rgba(80, 80, 80, 0.4)',
     backdropFilter: 'blur(40px)',
     WebkitBackdropFilter: 'blur(40px)',
     borderRadius: '16px',
-    border: '1px solid rgba(255, 255, 255, 0.4)',
+    border: '1px solid rgba(255, 255, 255, 0.15)',
   },
   actionText: {
     flex: 1,
@@ -385,12 +424,12 @@ const styles = {
   actionTitle: {
     fontSize: '0.95rem',
     fontWeight: '600',
-    color: 'rgba(0, 0, 0, 0.95)',
+    color: 'rgba(255, 255, 255, 0.95)',
     margin: '0 0 0.25rem 0',
   },
   actionDescription: {
     fontSize: '0.8rem',
-    color: 'rgba(0, 0, 0, 0.7)',
+    color: 'rgba(255, 255, 255, 0.75)',
     margin: 0,
     lineHeight: '1.4',
   },
@@ -398,9 +437,9 @@ const styles = {
     width: '36px',
     height: '36px',
     borderRadius: '50%',
-    border: '1px solid rgba(0, 0, 0, 0.1)',
-    backgroundColor: 'rgba(245, 245, 248, 0.9)',
-    color: '#000000',
+    border: '1px solid rgba(255, 255, 255, 0.3)',
+    backgroundColor: 'rgba(100, 100, 100, 0.45)',
+    color: '#ffffff',
     fontSize: '0.8rem',
     cursor: 'pointer',
     transition: 'all 0.2s ease',

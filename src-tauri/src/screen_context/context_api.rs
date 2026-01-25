@@ -12,9 +12,22 @@ pub struct ContextPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionItem {
+    pub action_uuid: String,
+    pub action_name: String,
+    pub action_plan: String,
+    pub action_prompt: String,
+    pub last_selected: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextResponse {
     pub message: String,
-    pub written: String,
+    pub action_name: Option<String>,
+    pub action_plan: Option<String>,
+    pub action_prompt: Option<String>,
+    pub action_uuid: Option<String>,
+    pub recent_actions: Option<Vec<ActionItem>>,
 }
 
 /// HTTP client for sending context data to Flask API
@@ -27,7 +40,7 @@ impl ContextApiClient {
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             base_url: FLASK_API_URL.to_string(),
@@ -37,7 +50,7 @@ impl ContextApiClient {
     pub fn with_base_url(base_url: String) -> Self {
         Self {
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             base_url,
@@ -95,6 +108,40 @@ impl ContextApiClient {
             .context("Failed to serialize analysis output")?;
         
         self.send_context(description, data).await
+    }
+
+    /// Trigger an action by UUID via Flask API
+    pub async fn trigger_action(&self, action_uuid: String, action_prompt: String) -> Result<serde_json::Value> {
+        let url = format!("{}/trigger_action", self.base_url);
+        
+        let payload = serde_json::json!({
+            "action_uuid": action_uuid,
+            "action": action_prompt
+        });
+        
+        let response = self.client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .context("Failed to send trigger_action request to Flask API")?;
+
+        if response.status().is_success() {
+            let json_response: serde_json::Value = response
+                .json()
+                .await
+                .context("Failed to parse trigger_action response from Flask API")?;
+            
+            Ok(json_response)
+        } else {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            Err(anyhow::anyhow!(
+                "Flask API trigger_action returned error status {}: {}",
+                status,
+                error_text
+            ))
+        }
     }
 }
 

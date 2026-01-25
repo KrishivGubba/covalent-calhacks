@@ -47,11 +47,18 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  outline: none;
 }
 
 html, body {
   background: transparent !important;
   overflow: hidden;
+  border: none !important;
+  outline: none !important;
+  -webkit-app-region: no-drag;
+  will-change: transform;
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
 }
 
 body {
@@ -64,6 +71,11 @@ body {
 
 #root {
   background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  will-change: transform;
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
 }
 
 /* Custom scrollbar for glass containers */

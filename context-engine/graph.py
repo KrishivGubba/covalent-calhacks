@@ -1,6 +1,8 @@
 import os
 import json
 import uuid
+import sys
+import asyncio
 from datetime import datetime
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -8,8 +10,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 from graph_dao import GraphDAO, TestGraphDAO
 from anthropic import Anthropic
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Add parent directory to path to import LLMGraph
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from LLMGraph import run_graph
 
 load_dotenv() 
@@ -80,6 +83,122 @@ class Tree:
         and the metadata of its children. You will also be given a user query. Your task is to determine the following:"""
 
         self.model = "gemini-2.5-flash"
+
+    def trigger_action(self, action_uuid):
+        """
+        Trigger an action by its UUID, gathering all relevant context data from the node 
+        and its ancestors into a single concatenated string.
+        
+        Args:
+            action_uuid (str): UUID of the action to trigger
+            
+        Returns:
+            tuple: (action_text, collected_data_string) - The action description and all collected data as a single string
+        """
+        # Get the action from the database
+        action_data = self.dao.get_action_by_id(action_uuid)
+        if not action_data:
+            print(f"Error: Action with UUID {action_uuid} not found")
+            return None, None
+        
+        action_uuid_db, action_name, action_prompt, node_uuid = action_data
+        
+        # Use action_prompt if available, otherwise fall back to action_name
+        action_text = action_prompt if action_prompt else action_name
+        
+        print(f"Found action: {action_name}")
+        print(f"Action prompt: {action_text[:200]}..." if len(action_text) > 200 else f"Action prompt: {action_text}")
+        print(f"Associated with node UUID: {node_uuid}")
+        
+        # Collect all data into a list to be concatenated later
+        data_parts = []
+        data_parts.append(f"ACTION TO EXECUTE: {action_text}\n")
+        data_parts.append("="*60 + "\n")
+        
+        def collect_ancestor_data(current_node_uuid, depth=0):
+            """Recursively collect data from a node and all its ancestors"""
+            if not current_node_uuid:
+                return
+            
+            # Get data for current node
+            node_data_entries = self.dao.get_data_for_node(current_node_uuid)
+            
+            # Get node info to find parent
+            node_info = self.dao.get_node_by_id(current_node_uuid)
+            if not node_info:
+                return
+            
+            node_uuid_db, metadata, created, last_modified, parent_uuid, children_uuid_arr = node_info
+            
+            # Add node metadata to the string
+            indent = "  " * depth
+            if metadata:
+                data_parts.append(f"\n{indent}NODE: {metadata}\n")
+                data_parts.append(f"{indent}NODE_UUID: {current_node_uuid}\n")
+            
+            # Add all data entries for this node
+            if node_data_entries:
+                data_parts.append(f"{indent}DATA ENTRIES:\n")
+                for data_entry in node_data_entries:
+                    data_uuid, data_node_uuid, key, data_type, info = data_entry
+                    # Use key if available, otherwise use data_uuid
+                    data_key = key if key else f"data_{data_uuid}"
+                    data_parts.append(f"{indent}  - KEY: {data_key}\n")
+                    data_parts.append(f"{indent}    TYPE: {data_type}\n")
+                    data_parts.append(f"{indent}    INFO: {info}\n")
+            
+            # Recursively collect from parent
+            if parent_uuid:
+                data_parts.append(f"{indent}PARENT CONTEXT:\n")
+                collect_ancestor_data(parent_uuid, depth + 1)
+        
+        # Start collection from the action's node
+        collect_ancestor_data(node_uuid)
+        
+        # Concatenate all parts into a single string
+        collected_data_string = "".join(data_parts)
+        
+        print(f"\n{'='*60}")
+        print(f"Collected context data (first 1000 chars):")
+        print(collected_data_string[:1000])
+        if len(collected_data_string) > 1000:
+            print("...")
+        print(f"Total data length: {len(collected_data_string)} characters")
+        print(f"{'='*60}\n")
+        
+        # ================================================================
+        # SPACE FOR ACTION EXECUTION
+        # ================================================================
+        # TODO: Add your action execution logic here
+        # You can call external functions/modules to perform the actual action
+        # 
+        # Example structure:
+        # if "send email" in action_text.lower():
+        #     from email_handler import send_email
+        #     result = send_email(action_text, collected_data_string)
+        # elif "schedule meeting" in action_text.lower():
+        #     from calendar_handler import schedule_meeting
+        #     result = schedule_meeting(action_text, collected_data_string)
+        # 
+        # For now, just print what would be executed
+        print("ACTION EXECUTION PLACEHOLDER")
+        print(f"🚀 [graph.py] About to call run_graph() with action_text: {action_text[:100]}...")
+        print(f"🚀 [graph.py] Data length being passed: {len(collected_data_string)} characters")
+        
+        # Run the graph and capture the result
+        result = asyncio.run(run_graph(action_text, collected_data_string))
+        print(f"✅ [graph.py] run_graph() call completed")
+        print(f"📊 [graph.py] Result from run_graph: {result}")
+        
+        print(f"Would execute: {action_text}")
+        print(f"With context data string of length: {len(collected_data_string)}")
+        # ================================================================
+        
+        return action_text, collected_data_string, result
+
+
+
+        
 
     def vectorize_text(self, text):
         """
@@ -219,13 +338,15 @@ class Tree:
         
         # Find the node with highest cosine similarity
         best_node = None # the actual node object
-        best_similarity = -1.0 
+        best_similarity = -1.0
+        similarity_scores = {}
         
         for node_uuid, node in self.nodes.items():
             if node.embedding is not None:
                 try:
                     # Calculate cosine similarity
                     similarity = cosine_similarity(screen_embedding, node.embedding)[0][0]
+                    similarity_scores[node.metadata] = similarity
                     
                     if similarity > best_similarity:
                         best_similarity = similarity
@@ -235,12 +356,12 @@ class Tree:
                     print(f"Error calculating similarity for node {node_uuid}: {e}")
                     continue
         
-        # if best_node is not None:
-        #     print(f"Best match: Node '{best_node.metadata}' with similarity: {best_similarity:.4f}")
-        #     return best_node
-        # else:
-        #     print("No suitable node found, returning root")
-        #     return self.root if curr is None else curr
+        print(f"🔍 traverse() - Screen input: '{screen[:100]}...'")
+        print(f"🔍 traverse() - Top 5 similarity scores:")
+        sorted_scores = sorted(similarity_scores.items(), key=lambda x: x[1], reverse=True)[:5]
+        for node_name, score in sorted_scores:
+            print(f"   - {node_name}: {score:.4f}")
+        
         if best_node is None:
             print("No suitable node found, returning root")
             return self.root if curr is None else curr
@@ -264,216 +385,478 @@ class Tree:
         # response = model.generate_content(prompt)
 
         return best_node
-    
-    async def learn(self, summary, data, key=None, data_type="text"):
+
+    def _generate_learning_prompt(self, node, summary, existing_actions, existing_categories):
         """
-        Learn new information by inserting it into the most relevant node.
-        
+        Generate a prompt for the LLM to decide on action and data insertion.
+
         Args:
-            summary (str): Summary/description of the data to help find the right node
-            data (str or dict): The actual data to store
-            key (str, optional): Key/name for this data. If None, uses a timestamp
-            data_type (str): Type of data being stored (default: "text")
-            
+            node (Node): The current node we're learning into
+            summary (str): Description of what the user is doing on screen
+            existing_actions (list): List of action tuples from get_actions_for_node()
+            existing_categories (list): List of category names from get_categories_for_node()
+
         Returns:
-            tuple: (suggested_action, action_uuid) - The suggested action text and its UUID in the database
+            str: The prompt to send to the LLM
         """
-        # Find the most relevant node using traverse
-        node = self.traverse(summary)
+        # Get metadata chain for context
+        metadata_chain = self.get_parent_metadata(node)
 
-        # Initialize variables for return
-        suggested_action = None
-        action_uuid = None
+        # Format existing actions
+        actions_text = ""
+        if existing_actions:
+            actions_text = "EXISTING ACTIONS for this node:\n"
+            for idx, action in enumerate(existing_actions, 1):
+                uuid, name, plan, prompt, node_uuid, last_selected = action
+                actions_text += f"{idx}. UUID: {uuid}\n"
+                actions_text += f"   Name: {name}\n"
+                actions_text += f"   Plan: {plan or 'N/A'}\n"
+                actions_text += f"   Last Selected: {last_selected or 'Never'}\n\n"
+        else:
+            actions_text = "EXISTING ACTIONS: None - this node has no actions yet.\n"
 
-        # take the summary of what's going on 
-        mtd = self.get_parent_metadata(node)
-        ACTION_CREATION_PROMPT = self.BASE_PROMPT[75:] + f"""
-            Now, after looking at this graph this is most relevant node that we picked: {mtd}
-            You are an AI Desktop Agent whose goal is to automate any tasks for the user. Your goal is to ANTICIPATE ANY ACTIONS
-            THAT THE USER MIGHT WANT TO TAKE BASED ON THE CURRENT SCREEN CONTENT.
+        # Format existing categories
+        categories_text = ""
+        if existing_categories:
+            categories_text = f"EXISTING DATA CATEGORIES: {', '.join(existing_categories)}\n"
+        else:
+            categories_text = "EXISTING DATA CATEGORIES: None - this node has no data categories yet.\n"
 
-            You have access to the user's computer screen (if you want to control it and take actions)
-            You have access to the GSuite (Email, Calendar, Docs, Sheets, etc)
-            You can define a series of tasks as well.
+        prompt = f"""{self.BASE_PROMPT}
 
-            Here is a description of what the current user is doing:
-            {summary}
+CURRENT CONTEXT:
+Node Path (from root): {metadata_chain}
+Current Node: {node.metadata}
 
-            Based on what the user is doing, suggest a task that the user might want to perform.
-            The task should be a simple action that the user can perform.
-            For example: "Send an email to Ritesh - rneela@wisc.edu confirming the meeting at 10am. Schedule this meeting on my calendar from 10am - 11am"
+{actions_text}
+{categories_text}
 
-            Note that when an action is performed, you will be given all context so don't worry about providing too much context
-            Focus on being clear what action is to be performed
-            
-            ONLY output the task and nothing else.
+USER'S CURRENT ACTIVITY:
+{summary}
+
+YOUR TASK:
+You are an AI Desktop Agent that learns from user behavior and suggests proactive actions.
+
+You have access to:
+- User's computer screen (for screen control actions)
+- GSuite (Email, Calendar, Docs, Sheets, etc.)
+- Ability to define series of tasks
+
+Based on the user's current activity, you must:
+
+1. **ACTION DECISION** - Choose ONE of these three options:
+
+   a) **CREATE** - Generate a completely new action
+      - Use when: Current activity represents a new workflow or task type
+      - Provide: action_name (short UI display), action_plan (detailed user-facing description), action_prompt (full technical prompt for MCP execution)
+
+   b) **MODIFY** - Update an existing action to better match current context
+      - Use when: An existing action is close but needs refinement
+      - Provide: action_uuid (from list above), updated action_name, action_plan, action_prompt
+
+   c) **SELECT** - Use an existing action exactly as-is
+      - Use when: An existing action perfectly matches the current activity
+      - Provide: action_uuid (from list above)
+
+2. **DATA INSERTION** - Extract and categorize relevant information:
+   - Condense the screen summary to preserve ONLY relevant information
+   - Remove UI noise (cursor positions, visual elements, temporary states)
+   - Keep essential context (names, dates, email addresses, decisions, outcomes)
+   - Assign data to categories (can use existing or create new ones)
+   - Can split data across multiple categories if appropriate
+
+OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
+{{
+  "action_decision": {{
+    "type": "create" | "modify" | "select",
+    "action_uuid": "uuid-here-if-modify-or-select-otherwise-null",
+    "action_name": "Short name for UI display (20-40 chars)",
+    "action_plan": "Detailed plan shown on hover - exact content of what will happen",
+    "action_prompt": "Full technical prompt for MCP orchestration - include all context needed for execution"
+  }},
+  "data_insertions": [
+    {{
+      "category": "category_name",
+      "is_new_category": true | false,
+      "condensed_data": "The actual data to store - detailed but concise"
+    }}
+  ]
+}}
+
+IMPORTANT:
+- action_name: Concise UI label (e.g., "Schedule Interview with Ritesh")
+- action_plan: User-facing details (e.g., exact email content, meeting times)
+- action_prompt: Technical execution details (e.g., full instructions for LangGraph/MCP)
+- Output ONLY the JSON object - no explanations, no markdown code blocks
+- Ensure all JSON is properly formatted and valid
+"""
+        return prompt
+
+    def _parse_learning_response(self, response_text):
         """
-        # ALSO ADD THE OCR HERE!!!!! IF I GET THIS FROM SCREEN VIEWING
-        
-        # Call Claude Sonnet 4.5 with the action prompt
+        Parse the JSON response from the LLM.
+
+        Args:
+            response_text (str): Raw response from LLM
+
+        Returns:
+            dict: Parsed response with action_decision and data_insertions
+
+        Raises:
+            ValueError: If response is not valid JSON or missing required fields
+        """
+        import re
+
+        # Try to extract JSON from potential markdown code blocks
+        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(1)
+        else:
+            # Try to find raw JSON
+            json_match = re.search(r'\{.*"action_decision".*\}', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                raise ValueError(f"Could not find valid JSON in LLM response: {response_text[:200]}")
+
         try:
+            parsed = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in LLM response: {e}\nJSON string: {json_str[:200]}")
+
+        # Validate required fields
+        if "action_decision" not in parsed:
+            raise ValueError("Missing required field: action_decision")
+        if "data_insertions" not in parsed:
+            raise ValueError("Missing required field: data_insertions")
+
+        action_decision = parsed["action_decision"]
+        if "type" not in action_decision:
+            raise ValueError("Missing required field: action_decision.type")
+
+        if action_decision["type"] not in ["create", "modify", "select"]:
+            raise ValueError(f"Invalid action type: {action_decision['type']}")
+
+        if action_decision["type"] in ["modify", "select"] and not action_decision.get("action_uuid"):
+            raise ValueError(f"action_uuid required for type '{action_decision['type']}'")
+
+        if action_decision["type"] in ["create", "modify"]:
+            required = ["action_name", "action_plan", "action_prompt"]
+            for field in required:
+                if not action_decision.get(field):
+                    raise ValueError(f"Missing required field for {action_decision['type']}: action_decision.{field}")
+
+        return parsed
+
+    def learn(self, summary, data, key=None, data_type="text"):
+        """
+        Learn new information by intelligently managing actions and data insertion.
+
+        Args:
+            summary (str): Description of what the user is doing on screen
+            data (str): Additional context/data (used in prompt, not stored directly)
+            key (str, optional): Deprecated - keys are auto-generated per category
+            data_type (str): Deprecated - type determined by LLM
+
+        Returns:
+            list: List of up to 4 most recently selected actions (tuples)
+        """
+        try:
+            # 1. Find the relevant node using traverse
+            node = self.traverse(summary)
+            if node is None:
+                print("Warning: Could not find suitable node, using root")
+                node = self.root
+
+            print(f"\n{'='*60}")
+            print(f"LEARN - Selected Node: {node.metadata} (UUID: {node.node_uuid})")
+            print(f"{'='*60}")
+
+            # 2. Gather context
+            existing_actions = self.dao.get_actions_for_node(node.node_uuid, order_by_last_selected=True)
+            existing_categories = self.dao.get_categories_for_node(node.node_uuid)
+
+            print(f"Existing actions: {len(existing_actions)}")
+            print(f"Existing categories: {existing_categories}")
+
+            # 3. Generate and send LLM prompt
+            prompt = self._generate_learning_prompt(node, summary, existing_actions, existing_categories)
+
             anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
             response = anthropic_client.messages.create(
                 model="claude-sonnet-4-5-20250929",
-                max_tokens=1024,
-                messages=[
-                    {"role": "user", "content": ACTION_CREATION_PROMPT}
-                ]
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}]
             )
-            suggested_action = response.content[0].text
+            llm_response = response.content[0].text
+
             print(f"\n{'='*60}")
-            print(f"Suggested Action from Claude:")
-            print(f"{suggested_action}")
+            print(f"Raw LLM Response:")
+            print(f"{llm_response[:500]}...")
             print(f"{'='*60}\n")
-            
-            # Insert the suggested action into the database if it was generated successfully
-            if suggested_action and node:
-                try:
-                    action_uuid = self.dao.add_action(
-                        node_uuid=node.node_uuid,
-                        action_name=suggested_action
-                    )
-                    print(f"Successfully inserted action into database with UUID: {action_uuid}")
-                except Exception as action_error:
-                    print(f"Error inserting action into database: {action_error}")
-                    action_uuid = None
+
+            # Parse response
+            parsed = self._parse_learning_response(llm_response)
+
+            # 4. Process action decision
+            action_decision = parsed["action_decision"]
+            action_type = action_decision["type"]
+            current_timestamp = datetime.now().isoformat()
+
+            selected_action_uuid = None
+
+            if action_type == "create":
+                print(f"Creating new action: {action_decision['action_name']}")
+                selected_action_uuid = self.dao.add_action(
+                    node_uuid=node.node_uuid,
+                    action_name=action_decision["action_name"],
+                    action_plan=action_decision["action_plan"],
+                    action_prompt=action_decision["action_prompt"],
+                    last_selected=current_timestamp
+                )
+                print(f"Created action UUID: {selected_action_uuid}")
+
+            elif action_type == "modify":
+                print(f"Modifying action: {action_decision['action_uuid']}")
+                self.dao.update_action(
+                    action_uuid=action_decision["action_uuid"],
+                    action_name=action_decision["action_name"],
+                    action_plan=action_decision["action_plan"],
+                    action_prompt=action_decision["action_prompt"]
+                )
+                self.dao.update_action_last_selected(action_decision["action_uuid"], current_timestamp)
+                selected_action_uuid = action_decision["action_uuid"]
+                print(f"Modified action UUID: {selected_action_uuid}")
+
+            elif action_type == "select":
+                print(f"Selecting existing action: {action_decision['action_uuid']}")
+                self.dao.update_action_last_selected(action_decision["action_uuid"], current_timestamp)
+                selected_action_uuid = action_decision["action_uuid"]
+                print(f"Selected action UUID: {selected_action_uuid}")
+
+            # 5. Process data insertions
+            data_insertions = parsed.get("data_insertions", [])
+            print(f"\nProcessing {len(data_insertions)} data insertions...")
+
+            for insertion in data_insertions:
+                category = insertion["category"]
+                condensed_data = insertion["condensed_data"]
+
+                # Generate a unique key for this data entry
+                timestamp_key = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                data_key = f"{category}_{timestamp_key}"
+
+                self.dao.add_data_with_category(
+                    node_uuid=node.node_uuid,
+                    category=category,
+                    key=data_key,
+                    data_type="text",
+                    info=condensed_data
+                )
+                print(f"  - Inserted into category '{category}': {condensed_data[:100]}...")
+
+                # Increment node counter for each insertion
+                self.dao.increment_node_counter(node.node_uuid)
+
+            # 6. Cleanup stale actions
+            deleted_count = self.dao.delete_stale_actions(node.node_uuid, days_threshold=3)
+            if deleted_count > 0:
+                print(f"\nDeleted {deleted_count} stale actions (>3 days old)")
+
+            # 7. Return recent actions
+            recent_actions = self.dao.get_recent_actions_for_node(node.node_uuid, limit=4)
+            print(f"\nReturning {len(recent_actions)} recent actions")
+
+            return recent_actions
+
         except Exception as e:
-            print(f"Error calling Claude API: {e}")
-            suggested_action = None
-            action_uuid = None
-        
-        if node is None:
-            print("Warning: Could not find suitable node, using root")
-            node = self.root
-        
-        # Generate a key if not provided
-        if key is None:
-            key = f"data_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        # Convert data to string if it's a dict
-        if isinstance(data, dict):
-            data_str = json.dumps(data)
-            if data_type == "text":
-                data_type = "json"
-        else:
-            data_str = str(data)
-        
-        # Insert data into the database using the DAO
-        try:
-            data_uuid = self.dao.add_data(
-                node_uuid=node.node_uuid,
-                key=key,
-                data_type=data_type,
-                info=data_str
-            )
-            print(f"Successfully inserted data into node '{node.metadata}' (UUID: {node.node_uuid})")
-            print(f"Data UUID: {data_uuid}")
-            return suggested_action, action_uuid
-        except Exception as e:
-            print(f"Error inserting data: {e}")
-            return suggested_action, action_uuid
-        
-    async def trigger_action(self, action_uuid):
+            print(f"Error in learn(): {e}")
+            import traceback
+            traceback.print_exc()
+            # Return empty list on error - don't crash
+            return []
+
+    @staticmethod
+    def cleanup_node_data(dao, node_uuid, anthropic_api_key=None):
         """
-        Trigger an action by its UUID, gathering all relevant context data from the node 
-        and its ancestors into a single concatenated string.
-        
+        Static method to condense data within a node by category.
+        This method operates directly on the database and is designed to be called
+        by external cleanup threads.
+
         Args:
-            action_uuid (str): UUID of the action to trigger
-            
+            dao: GraphDAO instance for database operations
+            node_uuid (str): UUID of the node to clean up
+            anthropic_api_key (str, optional): API key for Anthropic. Defaults to env var.
+
         Returns:
-            tuple: (action_text, collected_data_string) - The action description and all collected data as a single string
+            bool: True if cleanup succeeded for all categories, False otherwise
         """
-        # Get the action from the database
-        action_data = self.dao.get_action_by_id(action_uuid)
-        if not action_data:
-            print(f"Error: Action with UUID {action_uuid} not found")
-            return None, None
-        
-        action_uuid_db, action_text, node_uuid = action_data
-        print(f"Found action: {action_text}")
-        print(f"Associated with node UUID: {node_uuid}")
-        
-        # Collect all data into a list to be concatenated later
-        data_parts = []
-        data_parts.append(f"ACTION TO EXECUTE: {action_text}\n")
-        data_parts.append("="*60 + "\n")
-        
-        def collect_ancestor_data(current_node_uuid, depth=0):
-            """Recursively collect data from a node and all its ancestors"""
-            if not current_node_uuid:
-                return
-            
-            # Get data for current node
-            node_data_entries = self.dao.get_data_for_node(current_node_uuid)
-            
-            # Get node info to find parent
-            node_info = self.dao.get_node_by_id(current_node_uuid)
-            if not node_info:
-                return
-            
-            node_uuid_db, metadata, created, last_modified, parent_uuid, children_uuid_arr = node_info
-            
-            # Add node metadata to the string
-            indent = "  " * depth
-            if metadata:
-                data_parts.append(f"\n{indent}NODE: {metadata}\n")
-                data_parts.append(f"{indent}NODE_UUID: {current_node_uuid}\n")
-            
-            # Add all data entries for this node
-            if node_data_entries:
-                data_parts.append(f"{indent}DATA ENTRIES:\n")
-                for data_entry in node_data_entries:
-                    data_uuid, data_node_uuid, key, data_type, info = data_entry
-                    # Use key if available, otherwise use data_uuid
-                    data_key = key if key else f"data_{data_uuid}"
-                    data_parts.append(f"{indent}  - KEY: {data_key}\n")
-                    data_parts.append(f"{indent}    TYPE: {data_type}\n")
-                    data_parts.append(f"{indent}    INFO: {info}\n")
-            
-            # Recursively collect from parent
-            if parent_uuid:
-                data_parts.append(f"{indent}PARENT CONTEXT:\n")
-                collect_ancestor_data(parent_uuid, depth + 1)
-        
-        # Start collection from the action's node
-        collect_ancestor_data(node_uuid)
-        
-        # Concatenate all parts into a single string
-        collected_data_string = "".join(data_parts)
-        
-        print(f"\n{'='*60}")
-        print(f"Collected context data (first 1000 chars):")
-        print(collected_data_string[:1000])
-        if len(collected_data_string) > 1000:
-            print("...")
-        print(f"Total data length: {len(collected_data_string)} characters")
-        print(f"{'='*60}\n")
-        
-        # ================================================================
-        # SPACE FOR ACTION EXECUTION
-        # ================================================================
-        # TODO: Add your action execution logic here
-        # You can call external functions/modules to perform the actual action
-        # 
-        # Example structure:
-        # if "send email" in action_text.lower():
-        #     from email_handler import send_email
-        #     result = send_email(action_text, collected_data_string)
-        # elif "schedule meeting" in action_text.lower():
-        #     from calendar_handler import schedule_meeting
-        #     result = schedule_meeting(action_text, collected_data_string)
-        # 
-        # For now, just print what would be executed
-        
-        print(f"Would execute: {action_text}")
-        print(f"With context data string of length: {len(collected_data_string)}")
-        # ================================================================
-        
-        # Call run_graph with action_text as user_query and collected_data_string as data
-        await run_graph(user_query=action_text, data=collected_data_string)
-        
-        return action_text, collected_data_string
+        # Get API key from environment if not provided
+        if anthropic_api_key is None:
+            anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not anthropic_api_key:
+                print(f"Error: ANTHROPIC_API_KEY not found in environment")
+                return False
+
+        try:
+            # Get all data grouped by category
+            data_by_category = dao.get_data_for_node_by_category(node_uuid)
+
+            if not data_by_category:
+                print(f"No data to clean for node {node_uuid}")
+                return False
+
+            print(f"\n{'='*60}")
+            print(f"CLEANUP - Node UUID: {node_uuid}")
+            print(f"Categories to process: {list(data_by_category.keys())}")
+            print(f"{'='*60}")
+
+            all_succeeded = True
+            anthropic_client = Anthropic(api_key=anthropic_api_key)
+
+            for category, data_entries in data_by_category.items():
+                # Skip categories with only 1 entry - nothing to condense
+                if len(data_entries) <= 1:
+                    print(f"Skipping category '{category}' - only {len(data_entries)} entry")
+                    continue
+
+                print(f"\nProcessing category '{category}' with {len(data_entries)} entries...")
+
+                # Collect all data info from entries
+                data_texts = []
+                for entry in data_entries:
+                    uuid, node_uuid_db, key, data_type, info, cat = entry
+                    data_texts.append(f"- {info}")
+
+                # Create condensation prompt
+                condensation_prompt = f"""You are a data condensation system. Your task is to condense multiple related data entries into a single comprehensive entry.
+
+CATEGORY: {category}
+
+EXISTING DATA ENTRIES:
+{chr(10).join(data_texts)}
+
+YOUR TASK:
+Condense these {len(data_texts)} entries into a SINGLE comprehensive entry that:
+1. Preserves ALL important information from all entries
+2. Removes duplicate or redundant information
+3. If newer information supersedes older information, keep only the newer info
+4. Maintains clarity and usefulness for future reference
+5. Organizes the information logically
+
+IMPORTANT:
+- Output ONLY the condensed text - no explanations, no JSON, no markdown
+- Be thorough but concise
+- Do not lose any important details
+- The output will replace all existing entries for this category
+
+CONDENSED ENTRY:"""
+
+                try:
+                    # Call Claude to condense the data
+                    response = anthropic_client.messages.create(
+                        model="claude-sonnet-4-5-20250929",
+                        max_tokens=2048,
+                        messages=[{"role": "user", "content": condensation_prompt}]
+                    )
+                    condensed_data = response.content[0].text.strip()
+
+                    print(f"Original entries: {len(data_entries)}")
+                    print(f"Condensed to: {len(condensed_data)} chars")
+                    print(f"Preview: {condensed_data[:200]}...")
+
+                    # Delete all existing entries for this category
+                    deleted_count = dao.delete_data_by_category(node_uuid, category)
+                    print(f"Deleted {deleted_count} original entries")
+
+                    # Insert the condensed entry
+                    timestamp_key = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    data_key = f"{category}_condensed_{timestamp_key}"
+                    dao.add_data_with_category(
+                        node_uuid=node_uuid,
+                        category=category,
+                        key=data_key,
+                        data_type="text",
+                        info=condensed_data
+                    )
+                    print(f"Inserted condensed entry for category '{category}'")
+
+                except Exception as e:
+                    print(f"Error condensing category '{category}': {e}")
+                    import traceback
+                    traceback.print_exc()
+                    all_succeeded = False
+                    # Don't delete original data if condensation fails
+                    continue
+
+            # Reset the node counter after successful cleanup
+            dao.reset_node_counter(node_uuid)
+            print(f"\nReset node counter for {node_uuid}")
+
+            return all_succeeded
+
+        except Exception as e:
+            print(f"Error in cleanup_node_data: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    @staticmethod
+    def cleanup_nodes_batch(dao, threshold, anthropic_api_key=None):
+        """
+        Static method to perform batch cleanup on nodes that need it.
+
+        Args:
+            dao: GraphDAO instance for database operations
+            threshold (int): Insertion count threshold for cleanup
+            anthropic_api_key (str, optional): API key for Anthropic. Defaults to env var.
+
+        Returns:
+            list: List of node UUIDs that were successfully cleaned
+        """
+        # Get API key from environment if not provided
+        if anthropic_api_key is None:
+            anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+
+        try:
+            # Get all nodes that need cleanup
+            nodes_needing_cleanup = dao.get_nodes_needing_cleanup(threshold)
+
+            if not nodes_needing_cleanup:
+                print(f"No nodes need cleanup (threshold: {threshold})")
+                return []
+
+            print(f"\n{'='*60}")
+            print(f"BATCH CLEANUP - Found {len(nodes_needing_cleanup)} nodes needing cleanup")
+            print(f"Threshold: {threshold} insertions")
+            print(f"{'='*60}")
+
+            successfully_cleaned = []
+
+            for node_uuid in nodes_needing_cleanup:
+                counter = dao.get_node_counter(node_uuid)
+                print(f"\nCleaning node {node_uuid} (insertion count: {counter})...")
+
+                success = Tree.cleanup_node_data(dao, node_uuid, anthropic_api_key)
+
+                if success:
+                    successfully_cleaned.append(node_uuid)
+                    print(f"✓ Successfully cleaned node {node_uuid}")
+                else:
+                    print(f"✗ Failed to clean node {node_uuid}")
+
+            print(f"\n{'='*60}")
+            print(f"Batch cleanup complete: {len(successfully_cleaned)}/{len(nodes_needing_cleanup)} nodes cleaned")
+            print(f"{'='*60}")
+
+            return successfully_cleaned
+
+        except Exception as e:
+            print(f"Error in cleanup_nodes_batch: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
 
     # show as adjacency list
     def __repr__(self):
@@ -487,521 +870,15 @@ class Tree:
 
         return str(build_adj_list(self.root))
 
-print("Initializing graph from database...")
-tree = Tree("graph.db")
-print("Graph structure:")
-print(tree)
-
-# Example usage of the traverse method
-# if tree.API_KEY:  # Only test if API key is available
-#     print("\n" + "="*50)
-#     print("Testing traverse method:")
-    
-#     # Test with some example screen inputs
-#     test_screens = [
-#         "the user is currently writing an email to schedule an interview with a candidate 'Ritesh' who is currently in the interview process for a software engineering internship for summer 2026",
-#         "the user is currently making a LinkedIn posting for a software engineering internship for summer 2026",
-#     ]
-
-#     test_screens = [
-#         # ========== RECRUITING - INTERN - SUMMER 2026 ==========
-#         "the user is currently writing an email to schedule an interview with a candidate 'Ritesh' who is currently in the interview process for a software engineering internship for summer 2026",
-#         "the user is currently making a LinkedIn posting for a software engineering internship for summer 2026",
-#         "reviewing resumes for summer 2026 intern positions",
-#         "scheduling technical interviews with Hemant for the summer 2026 internship program",
-#         "sending rejection emails to candidates who didn't make it to the final round for summer internships",
-#         "creating an offer letter for Krishiv who will be joining as a summer 2026 intern",
-        
-#         # ========== RECRUITING - INTERN - FALL 2026 ==========
-#         "planning the recruiting timeline for fall 2026 internships",
-#         "posting job descriptions for fall 2026 software engineering intern positions on the careers page",
-#         "screening applications received for the fall 2026 intern cohort",
-#         "coordinating with hiring managers about fall 2026 internship openings",
-        
-#         # ========== RECRUITING - NEW GRAD - 2025 ==========
-#         "reviewing applications for 2025 new graduate software engineer positions",
-#         "conducting final round interviews for 2025 new grad candidates",
-#         "preparing onboarding materials for new grads starting in 2025",
-#         "sending offer letters to selected 2025 new graduate candidates",
-        
-#         # ========== RECRUITING - NEW GRAD - 2026 ==========
-#         "planning the campus recruiting strategy for 2026 new graduates",
-#         "updating the job requirements for 2026 new grad positions",
-#         "scheduling on-campus interviews for 2026 graduating students",
-        
-#         # ========== RECRUITING - NEW GRAD - EVENTS - ONLINE WEBINAR ==========
-#         "preparing slides for an online webinar about our company culture for potential new grad candidates",
-#         "sending calendar invites for the upcoming recruiting webinar",
-#         "hosting a virtual Q&A session for students interested in new grad roles",
-#         "following up with attendees from last week's career webinar",
-        
-#         # ========== RECRUITING - NEW GRAD - EVENTS - CAREER FAIR ==========
-#         "booking a booth at the university career fair happening next month",
-#         "preparing company brochures and swag for the career fair",
-#         "coordinating with the recruiting team about staffing the career fair booth",
-#         "collecting resumes at the MIT career fair",
-        
-#         # ========== RECRUITING - NEW GRAD - EVENTS - CAREER CONFERENCE ==========
-#         "registering the company for the Grace Hopper Conference",
-#         "preparing a presentation for the upcoming tech diversity conference",
-#         "scheduling one-on-one meetings with candidates at the career conference",
-#         "following up with promising candidates met at last week's conference",
-        
-#         # ========== EMPLOYEE MANAGEMENT - ONBOARDING ==========
-#         "setting up laptop and accounts for a new employee starting next week",
-#         "scheduling orientation sessions for the new hire cohort",
-#         "assigning a mentor to a newly onboarded software engineer",
-#         "sending out the onboarding checklist to a new team member",
-#         "coordinating with IT to ensure all onboarding equipment is ready",
-        
-#         # ========== EMPLOYEE MANAGEMENT - ISSUES ==========
-#         "investigating a complaint about workplace harassment",
-#         "mediating a conflict between two team members",
-#         "addressing concerns raised by an employee about their workload",
-#         "following up on a performance improvement plan with an underperforming employee",
-#         "documenting an incident report for HR records",
-        
-#         # ========== EMPLOYEE MANAGEMENT - QUESTIONS/REQUESTS - ANSWER QUESTIONS ==========
-#         "responding to an employee's question about the 401k matching policy",
-#         "clarifying the work-from-home policy for a remote employee",
-#         "explaining the performance review process to a new manager",
-#         "answering questions about health insurance enrollment",
-#         "providing information about the company's parental leave policy",
-        
-#         # ========== EMPLOYEE MANAGEMENT - QUESTIONS/REQUESTS - APPROVE TIMESHEETS ==========
-#         "reviewing and approving timesheets for the engineering team",
-#         "following up with employees who haven't submitted their timesheets",
-#         "investigating discrepancies in submitted timesheet hours",
-#         "bulk approving timesheets for the end of the pay period",
-        
-#         # ========== EMPLOYEE MANAGEMENT - QUESTIONS/REQUESTS - APPROVE LEAVE REQUESTS ==========
-#         "approving vacation requests for the summer holiday period",
-#         "reviewing a sick leave request that exceeds the standard policy",
-#         "coordinating leave schedules to ensure adequate team coverage",
-#         "approving parental leave for an employee expecting a baby",
-#         "handling a last-minute emergency leave request",
-        
-#         # ========== EDGE CASES / AMBIGUOUS ==========
-#         "drafting an email to the entire engineering organization",
-#         "reviewing the company's diversity and inclusion initiatives",
-#         "preparing for quarterly business review meeting",
-#         "updating the employee handbook with new policies",
-#     ]
-
-#     # Optional: Organize tests by expected node for easier validation
-#     test_cases_with_expected_nodes = [
-#         # Format: (screen_description, expected_node_metadata)
-#         ("reviewing resumes for summer 2026 intern positions", "Summer 2026"),
-#         ("hosting a virtual Q&A session for students interested in new grad roles", "Online Webinar"),
-#         ("responding to an employee's question about the 401k matching policy", "Answer Questions"),
-#         ("reviewing and approving timesheets for the engineering team", "Approve Timesheets"),
-#         ("approving vacation requests for the summer holiday period", "Approve Leave Requests"),
-#         ("setting up laptop and accounts for a new employee starting next week", "Onboarding"),
-#         ("mediating a conflict between two team members", "Issues"),
-#         ("collecting resumes at the MIT career fair", "Career Fair"),
-#         ("preparing a presentation for the upcoming tech diversity conference", "Career Conference"),
-#         ("screening applications received for the fall 2026 intern cohort", "Fall 2026"),
-#         ("conducting final round interviews for 2025 new grad candidates", "2025"),
-#         ("planning the campus recruiting strategy for 2026 new graduates", "2026"),
-#     ]
-    
-#     for screen in test_screens:
-#         print(f"\nScreen input: '{screen}'")
-#         result_node = tree.traverse(screen)
-#         if result_node:
-#             print(f"Selected node: {result_node}")
-#         else:
-#             print("No node selected")
-# else:
-#     print("\nSkipping traverse test - API key not available")
-
-# Test cases for the learn() method (COMMENTED OUT FOR trigger_action TESTING)
-# if tree.API_KEY:
-#     print("\n" + "="*50)
-#     print("Testing learn() method:")
-#     print("="*50)
-#     
-#     # Test Case 1: Simple text data for a specific candidate
-#     print("\n--- Test Case 1: Interview notes for Ritesh ---")
-#     summary1 = """
-#     The user is viewing an email which says:
-#     Hi Elizabeth,
-# 
-# I'm glad to be moving forward in the interview process with KLA. 
-# My availability (Central Daylight Time) for the upcoming week is:
-# Saturday (11/02)- All day
-# Sunday (11/03) - All day
-# Monday(11/04) - After 12pm
-# Tuesday (11/05) - After 1pm
-# Wednesday (11/06) - After 12pm
-# Thursday(11/07) - After 1pm
-# Friday(11/08) - All day
-# Please let me know if you need any additional times.
-# 
-# Regards,
-# Ritesh Neela
-#     """
-#     data1 = {
-#         "candidate": "Ritesh",
-#         "position": "Software Engineering Intern - Summer 2026",
-#         "interview_date": "2025-10-30",
-#         "interviewer": "John Smith",
-#         "technical_score": 8.5,
-#         "cultural_fit": 9.0,
-#         "feedback": "Strong problem-solving skills, excellent communication",
-#         "recommendation": "Proceed to final round"
-#     }
-#     node_uuid1, written_data1 = tree.learn(summary1, data1, key="ritesh_interview_round1")
-#     print(f"Data inserted into node UUID: {node_uuid1}")
-#     
-#     # Test Case 2: Career fair information
-#     print("\n--- Test Case 2: Career fair event details ---")
-#     summary2 = "Details about the upcoming MIT career fair"
-#     data2 = {
-#         "event_name": "MIT Career Fair Fall 2025",
-#         "date": "2025-11-15",
-#         "location": "MIT Student Center",
-#         "booth_number": "A-42",
-#         "recruiters": ["Sarah Johnson", "Mike Chen"],
-#         "target_positions": ["New Grad SWE", "Internships"],
-#         "expected_attendance": 500
-#     }
-#     node_uuid2, written_data2 = tree.learn(summary2, data2, key="mit_career_fair_2025")
-#     print(f"Data inserted into node UUID: {node_uuid2}")
-#     
-#     # Test Case 3: Employee onboarding checklist
-#     print("\n--- Test Case 3: New employee onboarding ---")
-#     summary3 = "Onboarding checklist for new software engineer starting next week"
-#     data3 = {
-#         "employee_name": "Alex Thompson",
-#         "start_date": "2025-11-01",
-#         "department": "Engineering",
-#         "checklist": [
-#             "Setup laptop and accounts",
-#             "Assign mentor",
-#             "Schedule orientation",
-#             "Provide access badges",
-#             "Enroll in benefits"
-#         ],
-#         "status": "in_progress"
-#     }
-#     node_uuid3, written_data3 = tree.learn(summary3, data3, key="alex_thompson_onboarding")
-#     print(f"Data inserted into node UUID: {node_uuid3}")
-#     
-#     # Test Case 4: Timesheet approval data
-#     print("\n--- Test Case 4: Timesheet approval ---")
-#     summary4 = "Timesheet approval for engineering team - October 2025"
-#     data4 = {
-#         "period": "October 2025",
-#         "team": "Engineering",
-#         "total_hours": 1680,
-#         "approved_by": "Manager Name",
-#         "approval_date": "2025-10-31",
-#         "notes": "All timesheets reviewed and approved"
-#     }
-#     node_uuid4, written_data4 = tree.learn(summary4, data4, key="eng_timesheet_oct2025")
-#     print(f"Data inserted into node UUID: {node_uuid4}")
-#     
-#     # Test Case 5: Leave request approval
-#     print("\n--- Test Case 5: Vacation leave request ---")
-#     summary5 = "Vacation leave request for summer holiday period"
-#     data5 = {
-#         "employee": "Jane Doe",
-#         "leave_type": "vacation",
-#         "start_date": "2026-07-01",
-#         "end_date": "2026-07-15",
-#         "days": 10,
-#         "status": "approved",
-#         "approved_by": "HR Manager",
-#         "coverage_plan": "Tasks delegated to team members"
-#     }
-#     node_uuid5, written_data5 = tree.learn(summary5, data5, key="jane_vacation_july2026")
-#     print(f"Data inserted into node UUID: {node_uuid5}")
-#     
-#     # Test Case 6: Simple string data (not JSON)
-#     print("\n--- Test Case 6: Simple text note ---")
-#     summary6 = "Quick note about fall 2026 internship recruiting timeline"
-#     data6 = "Start posting job descriptions by January 2026. Begin screening in February."
-#     node_uuid6, written_data6 = tree.learn(summary6, data6)
-#     print(f"Data inserted into node UUID: {node_uuid6}")
-#     
-#     # Test Case 7: Employee issue resolution
-#     print("\n--- Test Case 7: Employee issue documentation ---")
-#     summary7 = "Conflict resolution between team members"
-#     data7 = {
-#         "issue_id": "ISS-2025-042",
-#         "date_reported": "2025-10-20",
-#         "issue_type": "interpersonal_conflict",
-#         "parties_involved": ["Employee A", "Employee B"],
-#         "description": "Disagreement over project responsibilities",
-#         "resolution": "Mediation session held, roles clarified",
-#         "status": "resolved",
-#         "follow_up_date": "2025-11-20"
-#     }
-#     action, actionID = tree.learn(summary7, data7, key="conflict_resolution_042")
-#     print(f"Action: {action}")
-#     print(f"Action UUID: {actionID}")
-#     
-#     print("\n" + "="*50)
-#     print("All learn() test cases completed!")
-#     print("="*50)
-#     
-#     # Verify data was inserted by checking the database
-#     print("\n--- Verifying data in database ---")
-#     cursor = tree.dao.cursor
-#     cursor.execute("SELECT COUNT(*) FROM data_table")
-#     count = cursor.fetchone()[0]
-#     print(f"Total records in data_table: {count}")
-#     
-# else:
-#     print("\nSkipping learn() test - API key not available")
-
-# ============================================================
-# Test cases for the trigger_action() method
-# ============================================================
+# Initialize tree when module is imported
+# Uncomment the lines below to initialize the tree on import
+# print("Initializing graph from database...")
+# tree = Tree("../context-engine/graph.db")
+# print("Graph structure:")
+# print(tree)
+# call the cleanup method in the main function 
 if __name__ == "__main__":
-    print("\n" + "="*60)
-    print("TESTING trigger_action() METHOD")
-    print("="*60)
     
-    # First, let's insert some test data to work with
-    print("\n--- Setting up test data ---")
+    dao = GraphDAO("graph.db")
     
-    # Get all existing actions from the database to test with
-    cursor = tree.dao.cursor
-    cursor.execute("SELECT UUID, Action_name, Node_UUID FROM action_table")
-    all_actions = cursor.fetchall()
-    
-    if all_actions:
-        print(f"Found {len(all_actions)} actions in database\n")
-        
-        # Test Case 1: Trigger an action from Summer 2026 node (has parent hierarchy)
-        print("\n" + "="*60)
-        print("Test Case 1: Action with deep hierarchy (Summer 2026)")
-        print("="*60)
-        # Find the summer 2026 action
-        summer_action = None
-        for action in all_actions:
-            if "summer" in action[1].lower() or "Summer 2026" in str(action):
-                summer_action = action
-                break
-        
-        if summer_action:
-            action_uuid = summer_action[0]
-            print(f"Testing with action UUID: {action_uuid}")
-            print(f"Action name: {summer_action[1]}")
-            
-            # First add some data to the node for testing
-            test_data = {
-                "test_field": "This is test data for Summer 2026",
-                "candidates": ["Ritesh", "Hemant", "Krishiv", "Siddharth"],
-                "status": "active_recruiting"
-            }
-            tree.dao.add_data(
-                node_uuid=summer_action[2],
-                key="summer_2026_test_data",
-                data_type="json",
-                info=json.dumps(test_data)
-            )
-            
-            # Now trigger the action
-            action_text, collected_data = tree.trigger_action(action_uuid)
-            
-            if action_text:
-                print("\n✓ Action triggered successfully")
-                print(f"Action text: {action_text}")
-                print(f"Collected data length: {len(collected_data)} characters")
-                print("\nData hierarchy includes:")
-                # Check for hierarchy markers in the string
-                if "NODE: Summer 2026" in collected_data:
-                    print("  ✓ Summer 2026 node")
-                if "NODE: Intern" in collected_data:
-                    print("  ✓ Intern node (parent)")
-                if "NODE: Recruiting" in collected_data:
-                    print("  ✓ Recruiting node (grandparent)")
-                if "NODE: Root Node" in collected_data:
-                    print("  ✓ Root node (great-grandparent)")
-            else:
-                print("✗ Failed to trigger action")
-        
-        # Test Case 2: Trigger an action from a leaf node with no children
-        print("\n" + "="*60)
-        print("Test Case 2: Action from leaf node (Onboarding)")
-        print("="*60)
-        onboarding_action = None
-        for action in all_actions:
-            if "onboard" in action[1].lower():
-                onboarding_action = action
-                break
-        
-        if onboarding_action:
-            action_uuid = onboarding_action[0]
-            print(f"Testing with action UUID: {action_uuid}")
-            print(f"Action name: {onboarding_action[1]}")
-            
-            # Add test data
-            tree.dao.add_data(
-                node_uuid=onboarding_action[2],
-                key="onboarding_checklist",
-                data_type="text",
-                info="1. Setup accounts\n2. Assign mentor\n3. Schedule orientation"
-            )
-            
-            action_text, collected_data = tree.trigger_action(action_uuid)
-            
-            if action_text:
-                print("\n✓ Action triggered successfully")
-                print(f"Action text: {action_text}")
-                print("\nVerifying data collection:")
-                if "onboarding_checklist" in collected_data:
-                    print("  ✓ Found onboarding checklist data")
-                if "Employee Management" in collected_data:
-                    print("  ✓ Found parent Employee Management node")
-        
-        # Test Case 3: Trigger with invalid action UUID
-        print("\n" + "="*60)
-        print("Test Case 3: Invalid action UUID")
-        print("="*60)
-        invalid_uuid = "invalid-uuid-12345"
-        print(f"Testing with invalid UUID: {invalid_uuid}")
-        
-        action_text, collected_data = tree.trigger_action(invalid_uuid)
-        
-        if action_text is None and collected_data is None:
-            print("✓ Correctly returned None for invalid UUID")
-        else:
-            print("✗ Should have returned None for invalid UUID")
-        
-        # Test Case 4: Check data concatenation format
-        print("\n" + "="*60)
-        print("Test Case 4: Verify concatenated string format")
-        print("="*60)
-        
-        # Use the first available action
-        if all_actions:
-            test_action = all_actions[0]
-            action_uuid = test_action[0]
-            print(f"Testing string format with action: {test_action[1]}")
-            
-            action_text, collected_data = tree.trigger_action(action_uuid)
-            
-            if collected_data:
-                print("\n✓ Data successfully concatenated into string")
-                print("\nString structure verification:")
-                if collected_data.startswith("ACTION TO EXECUTE:"):
-                    print("  ✓ Starts with ACTION TO EXECUTE")
-                if "NODE:" in collected_data:
-                    print("  ✓ Contains NODE markers")
-                if "NODE_UUID:" in collected_data:
-                    print("  ✓ Contains NODE_UUID markers")
-                if "DATA ENTRIES:" in collected_data or "KEY:" in collected_data:
-                    print("  ✓ Contains data entry markers")
-                if "PARENT CONTEXT:" in collected_data:
-                    print("  ✓ Contains parent context markers")
-                
-                # Show a sample of the formatted string
-                print("\nSample of formatted output (first 500 chars):")
-                print("-" * 40)
-                print(collected_data[:500])
-                if len(collected_data) > 500:
-                    print("...")
-                print("-" * 40)
-        
-        # Test Case 5: Trigger action for Approve Leave Requests node
-        print("\n" + "="*60)
-        print("Test Case 5: Approve Leave Requests action")
-        print("="*60)
-        
-        leave_action = None
-        for action in all_actions:
-            if "leave" in action[1].lower():
-                leave_action = action
-                break
-        
-        if leave_action:
-            action_uuid = leave_action[0]
-            print(f"Testing with action UUID: {action_uuid}")
-            print(f"Action name: {leave_action[1]}")
-            
-            # Add test data for a leave request
-            leave_request_data = {
-                "employee_name": "Sarah Johnson",
-                "employee_id": "EMP-2024-789",
-                "leave_type": "vacation",
-                "start_date": "2025-12-20",
-                "end_date": "2025-12-31",
-                "total_days": 12,
-                "reason": "Year-end holiday vacation",
-                "status": "pending_approval",
-                "submitted_date": "2025-11-01",
-                "backup_contact": "Mike Chen"
-            }
-            tree.dao.add_data(
-                node_uuid=leave_action[2],
-                key="sarah_leave_request_dec2025",
-                data_type="json",
-                info=json.dumps(leave_request_data)
-            )
-            
-            # Also add another leave request for testing multiple entries
-            leave_request_data2 = {
-                "employee_name": "David Kim",
-                "employee_id": "EMP-2024-456",
-                "leave_type": "sick_leave",
-                "start_date": "2025-11-15",
-                "end_date": "2025-11-17",
-                "total_days": 3,
-                "reason": "Medical appointment",
-                "status": "pending_approval",
-                "submitted_date": "2025-11-10"
-            }
-            tree.dao.add_data(
-                node_uuid=leave_action[2],
-                key="david_leave_request_nov2025",
-                data_type="json",
-                info=json.dumps(leave_request_data2)
-            )
-            
-            # Trigger the action
-            action_text, collected_data = tree.trigger_action(action_uuid)
-            
-            if action_text:
-                print("\n✓ Action triggered successfully")
-                print(f"Action text: {action_text}")
-                print(f"Collected data length: {len(collected_data)} characters")
-                print("\nVerifying collected leave request data:")
-                
-                # Check for specific data in the collected string
-                if "sarah_leave_request_dec2025" in collected_data:
-                    print("  ✓ Found Sarah's leave request")
-                if "david_leave_request_nov2025" in collected_data:
-                    print("  ✓ Found David's leave request")
-                if "Questions/Requests" in collected_data:
-                    print("  ✓ Found parent Questions/Requests node")
-                if "Employee Management" in collected_data:
-                    print("  ✓ Found grandparent Employee Management node")
-                if "Root Node" in collected_data:
-                    print("  ✓ Found root node in hierarchy")
-                
-                # Count how many leave requests are in the data
-                leave_count = collected_data.count("leave_request")
-                print(f"\nTotal leave request entries found: {leave_count}")
-                
-                # Show a preview of the collected data
-                print("\nData preview (first 800 chars):")
-                print("-" * 40)
-                print(collected_data)
-                if len(collected_data) > 800:
-                    print("...")
-                print("-" * 40)
-            else:
-                print("✗ Failed to trigger action")
-        else:
-            print("✗ Could not find leave request action in database")
-    else:
-        print("No actions found in database. Please run graph_dao.py to populate test data first.")
-        print("Run: python context-engine/graph_dao.py")
-    
-    print("\n" + "="*60)
-    print("All trigger_action() tests completed!")
-    print("="*60)
+    Tree.cleanup_nodes_batch(dao, 10)

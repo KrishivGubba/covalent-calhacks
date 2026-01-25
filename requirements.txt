@@ -17,3 +17,9 @@ langchain-mcp-adapters
 langgraph
 fastmcp
 google
+google-generativeai
+playwright
+langchain-anthropic
+Pillow
+pypdf
+requests

@@ -23,8 +23,8 @@ composio = Composio(
 gmail_auth_config_id = os.getenv("GOOGLE_AUTH_CONFIG_ID")
 
 llm = init_chat_model(
-    model_provider="google_genai", # MODEL DECLARATION
-    model="gemini-2.5-flash",
+    model_provider="anthropic",
+    model="claude-sonnet-4-5-20250929",
 )
 
 # Always the kind of task used for the mcp server
@@ -79,7 +79,7 @@ class LLMTasks(BaseModel):
 
 
 model = llm.with_structured_output(LLMTasks)
-# worker_agent = Anthropic()
+worker_agent = Anthropic()
 
 # Orchestrator node assigns tasks to specific workers explicitly
 def orchestrator(state: State):
@@ -94,7 +94,9 @@ def orchestrator(state: State):
             -  If there exists any task that cannot be completed with the gsuite, it should be a screen controller task 
             or sc_task.  
             - A screen controller task must be split into a list of the smallest executable tasks possible 
-            
+            - Make sure to extract the email address of the person you want to send the email to and use that to send the email. DO NOT CREATE TEMPLATE EMAILS OR CALENDAR INVITES - JUST WRITE AND SEND THE EMAIL WITH WHATEVER INFORMATION YOU ARE GIVEN
+            - when creating an MCP task, make sure to include ALL information needed to complete the task like the email, time, date, etc. 
+
             Example: 
                 User: Write an email to rneela@wisc.edu to follow up with yesterday's meeting, then go to google and search
                 up for some videos of kittens playing with puppies
@@ -135,7 +137,7 @@ async def gsuite(state : State):
         print(user_id)
         connected_accounts = composio.connected_accounts.list(
             user_ids=[user_id], # this is set to xxx to always bypass the filtering and setup and new auth every time
-            auth_config_ids=["ac_cgbJXrl-9yI4"],
+            auth_config_ids=["ac_gbtRGl26MO9g"],
             toolkit_slugs=["GMAIL","GOOGLECALENDAR","GOOGLESLIDES","GOOGLEDRIVE","GOOGLESHEETS","GOOGLEDOCS"]
         )
         active_connection = None
@@ -152,7 +154,7 @@ async def gsuite(state : State):
             print("No active connection: We will try authenticating again")
             connection_request = composio.connected_accounts.link(
                 user_id=user_id,
-                auth_config_id="ac_cgbJXrl-9yI4",
+                auth_config_id="ac_gbtRGl26MO9g",
             )
             redirect_url = connection_request.redirect_url
             print(f'Please authorize the app by visiting this URL: {redirect_url}')
@@ -171,7 +173,7 @@ async def gsuite(state : State):
         tools = await client.get_tools()
 
         agent = create_agent(
-            "google_genai:gemini-2.5-flash", # MODEL DECLARATION
+            "anthropic:claude-sonnet-4-5",
             tools
         )
 
@@ -187,6 +189,8 @@ async def gsuite(state : State):
                  - You do not need to confirm or ask for permission. SEND THE EMAIL. TRY SENDING IT EVEN IF YOU THINK YOU DON'T HAVE PROPER AUTHENTICATION. JUST SEND IT.
                  - Remember not to leave any fields blank.
                  - If you have to modify something, first check if it's empty or not before trying to delete anything 
+                - Make sure to extract the email address of the person you want to send the email to and use that to send the email. DO NOT CREATE TEMPLATE EMAILS OR CALENDAR INVITES - JUST WRITE AND SEND A FULL COMPLETE EMAIL WITH WHATEVER INFORMATION YOU ARE GIVEN
+
                  """},
                 {"role": "user",
                  "content": task_content
@@ -226,15 +230,8 @@ def synthesizer(state: State):
     final_outputs = []
     for output in state['mcp_outputs']:
         if isinstance(output.result, dict):
-            response = output.result.get('response', str(output.result))
-            # Handle case where response is a list
-            if isinstance(response, list):
-                # Extract text from list items
-                response = " ".join(
-                    item.get('text', str(item)) if isinstance(item, dict) else str(item)
-                    for item in response
-                )
-            final_outputs.append(str(response))
+            # Extract the response from the dict
+            final_outputs.append(output.result.get('response', str(output.result)))
         else:
             final_outputs.append(str(output.result))
 
@@ -272,12 +269,18 @@ graph.add_edge("synthesizer", END)
 compiled = graph.compile()
 
 async def run_graph(user_query : str = "No task provided", data : str = "No data provided"):
+    print(f"🎯 [LLMGraph.py] run_graph() CALLED!")
+    print(f"🎯 [LLMGraph.py] Received user_query: {user_query[:100]}...")
+    print(f"🎯 [LLMGraph.py] Received data length: {len(data)} characters")
     final_output = await compiled.ainvoke({"task": user_query, "data" : data})
     print(final_output["final_outputs"])
+    print(f"✅ [LLMGraph.py] run_graph() execution completed")
+    return final_output
 
-user_query = """
-    Send an email to strangerinthenight311@gmail.com congratulating him on his birthday and create a doc with a list of things to possibly buy him
-    """
-data = ""
-
-asyncio.run(run_graph(user_query))
+# user_query = """
+#     Can you send an email to rneela@wisc.edu to confirm the interview with Anand on 21st November and create a calendar event. Use GSuite for all of these
+#     """
+# data = "Ritesh is an interview candidate that is currently in the process of interviewing for a position at this company "
+# user_query = "Complete the interview scheduling process for candidate Siddharth Ghantasala (siddharthghantasala@gmail.com) for the Summer 2026 Software Engineering Intern position. First, send the currently drafted email with subject 'INTERNSHIP INTERVIEW' that confirms the interview scheduled for 7:30 this Sunday. Then, create a calendar event for this Sunday at 7:30pm with duration of 1 hour (7:30pm-8:30pm). The calendar event should be titled 'Interview - Siddharth Ghantasala - SWE Intern Summer 2026' and include a Google Meet link for the video interview. Add siddharthghantasala@gmail.com as an attendee to the calendar event so he receives the meeting invite with the video conferencing details."
+# data = ""
+# asyncio.run(run_graph(user_query))

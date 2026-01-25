@@ -1,0 +1,17 @@
+# Flask Server Requirements
+flask>=2.3.0
+flask-cors>=4.0.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+anthropic>=0.71.0
+
+# Database
+sqlite3; python_version >= '3.0'
+
+# Agent-S Dependencies (installed separately from Agent-S-fork)
+# See ../Agent-S-fork/requirements.txt for complete Agent-S dependencies
+pyautogui>=0.9.54
+pillow>=10.0.0
+
+# Logging and utilities
+anyhow>=0.1.0; platform_system == "Linux" or platform_system == "Darwin"
