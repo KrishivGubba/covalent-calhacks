@@ -5,6 +5,7 @@ Handles Google OAuth installed app flow (local server) to obtain and store crede
 Supports multiple scopes for Calendar, Gmail, and other Google APIs.
 """
 import json
+import sys
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
@@ -199,7 +200,7 @@ class GoogleAuth:
             if set(self.scopes).issubset(set(cached_creds.scopes)):
                 return cached_creds
             # If scopes have changed, need to re-authenticate
-            print("⚠️  Scopes have changed. Re-authentication required.")
+            print("⚠️  Scopes have changed. Re-authentication required.", file=sys.stderr)
         
         # Start installed app flow
         if not self.secrets_path.exists():
@@ -208,9 +209,9 @@ class GoogleAuth:
                 "Download it from Google Cloud Console and place it in this directory."
             )
         
-        print("\n🔐 Google Authentication Required")
-        print(f"   Requesting scopes: {', '.join(self.scopes)}")
-        print("   Opening browser for authorization...\n")
+        print("\n🔐 Google Authentication Required", file=sys.stderr)
+        print(f"   Requesting scopes: {', '.join(self.scopes)}", file=sys.stderr)
+        print("   Opening browser for authorization...\n", file=sys.stderr)
         
         flow = InstalledAppFlow.from_client_secrets_file(
             str(self.secrets_path),
@@ -227,7 +228,7 @@ class GoogleAuth:
         
         # Store credentials for future use
         store_credentials(creds, self.credentials_path)
-        print("✅ Authorization successful! Credentials saved.")
+        print("✅ Authorization successful! Credentials saved.", file=sys.stderr)
         
         return creds
     
