@@ -2,10 +2,14 @@ from typing import TypedDict, Literal, List
 from typing_extensions import TypedDict
 import asyncio
 import os
+import sys
 import pickle
 import atexit
 import signal
 from pathlib import Path
+
+# Project root (parent of this file). Used as cwd when spawning covalent_mcp server.
+_PROJECT_ROOT = Path(__file__).resolve().parent
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -30,13 +34,14 @@ llm = init_chat_model(
 )
 
 # =============================================================================
-# MCP SERVER CONFIGURATION
+# MCP SERVER CONFIGURATION (covalent_mcp tools: Gmail, Drive, Calendar, GitHub, etc.)
 # =============================================================================
 MCP_SERVERS = {
-    "google": {
+    "covalent": {
         "transport": "stdio",
-        "command": os.getenv("GOOGLE_MCP_COMMAND", "google-mcp"),
-        "args": []
+        "command": os.getenv("COVALENT_MCP_COMMAND", sys.executable),
+        "args": ["-m", "covalent_mcp.server"],
+        "cwd": str(_PROJECT_ROOT),
     },
 }
 
@@ -466,7 +471,7 @@ if __name__ == "__main__":
 
         elif command == "--help":
             print("""
-Usage: python LLMGraph.py [command]
+Usage: python LLMGraph_claude.py [command]
 
 Commands:
   (no args)   Run with default query
@@ -475,18 +480,20 @@ Commands:
   --help      Show this help message
 
 Environment variables:
-  MODEL_PROVIDER       LLM provider (default: openai)
-  LLM_MODEL           Model name (default: gpt-4o-mini)
-  GOOGLE_MCP_COMMAND  Google MCP command (default: google-mcp)
+  MODEL_PROVIDER        LLM provider (default: openai)
+  LLM_MODEL             Model name (default: gpt-4o-mini)
+  COVALENT_MCP_COMMAND  Python executable for covalent_mcp server (default: sys.executable)
+                        Run from project root so covalent_mcp can be imported.
             """)
         else:
             print(f"Unknown command: {command}")
             print("Use --help for usage information")
     else:
         user_query = """
-            Make a doc wherein the only words say \"it works without composio\" and email it to kgubba@wisc.edu and rneela@wisc.edu
-            where the subject is the same as the comment I provided to you 
+            create a github repo called "test"
         """
-        data = ""
+        data = """
+        owner name: KrishivGubba
+        """
 
         asyncio.run(run_graph(user_query, data))
