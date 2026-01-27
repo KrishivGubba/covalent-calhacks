@@ -5,7 +5,8 @@
       "Bash(cargo check:*)",
       "Bash(npm run tauri:*)",
       "Bash(sed:*)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)"
     ],
     "deny": []
   }

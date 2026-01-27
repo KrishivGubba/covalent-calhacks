@@ -158,10 +158,11 @@ mod prompt_tests {
             },
             learned_patterns: vec![],
             recent_actions: vec![],
+            screen_context: None,
             timestamp: current_timestamp(),
             ttl: 120,
         };
-        
+
         let prompt = build_prompt(&context, "The key innovation is");
         assert!(prompt.contains("Google Docs"));
         assert!(prompt.contains("The key innovation is"));
@@ -181,6 +182,7 @@ mod prompt_tests {
             },
             learned_patterns: vec![],
             recent_actions: vec![],
+            screen_context: None,
             timestamp: current_timestamp(),
             ttl: 120,
         };
@@ -204,6 +206,7 @@ mod prompt_tests {
             },
             learned_patterns: vec![],
             recent_actions: vec![],
+            screen_context: None,
             timestamp: current_timestamp(),
             ttl: 300,
         };
@@ -248,6 +251,7 @@ mod prompt_tests {
             activity_type: ActivityType::Unknown,
             learned_patterns: vec![],
             recent_actions: vec![],
+            screen_context: None,
             timestamp: current_timestamp(),
             ttl: 180,
         };
@@ -631,6 +635,7 @@ mod edge_case_tests {
             },
             learned_patterns: vec![],
             recent_actions: vec![],
+            screen_context: None,
             timestamp: current_timestamp(),
             ttl: 300,
         };
@@ -778,6 +783,7 @@ fn create_test_terminal_context() -> CachedContext {
         },
         learned_patterns: vec![],
         recent_actions: vec![],
+        screen_context: None,
         timestamp: current_timestamp(),
         ttl: 300,
     }

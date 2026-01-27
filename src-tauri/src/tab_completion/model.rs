@@ -95,34 +95,77 @@ impl ModelInvoker {
         // Trim whitespace including leading/trailing newlines
         let text = text.trim();
 
-        // Find the first non-empty line
-        let result = text
+        // If empty, return early
+        if text.is_empty() {
+            return String::new();
+        }
+
+        // Take only the first line (completions should be single-line or we take first)
+        let first_line = text
             .lines()
             .find(|line| !line.trim().is_empty())
             .unwrap_or("")
             .trim();
 
-        // Remove any backticks or special characters
-        let result = result.trim_matches('`').trim();
+        // Remove any backticks, quotes, or markdown formatting
+        let result = first_line
+            .trim_matches('`')
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
 
-        // Reject if it's empty after cleaning
+        // If the model output includes "->", take what's after it
+        // (handles cases where model echoes our format)
+        let result = if let Some(idx) = result.find("->") {
+            result[idx + 2..].trim()
+        } else {
+            result
+        };
+
+        // Reject if empty
         if result.is_empty() {
             return String::new();
         }
 
-        // Reject if it starts with conversational phrases
-        let conversational_starts = [
+        // Reject if it starts with conversational/explanatory phrases
+        let bad_starts = [
             "It ", "This ", "You ", "I ",
-            "Let me ", "I'll ", "I can ",
-            "Complete this", "Only output",
-            "The ", "Here ", "Sure",
-            "Here's", "Certainly", "Of course",
+            "Let me", "I'll ", "I can",
+            "Complete", "Output", "Here",
+            "The ", "Sure", "Certainly",
+            "Of course", "Based on",
+            "In ", "For ", "To ",
+            "#", "//", "/*",  // Comments indicating explanation
         ];
 
-        for start in &conversational_starts {
+        for start in &bad_starts {
             if result.starts_with(start) {
                 return String::new();
             }
+        }
+
+        // Reject if it looks like a full sentence explanation (contains common verbs)
+        let explanation_markers = [
+            " is ", " are ", " will ", " would ", " should ",
+            " shows ", " displays ", " runs ", " executes ",
+            " command ", " because ", " which ",
+        ];
+
+        let result_lower = result.to_lowercase();
+        for marker in &explanation_markers {
+            if result_lower.contains(marker) {
+                return String::new();
+            }
+        }
+
+        // Limit length - completions shouldn't be super long
+        if result.len() > 100 {
+            // Take first 100 chars, try to break at word boundary
+            let truncated = &result[..100];
+            if let Some(last_space) = truncated.rfind(' ') {
+                return truncated[..last_space].to_string();
+            }
+            return truncated.to_string();
         }
 
         result.to_string()
