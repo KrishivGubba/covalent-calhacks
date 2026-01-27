@@ -8,11 +8,15 @@ including tests for:
 - Action creation and triggering
 """
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
 from graph import Tree
 
 # Initialize the tree from database
 print("Initializing graph from database...")
-tree = Tree("../context-engine/graph.db")
+tree = Tree(os.path.join(os.path.dirname(os.path.dirname(__file__)), "graph.db"))
 print("Graph structure:")
 print(tree)
 

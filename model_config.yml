@@ -45,3 +45,20 @@ provider_settings:
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"  # Qwen API endpoint
     api_key_env: "QWEN_API_KEY"
     timeout: 30
+
+# Graph construction settings for the context tree
+graph_construction:
+  confidence_thresholds:
+    perfect_fit: 0.85      # Just insert, no LLM validation needed
+    good_fit: 0.70         # Insert but flag for potential review
+    uncertain: 0.50        # Ask LLM to validate fit
+    poor_fit: 0.30         # Likely needs structural change (new node)
+
+  max_depth: 10            # Maximum depth of the tree (root = depth 0)
+
+  bootstrap:
+    enabled: true          # Whether to auto-create first node from root
+
+  split:
+    min_categories_to_split: 3    # Minimum categories before considering split
+    min_data_entries_to_split: 5  # Minimum total data entries before considering split
