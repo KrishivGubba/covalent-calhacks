@@ -1,6 +1,7 @@
 use anyhow::Result;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::time::Instant;
 
 #[cfg(target_os = "macos")]
 use core_graphics::event::{
@@ -8,10 +9,15 @@ use core_graphics::event::{
     CGEventType, EventField, CGEventFlags,
 };
 
+/// Grace period in milliseconds - popup stays visible even if user keeps typing
+const SUGGESTION_GRACE_PERIOD_MS: u64 = 300;
+
 /// Hotkey handler for accepting/dismissing completions
 pub struct HotkeyHandler {
     current_suggestion: Arc<Mutex<Option<String>>>,
-    accept_callback: Arc<Mutex<Option<Box<dyn Fn(String) + Send + Sync>>>>,
+    suggestion_shown_at: Arc<Mutex<Option<Instant>>>,
+    chars_typed_since_suggestion: Arc<Mutex<usize>>,
+    accept_callback: Arc<Mutex<Option<Box<dyn Fn(String, usize) + Send + Sync>>>>,
     dismiss_callback: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
 }
 
@@ -19,20 +25,31 @@ impl HotkeyHandler {
     pub fn new() -> Self {
         Self {
             current_suggestion: Arc::new(Mutex::new(None)),
+            suggestion_shown_at: Arc::new(Mutex::new(None)),
+            chars_typed_since_suggestion: Arc::new(Mutex::new(0)),
             accept_callback: Arc::new(Mutex::new(None)),
             dismiss_callback: Arc::new(Mutex::new(None)),
         }
     }
-    
-    /// Set the current suggestion text
+
+    /// Set the current suggestion text and record when it was shown
     pub fn set_suggestion(&self, text: Option<String>) {
+        if text.is_some() {
+            // Record timestamp and reset char counter when new suggestion appears
+            *self.suggestion_shown_at.lock() = Some(Instant::now());
+            *self.chars_typed_since_suggestion.lock() = 0;
+        } else {
+            // Clear timestamp when suggestion is cleared
+            *self.suggestion_shown_at.lock() = None;
+            *self.chars_typed_since_suggestion.lock() = 0;
+        }
         *self.current_suggestion.lock() = text;
     }
-    
-    /// Set callback for when suggestion is accepted
+
+    /// Set callback for when suggestion is accepted (includes chars to erase)
     pub fn set_accept_callback<F>(&self, callback: F)
     where
-        F: Fn(String) + Send + Sync + 'static,
+        F: Fn(String, usize) + Send + Sync + 'static,
     {
         *self.accept_callback.lock() = Some(Box::new(callback));
     }
@@ -85,21 +102,24 @@ impl HotkeyHandler {
                     
                     // Check if we have an active suggestion
                     let has_suggestion = handler.current_suggestion.lock().is_some();
-                    
+
                     if has_suggestion {
                         // Check for Tab key (keycode 0x30)
                         if keycode == 0x30 {
                             if let Some(suggestion) = handler.current_suggestion.lock().clone() {
-                                println!("✅ Tab pressed - accepting suggestion");
-                                
-                                // Call accept callback
+                                let chars_to_erase = *handler.chars_typed_since_suggestion.lock();
+                                println!("✅ Tab pressed - accepting suggestion (erasing {} chars)", chars_to_erase);
+
+                                // Call accept callback with suggestion and char count
                                 if let Some(ref callback) = *handler.accept_callback.lock() {
-                                    callback(suggestion);
+                                    callback(suggestion, chars_to_erase);
                                 }
-                                
-                                // Clear suggestion
+
+                                // Clear suggestion state
                                 *handler.current_suggestion.lock() = None;
-                                
+                                *handler.suggestion_shown_at.lock() = None;
+                                *handler.chars_typed_since_suggestion.lock() = 0;
+
                                 // Suppress the Tab key event by returning None
                                 return None;
                             }
@@ -107,34 +127,54 @@ impl HotkeyHandler {
                         // Check for Escape key (keycode 0x35)
                         else if keycode == 0x35 {
                             println!("❌ Escape pressed - dismissing suggestion");
-                            
+
                             // Call dismiss callback
                             if let Some(ref callback) = *handler.dismiss_callback.lock() {
                                 callback();
                             }
-                            
-                            // Clear suggestion
+
+                            // Clear suggestion state
                             *handler.current_suggestion.lock() = None;
-                            
+                            *handler.suggestion_shown_at.lock() = None;
+                            *handler.chars_typed_since_suggestion.lock() = 0;
+
                             // Let Escape pass through
                         }
-                        // Any other key: auto-dismiss the suggestion
+                        // Any other key: check grace period before dismissing
                         else {
                             // Ignore modifier keys (Shift, Cmd, Ctrl, Option)
-                            let is_modifier = matches!(keycode, 
+                            let is_modifier = matches!(keycode,
                                 0x37 | 0x38 | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x3F // Cmd, Shift, Option, Ctrl
                             );
-                            
+
                             if !is_modifier {
-                                println!("⏭️  Other key pressed - auto-dismissing suggestion");
-                                
-                                // Call dismiss callback
-                                if let Some(ref callback) = *handler.dismiss_callback.lock() {
-                                    callback();
+                                // Increment char counter
+                                *handler.chars_typed_since_suggestion.lock() += 1;
+                                let chars_typed = *handler.chars_typed_since_suggestion.lock();
+
+                                // Check if we're still within the grace period
+                                let within_grace_period = if let Some(shown_at) = *handler.suggestion_shown_at.lock() {
+                                    shown_at.elapsed().as_millis() < SUGGESTION_GRACE_PERIOD_MS as u128
+                                } else {
+                                    false
+                                };
+
+                                if within_grace_period {
+                                    println!("⏳ Key pressed during grace period ({} chars typed)", chars_typed);
+                                    // Don't dismiss - let the key pass through
+                                } else {
+                                    println!("⏭️  Grace period expired - auto-dismissing suggestion");
+
+                                    // Call dismiss callback
+                                    if let Some(ref callback) = *handler.dismiss_callback.lock() {
+                                        callback();
+                                    }
+
+                                    // Clear suggestion state
+                                    *handler.current_suggestion.lock() = None;
+                                    *handler.suggestion_shown_at.lock() = None;
+                                    *handler.chars_typed_since_suggestion.lock() = 0;
                                 }
-                                
-                                // Clear suggestion
-                                *handler.current_suggestion.lock() = None;
                             }
                         }
                     }

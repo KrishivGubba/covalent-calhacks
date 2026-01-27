@@ -6,18 +6,76 @@ use std::time::Duration;
 /// Inject completion text into the foreground application
 #[tauri::command]
 pub fn inject_completion_text(text: String) -> Result<(), String> {
+    inject_with_backspace(text, 0)
+}
+
+/// Inject completion text after erasing N characters (for accepting suggestion after continued typing)
+pub fn inject_with_backspace(text: String, chars_to_erase: usize) -> Result<(), String> {
+    if chars_to_erase > 0 {
+        println!("🔙 Erasing {} chars before injection", chars_to_erase);
+        if let Err(e) = send_backspaces(chars_to_erase) {
+            eprintln!("⚠️  Failed to send backspaces: {}", e);
+            // Continue anyway - better to inject without erasing than fail completely
+        }
+        // Small delay after backspaces to let the app process them
+        thread::sleep(Duration::from_millis(50));
+    }
+
     println!("💉 Injecting text: '{}'", text);
-    
+
     // Method 1: Try clipboard paste (fastest, most reliable)
     if inject_via_clipboard(&text).is_ok() {
         println!("✅ Text injected via clipboard");
         return Ok(());
     }
-    
+
     println!("⚠️  Clipboard method failed, trying event-based injection");
-    
+
     // Method 2: Character-by-character injection (slower, but works everywhere)
     inject_via_events(&text).map_err(|e| e.to_string())
+}
+
+/// Send N backspace key events to erase characters
+fn send_backspaces(count: usize) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use core_graphics::event::{CGEvent, CGKeyCode};
+        use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+        const kVK_Delete: CGKeyCode = 0x33; // Backspace key
+
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+            .map_err(|_| anyhow::anyhow!("Failed to create event source"))?;
+
+        for i in 0..count {
+            // Key down
+            let key_down = CGEvent::new_keyboard_event(source.clone(), kVK_Delete, true)
+                .map_err(|_| anyhow::anyhow!("Failed to create backspace key down event"))?;
+            key_down.post(core_graphics::event::CGEventTapLocation::HID);
+
+            // Small delay between key events
+            thread::sleep(Duration::from_millis(10));
+
+            // Key up
+            let key_up = CGEvent::new_keyboard_event(source.clone(), kVK_Delete, false)
+                .map_err(|_| anyhow::anyhow!("Failed to create backspace key up event"))?;
+            key_up.post(core_graphics::event::CGEventTapLocation::HID);
+
+            // Small delay between backspaces
+            if i < count - 1 {
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Fallback: use AppleScript-style approach or just skip
+        eprintln!("⚠️  Backspace injection only supported on macOS");
+        Ok(())
+    }
 }
 
 fn inject_via_clipboard(text: &str) -> Result<()> {
