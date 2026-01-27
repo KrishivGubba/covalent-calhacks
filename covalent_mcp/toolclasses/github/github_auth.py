@@ -2,8 +2,12 @@
 GitHub OAuth Device Flow Authentication.
 
 Handles GitHub device flow to obtain access tokens for API calls.
+
+NOTE: All user-facing output uses stderr. When used as an MCP server, stdout
+is reserved for JSON-RPC; printing to stdout would corrupt the protocol.
 """
 import os
+import sys
 import time
 import json
 import requests
@@ -84,12 +88,13 @@ class GitHubAuth:
         verification_uri = device_code_data["verification_uri"]
         interval = device_code_data.get("interval", 5)  # Polling interval in seconds
         
-        # Display instructions to user
-        print(f"\n🔐 GitHub Authentication Required")
-        print(f"   1. Visit: {verification_uri}")
-        print(f"   2. Enter code: {user_code}")
-        print(f"   3. Authorize the application\n")
-        print("⏳ Waiting for authorization...")
+        # Display instructions to user (stderr: MCP uses stdout for JSON-RPC)
+        err = sys.stderr
+        print(f"\n🔐 GitHub Authentication Required", file=err)
+        print(f"   1. Visit: {verification_uri}", file=err)
+        print(f"   2. Enter code: {user_code}", file=err)
+        print(f"   3. Authorize the application\n", file=err)
+        print("⏳ Waiting for authorization...", file=err)
         
         # Poll for access token
         expires_in = device_code_data.get("expires_in", 900)  # Default 15 minutes
@@ -104,11 +109,11 @@ class GitHubAuth:
                 access_token = token_response["access_token"]
                 # Cache the token
                 self._save_token(access_token)
-                print("✅ Authorization successful! Token saved.")
+                print("✅ Authorization successful! Token saved.", file=err)
                 return access_token
             
             elif token_response.get("error") == "authorization_pending":
-                print(".", end="", flush=True)  # Show progress
+                print(".", end="", flush=True, file=err)  # Show progress
                 continue
             elif token_response.get("error") == "slow_down":
                 interval += 5  # Increase polling interval
