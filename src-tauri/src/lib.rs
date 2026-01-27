@@ -319,9 +319,43 @@ pub fn run() {
                 Ok(_) => println!("✓ Flask server started successfully"),
                 Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
             }
-            
+
             // Store flask server in app state so it stays alive
             app.manage(flask_server);
+
+            // Start Ollama serve (for local LLM inference)
+            println!("🦙 Starting Ollama serve...");
+            std::thread::spawn(|| {
+                // Check if ollama is already running by trying to connect
+                let already_running = std::process::Command::new("curl")
+                    .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:11434/api/tags"])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "200")
+                    .unwrap_or(false);
+
+                if already_running {
+                    println!("✓ Ollama is already running");
+                    return;
+                }
+
+                // Start ollama serve
+                match std::process::Command::new("ollama")
+                    .arg("serve")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(_child) => {
+                        println!("✓ Ollama serve started");
+                        // Give it a moment to initialize
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                    Err(e) => {
+                        eprintln!("⚠️  Failed to start Ollama: {}", e);
+                        eprintln!("   Make sure Ollama is installed: https://ollama.ai");
+                    }
+                }
+            });
             
             // Create and manage context state
             let context_state = ContextState::new();
