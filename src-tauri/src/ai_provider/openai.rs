@@ -180,8 +180,8 @@ impl LLMProvider for OpenAIProvider {
     }
 
     fn supports_vision(&self) -> bool {
-        // GPT-4 Vision models support vision
-        self.model.contains("gpt-5") || self.model.contains("vision")
+        // GPT-4 and GPT-5 Vision models support vision
+        self.model.contains("gpt-4") || self.model.contains("gpt-5") || self.model.contains("vision")
     }
 
     fn provider_name(&self) -> &str {

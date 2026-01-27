@@ -78,9 +78,10 @@ impl HotkeyHandler {
             CGEventTapOptions::Default, // Use Default to intercept events
             vec![CGEventType::KeyDown].into(),
             move |_proxy, _event_type, event| {
+                // Use autoreleasepool and return its result
                 autoreleasepool(|| {
                     let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
-                    let flags = event.get_flags();
+                    let _flags = event.get_flags();
                     
                     // Check if we have an active suggestion
                     let has_suggestion = handler.current_suggestion.lock().is_some();
@@ -99,7 +100,7 @@ impl HotkeyHandler {
                                 // Clear suggestion
                                 *handler.current_suggestion.lock() = None;
                                 
-                                // Suppress the Tab key event
+                                // Suppress the Tab key event by returning None
                                 return None;
                             }
                         }
@@ -138,8 +139,8 @@ impl HotkeyHandler {
                         }
                     }
                     
-                    // Pass through all events
-                    Some(event.to_owned())
+                    // Pass through all events (clone the event to return it)
+                    Some(event.clone())
                 })
             },
         ).map_err(|e| anyhow::anyhow!("Failed to create hotkey event tap: {:?}", e))?;
@@ -152,11 +153,16 @@ impl HotkeyHandler {
         // Run the event loop
         unsafe {
             let run_loop = CFRunLoopGetCurrent();
-            let source = event_tap.mach_port.create_runloop_source(0).unwrap();
+            let source = match event_tap.mach_port.create_runloop_source(0) {
+                Ok(s) => s,
+                Err(_) => {
+                    return Err(anyhow::anyhow!("Failed to create run loop source for hotkey event tap"));
+                }
+            };
             CFRunLoopAddSource(run_loop, source.as_concrete_TypeRef(), kCFRunLoopCommonModes);
             CFRunLoopRun();
         }
-        
+
         Ok(())
     }
 }

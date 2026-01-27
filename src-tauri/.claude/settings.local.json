@@ -4,7 +4,8 @@
       "Bash(grep:*)",
       "Bash(cargo check:*)",
       "Bash(npm run tauri:*)",
-      "Bash(sed:*)"
+      "Bash(sed:*)",
+      "Bash(cargo build:*)"
     ],
     "deny": []
   }

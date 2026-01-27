@@ -192,10 +192,41 @@ impl LLMAnalyzer {
             Generate a concise description of what the user is doing.",
             metadata
         );
-        
-        // Always use screenshot for MVP
-        eprintln!("📸 Using screenshot + LLM for richer context...");
-        return self.generate_with_screenshot(llm_provider, &metadata).await;
+
+        // Determine if we have sufficient context data to skip screenshot
+        // Check for meaningful text content from DOM, accessibility, or OCR
+        let has_meaningful_dom = raw_context.dom_data.as_ref()
+            .map_or(false, |d| d.visible_text.trim().len() > 50);
+
+        let has_meaningful_accessibility = raw_context.accessibility_data.as_ref()
+            .map_or(false, |a| a.elements.len() >= 5);
+
+        let has_meaningful_ocr = raw_context.ocr_data.as_ref()
+            .map_or(false, |o| {
+                let total_text_len: usize = o.results.iter().map(|r| r.text.len()).sum();
+                total_text_len > 50 && o.total_confidence > 50.0
+            });
+
+        let has_sufficient_context = has_meaningful_dom || has_meaningful_accessibility || has_meaningful_ocr;
+
+        if has_sufficient_context {
+            // We have enough text context - use fast text-only LLM call
+            eprintln!("📝 Using text-only LLM (sufficient context: DOM={}, Accessibility={}, OCR={})",
+                has_meaningful_dom, has_meaningful_accessibility, has_meaningful_ocr);
+
+            match llm_provider.generate(system_prompt, &user_prompt).await {
+                Ok(description) => return Ok(description),
+                Err(e) => {
+                    // Fallback to screenshot if text-only fails
+                    eprintln!("⚠️  Text-only LLM failed: {}, falling back to screenshot", e);
+                }
+            }
+        } else {
+            eprintln!("📸 Insufficient text context - using screenshot + vision LLM");
+        }
+
+        // Fallback: use screenshot for richer context when text data is insufficient
+        self.generate_with_screenshot(llm_provider, &metadata).await
     }
     
     /// Generate description with screenshot using LLM vision
@@ -204,14 +235,44 @@ impl LLMAnalyzer {
         llm_provider: &Arc<dyn LLMProvider>,
         metadata: &str,
     ) -> Result<String> {
-        // Capture screenshot
-        let screenshot = self.screen_capture.capture_full_screen()
-            .map_err(|e| anyhow::anyhow!("Failed to capture screenshot: {}", e))?;
+        // Capture screenshot - with error handling to prevent crashes
+        let screenshot = match self.screen_capture.capture_full_screen() {
+            Ok(img) => img,
+            Err(e) => {
+                eprintln!("⚠️  Screenshot capture failed: {}, falling back to metadata-only analysis", e);
+                return self.generate_fallback_description(metadata);
+            }
+        };
         
-        // Convert to PNG bytes
+        // Resize screenshot to prevent integer overflow in PNG encoder
+        // Large retina displays can produce 5K+ images that crash the encoder
+        const MAX_WIDTH: u32 = 1920;
+        const MAX_HEIGHT: u32 = 1080;
+        
+        let (width, height) = (screenshot.width(), screenshot.height());
+        let resized_screenshot = if width > MAX_WIDTH || height > MAX_HEIGHT {
+            // Calculate scaling factor to fit within max dimensions
+            let scale_w = MAX_WIDTH as f32 / width as f32;
+            let scale_h = MAX_HEIGHT as f32 / height as f32;
+            let scale = scale_w.min(scale_h);
+            
+            let new_width = (width as f32 * scale) as u32;
+            let new_height = (height as f32 * scale) as u32;
+            
+            println!("🔽 Resizing screenshot from {}x{} to {}x{} to prevent encoder crash", 
+                width, height, new_width, new_height);
+            
+            screenshot.resize(new_width, new_height, image::imageops::FilterType::Lanczos3)
+        } else {
+            screenshot
+        };
+        
+        // Convert to PNG bytes - with error handling
         let mut png_bytes = Vec::new();
-        screenshot.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
-            .map_err(|e| anyhow::anyhow!("Failed to encode screenshot: {}", e))?;
+        if let Err(e) = resized_screenshot.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png) {
+            eprintln!("⚠️  PNG encoding failed: {}, falling back to metadata-only analysis", e);
+            return self.generate_fallback_description(metadata);
+        }
         
         // Encode to base64
         let screenshot_base64 = ClaudeProvider::encode_image_to_base64(&png_bytes);
@@ -226,11 +287,47 @@ impl LLMAnalyzer {
             metadata
         );
         
-        llm_provider.generate_with_image(
+        // Try vision API with fallback on failure (e.g., API credits exhausted, network issues)
+        match llm_provider.generate_with_image(
             system_prompt,
             &user_prompt,
             &screenshot_base64
-        ).await
+        ).await {
+            Ok(description) => Ok(description),
+            Err(e) => {
+                eprintln!("⚠️  Vision API failed: {}, falling back to metadata-only analysis", e);
+                self.generate_fallback_description(metadata)
+            }
+        }
+    }
+    
+    /// Generate a simple fallback description from metadata when screenshot/vision fails
+    fn generate_fallback_description(&self, metadata: &str) -> Result<String> {
+        // Parse metadata to extract key information
+        let lines: Vec<&str> = metadata.lines().collect();
+        
+        let mut app_name = "Unknown App";
+        let mut context_type = "Unknown";
+        let mut activity = "active";
+        
+        for line in lines {
+            if line.starts_with("App: ") {
+                app_name = line.strip_prefix("App: ").unwrap_or(app_name);
+            } else if line.starts_with("Context Type: ") {
+                context_type = line.strip_prefix("Context Type: ").unwrap_or(context_type);
+            } else if line.contains("Idle") {
+                activity = "idle";
+            }
+        }
+        
+        let description = format!(
+            "User is working in {} ({}), currently {}. \
+            Note: Visual analysis unavailable - using metadata only.",
+            app_name, context_type, activity
+        );
+        
+        eprintln!("📝 Generated fallback description: {}", description);
+        Ok(description)
     }
     
     /// Build comprehensive metadata string for Claude
@@ -285,7 +382,25 @@ impl LLMAnalyzer {
                 metadata.push(format!("Active Element: {}", active_el));
             }
         }
-        
+
+        // OCR data (screen text extraction)
+        if let Some(ocr_data) = &raw_context.ocr_data {
+            if !ocr_data.results.is_empty() {
+                let ocr_text: String = ocr_data.results
+                    .iter()
+                    .map(|r| r.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let truncated_ocr = if ocr_text.len() > 500 {
+                    format!("{}...", &ocr_text[..500])
+                } else {
+                    ocr_text
+                };
+                metadata.push(format!("Screen Text (OCR): {}", truncated_ocr));
+                metadata.push(format!("OCR Confidence: {:.1}%", ocr_data.total_confidence));
+            }
+        }
+
         // Activity metrics
         metadata.push(format!("Activity Level: {:?}", raw_context.activity_metrics.activity_level));
         metadata.push(format!("Idle: {}", raw_context.activity_metrics.is_idle));

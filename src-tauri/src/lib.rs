@@ -379,37 +379,58 @@ pub fn run() {
                     let hotkey_handler = std::sync::Arc::new(tab_completion::HotkeyHandler::new());
                     
                     // Set up callback to show suggestions via window manager
+                    // IMPORTANT: This callback is invoked from a background thread, but Tauri/Cocoa
+                    // window operations MUST run on the main thread. We use run_on_main_thread to dispatch.
                     let window_manager_clone = window_manager.clone();
                     let hotkey_handler_clone = hotkey_handler.clone();
+                    let app_handle_for_callback = app.handle().clone();
                     trigger.set_suggestion_callback(move |suggestion| {
                         println!("📤 Showing completion suggestion");
-                        
-                        // Update hotkey handler with new suggestion
+
+                        // Update hotkey handler with new suggestion (this is thread-safe via parking_lot::Mutex)
                         hotkey_handler_clone.set_suggestion(Some(suggestion.text.clone()));
-                        
-                        // Show suggestion using window manager (ghost text or popup)
-                        if let Err(e) = window_manager_clone.show_suggestion(&suggestion) {
-                            eprintln!("⚠️  Failed to show completion: {}", e);
+
+                        // Dispatch UI operations to main thread to prevent crashes
+                        let window_manager = window_manager_clone.clone();
+                        let suggestion_clone = suggestion.clone();
+                        if let Err(e) = app_handle_for_callback.run_on_main_thread(move || {
+                            // Show suggestion using window manager (ghost text or popup)
+                            if let Err(e) = window_manager.show_suggestion(&suggestion_clone) {
+                                eprintln!("⚠️  Failed to show completion: {}", e);
+                            }
+                        }) {
+                            eprintln!("⚠️  Failed to dispatch to main thread: {}", e);
                         }
                     });
                     
                     // Set up hotkey callbacks
+                    // NOTE: These callbacks are invoked from the CGEventTap thread (background thread).
+                    // inject_completion_text uses CGEvent which is thread-safe, but hide_all() touches
+                    // Tauri windows which require main thread execution.
                     let window_manager_accept = window_manager.clone();
+                    let app_handle_for_accept = app.handle().clone();
                     hotkey_handler.set_accept_callback(move |text| {
                         println!("✅ Accepting completion via hotkey");
-                        // Inject the text
+                        // Inject the text (CGEvent-based, thread-safe)
                         if let Err(e) = tab_completion::inject_completion_text(text.clone()) {
                             eprintln!("⚠️  Failed to inject text: {}", e);
                         }
-                        // Hide all completion windows
-                        let _ = window_manager_accept.hide_all();
+                        // Hide all completion windows - must run on main thread
+                        let wm = window_manager_accept.clone();
+                        let _ = app_handle_for_accept.run_on_main_thread(move || {
+                            let _ = wm.hide_all();
+                        });
                     });
-                    
+
                     let window_manager_dismiss = window_manager.clone();
+                    let app_handle_for_dismiss = app.handle().clone();
                     hotkey_handler.set_dismiss_callback(move || {
                         println!("❌ Dismissing completion via hotkey");
-                        // Hide all completion windows
-                        let _ = window_manager_dismiss.hide_all();
+                        // Hide all completion windows - must run on main thread
+                        let wm = window_manager_dismiss.clone();
+                        let _ = app_handle_for_dismiss.run_on_main_thread(move || {
+                            let _ = wm.hide_all();
+                        });
                     });
                     
                     // Start hotkey listener

@@ -1,11 +1,10 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{broadcast, Mutex, RwLock, mpsc};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio::time::interval;
 use crate::screen_context::macos_app_detector::MacOSAppDetector;
 use crate::screen_context::context_data::AppInfo;
@@ -16,83 +15,33 @@ use crate::screen_context::context_data::{
 };
 use crate::screen_context::context_type::{ContextType, DevelopmentType, ResearchType};
 
-// CGEventTap implementation for macOS using rdev (already in dependencies)
+// CGEventTap implementation for macOS
+// DISABLED: Using rdev causes version conflicts with core-graphics and can lead to crashes
+// The tab completion system already has event monitoring via MacOSKeyboardListener
 #[cfg(target_os = "macos")]
 mod cg_event_tap {
     use super::*;
-    use rdev::{listen, Event, EventType};
     use std::sync::mpsc as std_mpsc;
-    use std::thread;
 
     pub struct EventTapHandle {
-        running: Arc<AtomicBool>,
+        _phantom: std::marker::PhantomData<()>,
     }
 
     impl Drop for EventTapHandle {
         fn drop(&mut self) {
-            self.running.store(false, Ordering::SeqCst);
+            // Nothing to clean up
         }
     }
 
-    pub fn start_event_tap(event_sender: std_mpsc::Sender<ActivityEvent>) -> Result<EventTapHandle> {
-        let running = Arc::new(AtomicBool::new(true));
-        let running_clone = Arc::clone(&running);
-
-        thread::spawn(move || {
-            let sender = event_sender;
-            let running = running_clone;
-            
-            // Callback for rdev events
-            let callback = move |event: Event| {
-                if !running.load(Ordering::SeqCst) {
-                    return;
-                }
-                
-                let activity_event = match event.event_type {
-                    EventType::KeyPress(_) => {
-                        Some(ActivityEvent {
-                            timestamp: Instant::now(),
-                            event_type: ActivityEventType::KeyPressed,
-                        })
-                    }
-                    EventType::ButtonPress(_) => {
-                        // rdev doesn't give position on button press, use 0,0 as placeholder
-                        // The position will be updated by MouseMove events
-                        Some(ActivityEvent {
-                            timestamp: Instant::now(),
-                            event_type: ActivityEventType::MouseClicked { x: 0.0, y: 0.0 },
-                        })
-                    }
-                    EventType::MouseMove { x, y } => {
-                        Some(ActivityEvent {
-                            timestamp: Instant::now(),
-                            event_type: ActivityEventType::MouseMoved { x, y },
-                        })
-                    }
-                    EventType::Wheel { delta_x, delta_y } => {
-                        Some(ActivityEvent {
-                            timestamp: Instant::now(),
-                            event_type: ActivityEventType::ScrollEvent { 
-                                delta_x: delta_x as f64, 
-                                delta_y: delta_y as f64 
-                            },
-                        })
-                    }
-                    _ => None,
-                };
-
-                if let Some(evt) = activity_event {
-                    let _ = sender.send(evt);
-                }
-            };
-
-            // Start listening for events
-            if let Err(e) = listen(callback) {
-                eprintln!("Failed to start rdev event listener: {:?}. Make sure the app has Accessibility permissions.", e);
-            }
-        });
-
-        Ok(EventTapHandle { running })
+    pub fn start_event_tap(_event_sender: std_mpsc::Sender<ActivityEvent>) -> Result<EventTapHandle> {
+        // Event tap disabled - activity monitoring will rely on periodic polling
+        // This prevents conflicts with the MacOSKeyboardListener and HotkeyHandler event taps
+        eprintln!("ℹ️  ActivityMonitor CGEventTap disabled to prevent conflicts");
+        eprintln!("   Activity metrics will be computed from periodic context collection");
+        
+        Ok(EventTapHandle { 
+            _phantom: std::marker::PhantomData 
+        })
     }
 }
 

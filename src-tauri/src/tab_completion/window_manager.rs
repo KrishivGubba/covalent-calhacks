@@ -2,7 +2,7 @@ use anyhow::Result;
 use tauri::{AppHandle, Manager, WebviewWindow, LogicalPosition, LogicalSize, Emitter, WebviewWindowBuilder, WebviewUrl};
 use serde::Serialize;
 
-use super::cursor_position::{CursorPosition, get_cursor_position_with_fallback};
+use super::cursor_position::CursorPosition;
 use super::trigger::CompletionSuggestion;
 
 /// Manages the ghost text and completion popup windows
@@ -29,13 +29,54 @@ impl CompletionWindowManager {
     
     /// Show completion suggestion - tries ghost text first, falls back to popup
     pub fn show_suggestion(&self, suggestion: &CompletionSuggestion) -> Result<()> {
-        println!("🎯 Attempting to show suggestion: {}", &suggestion.text[..suggestion.text.len().min(50)]);
+        // Validate suggestion text to prevent crashes from malformed data
+        if suggestion.text.is_empty() {
+            eprintln!("⚠️  Empty suggestion text, skipping");
+            return Ok(());
+        }
+        
+        // Sanitize text - remove control characters that could cause issues
+        let sanitized_text = suggestion.text
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+            .collect::<String>();
+        
+        if sanitized_text.is_empty() {
+            eprintln!("⚠️  Suggestion contains only control characters, skipping");
+            return Ok(());
+        }
+        
+        // Truncate very long suggestions to prevent UI issues
+        let final_text = if sanitized_text.len() > 500 {
+            format!("{}...", &sanitized_text[..497])
+        } else {
+            sanitized_text
+        };
+        
+        // Create sanitized suggestion
+        let safe_suggestion = CompletionSuggestion {
+            text: final_text.clone(),
+            cache_level: suggestion.cache_level.clone(),
+            latency_ms: suggestion.latency_ms,
+            context_type: suggestion.context_type.clone(),
+            confidence: suggestion.confidence,
+        };
+        
+        println!("🎯 Attempting to show suggestion: {}", &safe_suggestion.text[..safe_suggestion.text.len().min(50)]);
         
         // Try tiered cursor detection
         let cursor_pos = self.get_cursor_position_tiered();
         
         // Always use popup for now (ghost text disabled due to stability)
-        self.show_popup(suggestion, cursor_pos)
+        // Wrap in additional error handling to prevent crashes
+        match self.show_popup(&safe_suggestion, cursor_pos) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                eprintln!("⚠️  Failed to show completion popup: {}", e);
+                // Don't propagate error - just log and continue
+                Ok(())
+            }
+        }
         
         /* Disabled temporarily due to crashes in Accessibility API
         // Try to get cursor position with timeout in separate thread
@@ -173,26 +214,44 @@ impl CompletionWindowManager {
             cache_level: suggestion.cache_level.clone(),
         };
         
-        // Emit immediately
-        if let Err(e) = window.emit("update-completion-popup", &payload) {
-            eprintln!("⚠️  Failed to emit popup content: {}", e);
+        // Emit immediately - with error handling to prevent crashes
+        match window.emit("update-completion-popup", &payload) {
+            Ok(_) => println!("✅ Emitted popup content"),
+            Err(e) => {
+                eprintln!("⚠️  Failed to emit popup content: {}", e);
+                // If initial emit fails, likely the window is broken - return error
+                return Err(anyhow::anyhow!("Failed to emit to popup window: {}", e));
+            }
         }
         
         // Also emit after a small delay to ensure the window's JS is ready
+        // Spawn threads with error handling to prevent crashes
         let window_clone = window.clone();
         let payload_clone = payload.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            let _ = window_clone.emit("update-completion-popup", &payload_clone);
-        });
+        std::thread::Builder::new()
+            .name("popup-emit-delay-1".to_string())
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                if let Err(e) = window_clone.emit("update-completion-popup", &payload_clone) {
+                    eprintln!("⚠️  Delayed emit failed: {}", e);
+                }
+            })
+            .map_err(|e| eprintln!("⚠️  Failed to spawn delay thread: {}", e))
+            .ok();
         
         // And one more time after 150ms for good measure
         let window_clone2 = window.clone();
         let payload_clone2 = payload.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(150));
-            let _ = window_clone2.emit("update-completion-popup", &payload_clone2);
-        });
+        std::thread::Builder::new()
+            .name("popup-emit-delay-2".to_string())
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                if let Err(e) = window_clone2.emit("update-completion-popup", &payload_clone2) {
+                    eprintln!("⚠️  Delayed emit 2 failed: {}", e);
+                }
+            })
+            .map_err(|e| eprintln!("⚠️  Failed to spawn delay thread 2: {}", e))
+            .ok();
         
         Ok(())
     }
@@ -221,34 +280,24 @@ impl CompletionWindowManager {
     }
     
     /// Get cursor position using tiered fallback approach
+    /// NOTE: This method is called from the main thread, so we MUST NOT block.
+    /// The previous implementation used recv_timeout which blocks the main thread
+    /// and causes crashes on macOS (main thread blocking triggers AppKit assertions).
     fn get_cursor_position_tiered(&self) -> Option<CursorPosition> {
-        // Tier 1: Try text cursor with timeout (in separate thread to prevent crashes)
-        use std::sync::mpsc;
-        use std::time::Duration;
-        
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let result = get_cursor_position_with_fallback();
-            let _ = tx.send(result);
-        });
-        
-        // Wait for result with 100ms timeout
-        if let Ok(Ok(pos)) = rx.recv_timeout(Duration::from_millis(100)) {
-            println!("✅ Got text/mouse cursor position: ({:.0}, {:.0})", pos.x, pos.y);
-            return Some(pos);
-        }
-        
-        // Tier 2: Try mouse cursor directly (faster, no accessibility API)
+        // Try mouse cursor directly - this is fast and non-blocking (uses CGEvent)
+        // We skip the text cursor detection because it uses Accessibility APIs
+        // which can be slow and may cause issues when called frequently
         if let Ok(pos) = super::cursor_position::get_mouse_cursor_position() {
             println!("✅ Got mouse cursor position: ({:.0}, {:.0})", pos.x, pos.y);
             return Some(pos);
         }
-        
-        // Tier 3: Smart positioning - center of screen
-        println!("⚠️  All cursor detection failed, using center of screen");
+
+        // Fallback: Use a reasonable default position
+        // This ensures we never block and always have a position
+        println!("⚠️  Mouse cursor detection failed, using default position");
         Some(CursorPosition {
-            x: 800.0,  // Reasonable default for most screens
-            y: 400.0,
+            x: 100.0,  // Upper-left area, safe default
+            y: 100.0,
         })
     }
     

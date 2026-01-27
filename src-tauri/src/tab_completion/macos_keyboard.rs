@@ -87,8 +87,8 @@ impl MacOSKeyboardListener {
                         }
                     }
                 });
-                // Pass through the event unchanged (return None to allow event to continue)
-                None
+                // Pass through the event unchanged (ListenOnly mode requires returning the event)
+                Some(event.clone())
             },
         ).map_err(|e| anyhow!("Failed to create CGEventTap: {:?}", e))?;
 
@@ -101,9 +101,14 @@ impl MacOSKeyboardListener {
         unsafe {
             use core_foundation::runloop::{CFRunLoopRun, CFRunLoopGetCurrent, CFRunLoopAddSource};
             use core_foundation::base::TCFType;
-            
+
             let run_loop = CFRunLoopGetCurrent();
-            let source = event_tap.mach_port.create_runloop_source(0).unwrap();
+            let source = match event_tap.mach_port.create_runloop_source(0) {
+                Ok(s) => s,
+                Err(_) => {
+                    return Err(anyhow!("Failed to create run loop source for keyboard event tap"));
+                }
+            };
             CFRunLoopAddSource(run_loop, source.as_concrete_TypeRef(), kCFRunLoopCommonModes);
             CFRunLoopRun();
         }
