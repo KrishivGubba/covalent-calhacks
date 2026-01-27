@@ -23,6 +23,7 @@ from covalent_mcp.toolclasses import (
     gmail_module,
     drive_module,
     filesystem_module,
+    perplexity_search_module,
 )
 
 TOOL_MODULES: list[MCPToolModule] = [
@@ -31,6 +32,7 @@ TOOL_MODULES: list[MCPToolModule] = [
     gmail_module,
     drive_module,
     filesystem_module,
+    perplexity_search_module,
 ]
 
 
