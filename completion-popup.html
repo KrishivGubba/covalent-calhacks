@@ -105,12 +105,10 @@
     </div>
     
     <script type="module">
-      import { listen } from '@tauri-apps/api/event';
-      
       const badgeTextEl = document.getElementById('badge-text');
       const confidenceEl = document.getElementById('confidence');
       const textEl = document.getElementById('text');
-      
+
       function getBadgeText(level) {
         switch (level) {
           case 'L0-exact':
@@ -125,25 +123,67 @@
             return 'Suggestion';
         }
       }
-      
-      // Listen for popup updates
-      await listen('update-completion-popup', (event) => {
-        console.log('📬 Popup received update:', event.payload);
-        const { text, confidence, cache_level } = event.payload;
-        
+
+      function updatePopup(payload) {
+        console.log('📬 Popup received update:', payload);
+        const { text, confidence, cache_level } = payload;
+
         if (textEl && text) {
           textEl.textContent = text;
         }
-        
+
         if (confidenceEl && confidence !== undefined) {
           const confPercent = Math.round(confidence * 100);
           confidenceEl.textContent = `${confPercent}% confident`;
         }
-        
+
         if (badgeTextEl && cache_level) {
           badgeTextEl.textContent = getBadgeText(cache_level);
         }
-      });
+      }
+
+      // Set up listener with retry logic for both methods
+      async function setupListener() {
+        let listenerSet = false;
+
+        // Method 1: Try dynamic import of @tauri-apps/api/event
+        try {
+          const { listen } = await import('@tauri-apps/api/event');
+          await listen('update-completion-popup', (event) => {
+            updatePopup(event.payload);
+          });
+          console.log('✅ Popup listener ready (dynamic import)');
+          listenerSet = true;
+        } catch (e) {
+          console.log('Dynamic import failed, trying __TAURI__:', e.message);
+        }
+
+        // Method 2: Try window.__TAURI__ if available
+        if (!listenerSet && window.__TAURI__ && window.__TAURI__.event) {
+          try {
+            await window.__TAURI__.event.listen('update-completion-popup', (event) => {
+              updatePopup(event.payload);
+            });
+            console.log('✅ Popup listener ready (__TAURI__)');
+            listenerSet = true;
+          } catch (e) {
+            console.log('__TAURI__ listener failed:', e.message);
+          }
+        }
+
+        // Retry if neither method worked
+        if (!listenerSet) {
+          console.log('Retrying listener setup in 100ms...');
+          setTimeout(setupListener, 100);
+        }
+      }
+
+      // Start setup when DOM is ready
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', setupListener);
+      } else {
+        setupListener();
+      }
     </script>
   </body>
 </html>

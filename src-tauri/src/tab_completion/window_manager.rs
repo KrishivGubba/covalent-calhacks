@@ -165,39 +165,27 @@ impl CompletionWindowManager {
                 return Err(e);
             }
         };
-        
-        // Position window near cursor if available, otherwise center of screen
-        let position_result = if let Some(pos) = cursor_pos {
-            // Validate position
+
+        let popup_width = 500.0;
+        let popup_height = 200.0;
+        let (screen_width, screen_height) = self.get_screen_dimensions();
+
+        // Calculate final position with smart bounds handling
+        let (final_x, final_y) = if let Some(pos) = cursor_pos {
             if pos.x >= 0.0 && pos.y >= 0.0 && pos.x < 10000.0 && pos.y < 10000.0 {
-                // Calculate position with offset
-                let offset_x = 20.0; // Slightly to the right of cursor
-                let offset_y = 30.0; // Below cursor
-                let mut final_x = pos.x + offset_x;
-                let mut final_y = pos.y + offset_y;
-                
-                // Get screen dimensions to clamp position
-                let (screen_width, screen_height) = self.get_screen_dimensions();
-                let popup_width = 500.0;
-                let popup_height = 200.0;
-                
-                // Clamp to ensure popup stays on screen
-                final_x = final_x.max(0.0).min(screen_width - popup_width);
-                final_y = final_y.max(0.0).min(screen_height - popup_height);
-                
-                println!("📍 Positioning popup at ({:.0}, {:.0})", final_x, final_y);
-                
-                window.set_position(LogicalPosition::new(final_x, final_y))
+                self.calculate_smart_position(pos, popup_width, popup_height, screen_width, screen_height)
             } else {
-                // Invalid position, use fallback
-                window.set_position(LogicalPosition::new(100.0, 100.0))
+                // Invalid cursor position, use frontmost window fallback
+                self.get_frontmost_window_corner_position(popup_width, popup_height, screen_width, screen_height)
             }
         } else {
-            // Fallback: position in upper-right area
-            window.set_position(LogicalPosition::new(100.0, 100.0))
+            // No cursor position, use frontmost window fallback
+            self.get_frontmost_window_corner_position(popup_width, popup_height, screen_width, screen_height)
         };
-        
-        if let Err(e) = position_result {
+
+        println!("📍 Positioning popup at ({:.0}, {:.0})", final_x, final_y);
+
+        if let Err(e) = window.set_position(LogicalPosition::new(final_x, final_y)) {
             eprintln!("⚠️  Failed to position popup window: {}, continuing anyway", e);
         }
         
@@ -278,27 +266,200 @@ impl CompletionWindowManager {
         // Fallback to reasonable defaults
         (1920.0, 1080.0)
     }
-    
-    /// Get cursor position using tiered fallback approach
-    /// NOTE: This method is called from the main thread, so we MUST NOT block.
-    /// The previous implementation used recv_timeout which blocks the main thread
-    /// and causes crashes on macOS (main thread blocking triggers AppKit assertions).
-    fn get_cursor_position_tiered(&self) -> Option<CursorPosition> {
-        // Try mouse cursor directly - this is fast and non-blocking (uses CGEvent)
-        // We skip the text cursor detection because it uses Accessibility APIs
-        // which can be slow and may cause issues when called frequently
-        if let Ok(pos) = super::cursor_position::get_mouse_cursor_position() {
-            println!("✅ Got mouse cursor position: ({:.0}, {:.0})", pos.x, pos.y);
-            return Some(pos);
+
+    /// Calculate smart position near cursor with bounds handling
+    /// If popup would go off screen, flip it to the other side of the cursor
+    fn calculate_smart_position(
+        &self,
+        cursor: CursorPosition,
+        popup_width: f64,
+        popup_height: f64,
+        screen_width: f64,
+        screen_height: f64,
+    ) -> (f64, f64) {
+        let offset = 20.0; // Offset from cursor
+        let margin = 10.0; // Margin from screen edge
+
+        // Try positioning below and to the right of cursor first
+        let mut final_x = cursor.x + offset;
+        let mut final_y = cursor.y + offset;
+
+        // Check if popup would go off the right edge
+        if final_x + popup_width > screen_width - margin {
+            // Flip to left side of cursor
+            final_x = cursor.x - popup_width - offset;
+            // If still off screen (cursor near left edge), clamp to left margin
+            if final_x < margin {
+                final_x = margin;
+            }
         }
 
-        // Fallback: Use a reasonable default position
-        // This ensures we never block and always have a position
-        println!("⚠️  Mouse cursor detection failed, using default position");
-        Some(CursorPosition {
-            x: 100.0,  // Upper-left area, safe default
-            y: 100.0,
-        })
+        // Check if popup would go off the bottom edge
+        if final_y + popup_height > screen_height - margin {
+            // Flip to above cursor
+            final_y = cursor.y - popup_height - offset;
+            // If still off screen (cursor near top), clamp to top margin
+            if final_y < margin {
+                final_y = margin;
+            }
+        }
+
+        // Final safety clamp
+        final_x = final_x.max(margin).min(screen_width - popup_width - margin);
+        final_y = final_y.max(margin).min(screen_height - popup_height - margin);
+
+        (final_x, final_y)
+    }
+
+    /// Get position in the corner of the screen as fallback
+    /// NOTE: Accessibility API for window bounds is DISABLED due to SIGTRAP crashes
+    fn get_frontmost_window_corner_position(
+        &self,
+        popup_width: f64,
+        _popup_height: f64,
+        screen_width: f64,
+        _screen_height: f64,
+    ) -> (f64, f64) {
+        // Position in top-right area of screen with padding
+        // Accessibility API disabled - causes SIGTRAP crashes in CoreFoundation
+        println!("📍 Using screen corner position");
+        (screen_width - popup_width - 50.0, 50.0)
+    }
+
+    /* DISABLED: Accessibility API causes SIGTRAP crashes
+    /// Get the bounds of the frontmost application's focused window using Accessibility API
+    #[cfg(target_os = "macos")]
+    fn get_frontmost_window_bounds(&self) -> Option<(f64, f64, f64, f64)> {
+        use accessibility_sys::{
+            AXUIElementRef, AXUIElementCreateSystemWide, AXUIElementCopyAttributeValue,
+            AXValueGetValue, kAXFocusedApplicationAttribute, kAXFocusedWindowAttribute,
+            kAXPositionAttribute, kAXSizeAttribute,
+        };
+        use core_foundation::base::{CFRelease, TCFType};
+        use core_foundation::string::CFString;
+        use std::ptr;
+
+        unsafe {
+            // Get system-wide accessibility element
+            let system_wide = AXUIElementCreateSystemWide();
+            if system_wide.is_null() {
+                return None;
+            }
+
+            // Get focused application
+            let focused_app_attr = CFString::new(kAXFocusedApplicationAttribute).as_concrete_TypeRef();
+            let mut focused_app: AXUIElementRef = ptr::null_mut();
+            let result = AXUIElementCopyAttributeValue(
+                system_wide,
+                focused_app_attr,
+                &mut focused_app as *mut _ as *mut _,
+            );
+
+            if result != 0 || focused_app.is_null() {
+                CFRelease(system_wide as *const _);
+                return None;
+            }
+
+            // Get focused window of the app
+            let focused_win_attr = CFString::new(kAXFocusedWindowAttribute).as_concrete_TypeRef();
+            let mut focused_window: AXUIElementRef = ptr::null_mut();
+            let result = AXUIElementCopyAttributeValue(
+                focused_app,
+                focused_win_attr,
+                &mut focused_window as *mut _ as *mut _,
+            );
+
+            if result != 0 || focused_window.is_null() {
+                CFRelease(focused_app as *const _);
+                CFRelease(system_wide as *const _);
+                return None;
+            }
+
+            // Get window position
+            let pos_attr = CFString::new(kAXPositionAttribute).as_concrete_TypeRef();
+            let mut pos_value: *mut std::ffi::c_void = ptr::null_mut();
+            let result = AXUIElementCopyAttributeValue(
+                focused_window,
+                pos_attr,
+                &mut pos_value as *mut _ as *mut _,
+            );
+
+            if result != 0 || pos_value.is_null() {
+                CFRelease(focused_window as *const _);
+                CFRelease(focused_app as *const _);
+                CFRelease(system_wide as *const _);
+                return None;
+            }
+
+            // Get window size
+            let size_attr = CFString::new(kAXSizeAttribute).as_concrete_TypeRef();
+            let mut size_value: *mut std::ffi::c_void = ptr::null_mut();
+            let result = AXUIElementCopyAttributeValue(
+                focused_window,
+                size_attr,
+                &mut size_value as *mut _ as *mut _,
+            );
+
+            if result != 0 || size_value.is_null() {
+                CFRelease(pos_value as *const _);
+                CFRelease(focused_window as *const _);
+                CFRelease(focused_app as *const _);
+                CFRelease(system_wide as *const _);
+                return None;
+            }
+
+            // Extract CGPoint from position AXValue (kAXValueCGPointType = 1)
+            let mut point = core_graphics::geometry::CGPoint::new(0.0, 0.0);
+            let extracted_pos = AXValueGetValue(pos_value as _, 1, &mut point as *mut _ as *mut _);
+
+            // Extract CGSize from size AXValue (kAXValueCGSizeType = 2)
+            let mut size = core_graphics::geometry::CGSize::new(0.0, 0.0);
+            let extracted_size = AXValueGetValue(size_value as _, 2, &mut size as *mut _ as *mut _);
+
+            // Cleanup
+            CFRelease(size_value as *const _);
+            CFRelease(pos_value as *const _);
+            CFRelease(focused_window as *const _);
+            CFRelease(focused_app as *const _);
+            CFRelease(system_wide as *const _);
+
+            if !extracted_pos || !extracted_size {
+                return None;
+            }
+
+            // Validate values
+            if point.x.is_nan() || point.y.is_nan() || size.width.is_nan() || size.height.is_nan() {
+                return None;
+            }
+
+            Some((point.x, point.y, size.width, size.height))
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn get_frontmost_window_bounds(&self) -> Option<(f64, f64, f64, f64)> {
+        None
+    }
+    */
+
+    /// Get cursor position using mouse cursor (text cursor API disabled due to crashes)
+    /// Falls back to None if mouse cursor detection fails, triggering window corner fallback
+    fn get_cursor_position_tiered(&self) -> Option<CursorPosition> {
+        // NOTE: Text cursor detection via Accessibility API is DISABLED
+        // It causes SIGTRAP crashes in CoreFoundation that catch_unwind cannot catch
+        // The AXUIElementCopyAttributeValue call triggers CF_IS_OBJC assertions
+
+        // Use mouse cursor only - fast and stable (uses CGEvent, not Accessibility API)
+        if let Ok(pos) = super::cursor_position::get_mouse_cursor_position() {
+            if pos.x >= 0.0 && pos.y >= 0.0 && pos.x < 10000.0 && pos.y < 10000.0 {
+                println!("📍 Using mouse cursor position: ({:.0}, {:.0})", pos.x, pos.y);
+                return Some(pos);
+            }
+        }
+
+        // Return None to trigger frontmost window corner fallback
+        println!("⚠️  Mouse cursor detection failed, will use window corner fallback");
+        None
     }
     
     /// Hide all completion windows

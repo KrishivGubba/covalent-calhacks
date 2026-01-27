@@ -31,7 +31,7 @@ async function handleStart(): Promise<void> {
 }
 
 async function handleStop(): Promise<void> {
-  console.log('Stop Learning button pressed');
+  console.log('Pause Covalent button pressed');
   try {
     // Disable context collection when learning stops
     await disableContextCollection();

@@ -244,32 +244,9 @@ impl LLMAnalyzer {
             }
         };
         
-        // Resize screenshot to prevent integer overflow in PNG encoder
-        // Large retina displays can produce 5K+ images that crash the encoder
-        const MAX_WIDTH: u32 = 1920;
-        const MAX_HEIGHT: u32 = 1080;
-        
-        let (width, height) = (screenshot.width(), screenshot.height());
-        let resized_screenshot = if width > MAX_WIDTH || height > MAX_HEIGHT {
-            // Calculate scaling factor to fit within max dimensions
-            let scale_w = MAX_WIDTH as f32 / width as f32;
-            let scale_h = MAX_HEIGHT as f32 / height as f32;
-            let scale = scale_w.min(scale_h);
-            
-            let new_width = (width as f32 * scale) as u32;
-            let new_height = (height as f32 * scale) as u32;
-            
-            println!("🔽 Resizing screenshot from {}x{} to {}x{} to prevent encoder crash", 
-                width, height, new_width, new_height);
-            
-            screenshot.resize(new_width, new_height, image::imageops::FilterType::Lanczos3)
-        } else {
-            screenshot
-        };
-        
         // Convert to PNG bytes - with error handling
         let mut png_bytes = Vec::new();
-        if let Err(e) = resized_screenshot.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png) {
+        if let Err(e) = screenshot.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png) {
             eprintln!("⚠️  PNG encoding failed: {}, falling back to metadata-only analysis", e);
             return self.generate_fallback_description(metadata);
         }

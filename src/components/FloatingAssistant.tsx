@@ -240,7 +240,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
               }}
               onClick={handleLearningToggle}
             >
-              {isRunning ? 'Stop Learning' : 'Restart Learning'}
+              {isRunning ? 'Pause Covalent' : 'Resume Covalent'}
             </button>
           </div>
           <div style={styles.actionsList}>

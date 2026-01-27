@@ -15,7 +15,7 @@ from anthropic import Anthropic
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from LLMGraph import run_graph
 
-load_dotenv() 
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 class Node:
     def __init__(self, node_uuid=None, metadata=None, actions=None,
