@@ -4,12 +4,11 @@ import uuid
 import sys
 import asyncio
 from datetime import datetime
-import google.generativeai as genai
 from dotenv import load_dotenv
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 from graph_dao import GraphDAO, TestGraphDAO
-from anthropic import Anthropic
+from model_interface import ModelFactory
 
 # Add parent directory to path to import LLMGraph
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -43,24 +42,27 @@ class Node:
 
 
 class Tree:
-    def __init__(self, db_path):
+    def __init__(self, db_path, config_path=None):
         self.nodes = {}  # Dictionary to store nodes by UUID for easy lookup
         self.root = None
 
         self.dao = GraphDAO(db_path)
 
-        # Initialize Google AI client for embeddings
-        self.API_KEY = os.getenv("GOOGLE_API_KEY")
-        if self.API_KEY:
-            try:
-                genai.configure(api_key=self.API_KEY)
-                self.model = "gemini-2.5-flash"
-                self.embedding_model = "text-embedding-004"  # Updated to a more current embedding model
-            except ImportError:
-                print("Warning: google.generativeai not available")
-                self.API_KEY = None
-        else:
-            print("Warning: GOOGLE_API_KEY environment variable not set")
+        # Initialize model factory with configuration
+        try:
+            self.model_factory = ModelFactory(config_path)
+            self.embedding_model = self.model_factory.get_embedding_model("embedding")
+            self.traversal_model = self.model_factory.get_chat_model("traversal")
+            self.action_model = self.model_factory.get_chat_model("action_creation")
+            self.condensation_model = self.model_factory.get_chat_model("data_condensation")
+        except Exception as e:
+            print(f"Warning: Failed to initialize model factory: {e}")
+            print("Models will not be available for this session.")
+            self.model_factory = None
+            self.embedding_model = None
+            self.traversal_model = None
+            self.action_model = None
+            self.condensation_model = None
 
         self.construct_graph(self.dao.get_all_nodes())
 
@@ -81,8 +83,6 @@ class Tree:
         '''
         string = """this query is part of a traversal algorithm. You will be given the current node's metadata
         and the metadata of its children. You will also be given a user query. Your task is to determine the following:"""
-
-        self.model = "gemini-2.5-flash"
 
     def trigger_action(self, action_uuid):
         """
@@ -202,7 +202,7 @@ class Tree:
 
     def vectorize_text(self, text):
         """
-        Vectorize a piece of text using Google's embedding model.
+        Vectorize a piece of text using the configured embedding model.
         
         Args:
             text (str): The text to vectorize
@@ -210,16 +210,11 @@ class Tree:
         Returns:
             numpy.ndarray: The embedding vector, or None if vectorization fails
         """
-        if not self.API_KEY or not text:
+        if not self.embedding_model or not text:
             return None
             
         try:
-            result = genai.embed_content(
-                model=self.embedding_model,
-                content=text,
-            )
-            embedding = np.array(result['embedding']).reshape(1, -1)
-            return embedding
+            return self.embedding_model.embed(text)
         except Exception as e:
             print(f"Error vectorizing text: {e}")
             return None
@@ -367,8 +362,6 @@ class Tree:
             return self.root if curr is None else curr
         # sanity check the best node by passing the screen and best_node's metadata to the model
         # if the model agrees, return best_node, else start manual traversal algorithm
-        BASE_PROMPT = self.BASE_PROMPT  # Create a local copy to avoid accidental modification
-
         # Construct the prompt fresh each time
         # prompt = BASE_PROMPT + f'''
         #     This is the current screen content (describing what the user is working on):
@@ -380,9 +373,9 @@ class Tree:
         #     You don't have to verify if this is the best node, just make sure this is a reasonable node given the current context.
         #     Answer with a simple "yes" or "no". Do not provide any additional explanation.
         # '''
-        prompt = f"screen: {screen}\nselected_node: {self.get_parent_metadata(best_node)}"
-        model = genai.GenerativeModel(self.model)
-        # response = model.generate_content(prompt)
+        # prompt = f"screen: {screen}\nselected_node: {self.get_parent_metadata(best_node)}"
+        # if self.traversal_model:
+        #     response = self.traversal_model.generate(prompt)
 
         return best_node
 
@@ -582,13 +575,11 @@ IMPORTANT:
             # 3. Generate and send LLM prompt
             prompt = self._generate_learning_prompt(node, summary, existing_actions, existing_categories)
 
-            anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-            response = anthropic_client.messages.create(
-                model="claude-sonnet-4-5-20250929",
-                max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            llm_response = response.content[0].text
+            if not self.action_model:
+                print("Error: Action model not initialized")
+                return []
+            
+            llm_response = self.action_model.generate(prompt)
 
             print(f"\n{'='*60}")
             print(f"Raw LLM Response:")
@@ -677,7 +668,7 @@ IMPORTANT:
             return []
 
     @staticmethod
-    def cleanup_node_data(dao, node_uuid, anthropic_api_key=None):
+    def cleanup_node_data(dao, node_uuid, config_path=None):
         """
         Static method to condense data within a node by category.
         This method operates directly on the database and is designed to be called
@@ -686,17 +677,18 @@ IMPORTANT:
         Args:
             dao: GraphDAO instance for database operations
             node_uuid (str): UUID of the node to clean up
-            anthropic_api_key (str, optional): API key for Anthropic. Defaults to env var.
+            config_path (str, optional): Path to model config file. Defaults to repo root.
 
         Returns:
             bool: True if cleanup succeeded for all categories, False otherwise
         """
-        # Get API key from environment if not provided
-        if anthropic_api_key is None:
-            anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-            if not anthropic_api_key:
-                print(f"Error: ANTHROPIC_API_KEY not found in environment")
-                return False
+        try:
+            # Initialize model factory
+            model_factory = ModelFactory(config_path)
+            condensation_model = model_factory.get_chat_model("data_condensation")
+        except Exception as e:
+            print(f"Error: Failed to initialize condensation model: {e}")
+            return False
 
         try:
             # Get all data grouped by category
@@ -712,7 +704,6 @@ IMPORTANT:
             print(f"{'='*60}")
 
             all_succeeded = True
-            anthropic_client = Anthropic(api_key=anthropic_api_key)
 
             for category, data_entries in data_by_category.items():
                 # Skip categories with only 1 entry - nothing to condense
@@ -753,13 +744,8 @@ IMPORTANT:
 CONDENSED ENTRY:"""
 
                 try:
-                    # Call Claude to condense the data
-                    response = anthropic_client.messages.create(
-                        model="claude-sonnet-4-5-20250929",
-                        max_tokens=2048,
-                        messages=[{"role": "user", "content": condensation_prompt}]
-                    )
-                    condensed_data = response.content[0].text.strip()
+                    # Call the configured model to condense the data
+                    condensed_data = condensation_model.generate(condensation_prompt).strip()
 
                     print(f"Original entries: {len(data_entries)}")
                     print(f"Condensed to: {len(condensed_data)} chars")
@@ -802,21 +788,18 @@ CONDENSED ENTRY:"""
             return False
 
     @staticmethod
-    def cleanup_nodes_batch(dao, threshold, anthropic_api_key=None):
+    def cleanup_nodes_batch(dao, threshold, config_path=None):
         """
         Static method to perform batch cleanup on nodes that need it.
 
         Args:
             dao: GraphDAO instance for database operations
             threshold (int): Insertion count threshold for cleanup
-            anthropic_api_key (str, optional): API key for Anthropic. Defaults to env var.
+            config_path (str, optional): Path to model config file. Defaults to repo root.
 
         Returns:
             list: List of node UUIDs that were successfully cleaned
         """
-        # Get API key from environment if not provided
-        if anthropic_api_key is None:
-            anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
 
         try:
             # Get all nodes that need cleanup
@@ -837,7 +820,7 @@ CONDENSED ENTRY:"""
                 counter = dao.get_node_counter(node_uuid)
                 print(f"\nCleaning node {node_uuid} (insertion count: {counter})...")
 
-                success = Tree.cleanup_node_data(dao, node_uuid, anthropic_api_key)
+                success = Tree.cleanup_node_data(dao, node_uuid, config_path)
 
                 if success:
                     successfully_cleaned.append(node_uuid)
