@@ -1452,6 +1452,277 @@ def test_depth_boundary_max_depth():
     print(f"✓ Created chain of 10 nodes, deepest node at depth {depth}")
 
 
+# ==================== TRAVERSE WITH CONFIDENCE TESTS ====================
+
+def test_traverse_with_confidence_returns_tuple():
+    """Test that traverse_with_confidence returns correct tuple structure."""
+    print("\n" + "="*50)
+    print("Testing traverse_with_confidence tuple structure:")
+    print("="*50)
+
+    # Use the global tree instance
+    if not tree.embedding_model:
+        print("Skipping - embedding model not available")
+        return
+
+    summary = "Scheduling an interview with Ritesh for Summer 2026 internship"
+    result = tree.traverse_with_confidence(summary)
+
+    # Check tuple structure
+    assert isinstance(result, tuple), "Result should be a tuple"
+    assert len(result) == 3, "Result should have 3 elements"
+
+    best_node, confidence, top_scores = result
+
+    # Check types
+    assert best_node is not None or tree.root is None, "Best node should exist if root exists"
+    assert isinstance(confidence, float), "Confidence should be a float"
+    assert isinstance(top_scores, list), "Top scores should be a list"
+
+    print(f"✓ Returned tuple with: Node={best_node.metadata if best_node else None}, "
+          f"Confidence={confidence:.4f}, Top scores count={len(top_scores)}")
+
+
+def test_traverse_with_confidence_score_range():
+    """Test that confidence score is between 0 and 1."""
+    print("\n" + "="*50)
+    print("Testing confidence score range:")
+    print("="*50)
+
+    if not tree.embedding_model:
+        print("Skipping - embedding model not available")
+        return
+
+    test_summaries = [
+        "Reviewing resumes for summer 2026 internship positions",
+        "Approving vacation leave requests for employees",
+        "Organizing the MIT career fair booth",
+        "Random text that might not match well xyz123",
+    ]
+
+    for summary in test_summaries:
+        best_node, confidence, top_scores = tree.traverse_with_confidence(summary)
+
+        assert 0.0 <= confidence <= 1.0, f"Confidence {confidence} out of range for '{summary[:30]}...'"
+
+        # Also check all top scores
+        for node, score in top_scores:
+            assert 0.0 <= score <= 1.0, f"Score {score} out of range for node {node.metadata}"
+
+        print(f"  '{summary[:40]}...' -> confidence: {confidence:.4f}")
+
+    print("✓ All confidence scores are within [0.0, 1.0]")
+
+
+def test_traverse_with_confidence_sorted_descending():
+    """Test that top scores are sorted in descending order."""
+    print("\n" + "="*50)
+    print("Testing top scores sorted descending:")
+    print("="*50)
+
+    if not tree.embedding_model:
+        print("Skipping - embedding model not available")
+        return
+
+    summary = "Onboarding a new software engineer to the team"
+    best_node, confidence, top_scores = tree.traverse_with_confidence(summary)
+
+    # Check sorting
+    if len(top_scores) > 1:
+        for i in range(len(top_scores) - 1):
+            assert top_scores[i][1] >= top_scores[i+1][1], \
+                f"Scores not sorted: {top_scores[i][1]} < {top_scores[i+1][1]}"
+
+    print(f"Top scores: {[(n.metadata, f'{s:.4f}') for n, s in top_scores]}")
+    print("✓ Top scores are sorted in descending order")
+
+
+def test_traverse_with_confidence_best_matches_top():
+    """Test that best node matches the top score in the list."""
+    print("\n" + "="*50)
+    print("Testing best node matches top score:")
+    print("="*50)
+
+    if not tree.embedding_model:
+        print("Skipping - embedding model not available")
+        return
+
+    summary = "Resolving a conflict between two team members in the issues department"
+    best_node, confidence, top_scores = tree.traverse_with_confidence(summary)
+
+    if top_scores:
+        top_node, top_score = top_scores[0]
+
+        assert best_node.node_uuid == top_node.node_uuid, \
+            f"Best node {best_node.metadata} doesn't match top node {top_node.metadata}"
+        assert abs(confidence - top_score) < 0.0001, \
+            f"Confidence {confidence} doesn't match top score {top_score}"
+
+    print(f"✓ Best node '{best_node.metadata}' matches top score {confidence:.4f}")
+
+
+def test_traverse_with_confidence_empty_summary():
+    """Test handling of empty/None summary."""
+    print("\n" + "="*50)
+    print("Testing empty summary handling:")
+    print("="*50)
+
+    # Test empty string
+    best_node, confidence, top_scores = tree.traverse_with_confidence("")
+    assert best_node == tree.root, "Empty string should return root"
+    assert confidence == 0.0, "Empty string should have 0.0 confidence"
+    assert top_scores == [], "Empty string should have empty top_scores"
+    print("  Empty string: root returned with 0.0 confidence")
+
+    # Test whitespace only
+    best_node, confidence, top_scores = tree.traverse_with_confidence("   ")
+    assert best_node == tree.root, "Whitespace should return root"
+    assert confidence == 0.0, "Whitespace should have 0.0 confidence"
+    print("  Whitespace only: root returned with 0.0 confidence")
+
+    # Test None (if it doesn't raise an error)
+    try:
+        best_node, confidence, top_scores = tree.traverse_with_confidence(None)
+        assert best_node == tree.root, "None should return root"
+        assert confidence == 0.0, "None should have 0.0 confidence"
+        print("  None: root returned with 0.0 confidence")
+    except (TypeError, AttributeError):
+        print("  None: Raises TypeError (acceptable)")
+
+    print("✓ Empty/None summary handled correctly")
+
+
+def test_traverse_with_confidence_top_5_limit():
+    """Test that top_scores contains at most 5 entries."""
+    print("\n" + "="*50)
+    print("Testing top 5 limit:")
+    print("="*50)
+
+    if not tree.embedding_model:
+        print("Skipping - embedding model not available")
+        return
+
+    summary = "Working on recruiting tasks for the company"
+    best_node, confidence, top_scores = tree.traverse_with_confidence(summary)
+
+    assert len(top_scores) <= 5, f"Top scores should have at most 5 entries, got {len(top_scores)}"
+    print(f"✓ Returned {len(top_scores)} top scores (max 5)")
+
+
+def test_format_top_scores():
+    """Test the _format_top_scores helper method."""
+    print("\n" + "="*50)
+    print("Testing _format_top_scores:")
+    print("="*50)
+
+    if not tree.embedding_model:
+        print("Skipping - embedding model not available")
+        return
+
+    summary = "Reviewing applications for fall 2026 internships"
+    best_node, confidence, top_scores = tree.traverse_with_confidence(summary)
+
+    formatted = tree._format_top_scores(top_scores)
+
+    assert isinstance(formatted, str), "Formatted output should be a string"
+
+    # Check format contains expected elements
+    for i, (node, score) in enumerate(top_scores, 1):
+        assert f"{i}." in formatted, f"Should contain numbered entry {i}."
+        assert node.metadata in formatted, f"Should contain node metadata: {node.metadata}"
+        assert "Score:" in formatted, "Should contain 'Score:'"
+        assert "path:" in formatted, "Should contain 'path:'"
+
+    print(f"Formatted output:\n{formatted}")
+    print("✓ _format_top_scores produces correct format")
+
+
+def test_format_top_scores_empty():
+    """Test _format_top_scores with empty list."""
+    print("\n" + "="*50)
+    print("Testing _format_top_scores empty list:")
+    print("="*50)
+
+    formatted = tree._format_top_scores([])
+
+    assert formatted == "No matching nodes found.", f"Unexpected output: {formatted}"
+    print(f"✓ Empty list returns: '{formatted}'")
+
+
+def test_get_node_path():
+    """Test the _get_node_path helper method."""
+    print("\n" + "="*50)
+    print("Testing _get_node_path:")
+    print("="*50)
+
+    # Test root node
+    if tree.root:
+        path = tree._get_node_path(tree.root)
+        assert path == tree.root.metadata, f"Root path should be just root metadata: {path}"
+        print(f"  Root path: {path}")
+
+    # Test a deeper node
+    for node in tree.nodes.values():
+        if node.parent and node.parent.parent:  # Has at least 2 ancestors
+            path = tree._get_node_path(node)
+            assert " > " in path, f"Multi-level path should contain ' > ': {path}"
+            parts = path.split(" > ")
+            assert parts[-1] == node.metadata, "Path should end with node's own metadata"
+            print(f"  Deep node path: {path}")
+            break
+
+    print("✓ _get_node_path produces correct paths")
+
+
+def test_traverse_with_confidence_with_config():
+    """Test that traverse_with_confidence uses GraphConfig for threshold analysis."""
+    print("\n" + "="*50)
+    print("Testing traverse_with_confidence with GraphConfig:")
+    print("="*50)
+
+    if not tree.embedding_model:
+        print("Skipping - embedding model not available")
+        return
+
+    # Verify config is available
+    assert tree.config is not None, "Tree should have GraphConfig initialized"
+
+    summary = "Scheduling interviews for summer 2026 internship candidates"
+    best_node, confidence, top_scores = tree.traverse_with_confidence(summary)
+
+    # Test threshold methods
+    if tree.config.should_insert_directly(confidence):
+        print(f"  Confidence {confidence:.4f} >= {tree.config.get_threshold('perfect_fit'):.2f}: Insert directly")
+    elif tree.config.should_validate_with_llm(confidence):
+        print(f"  Confidence {confidence:.4f} >= {tree.config.get_threshold('uncertain'):.2f}: Validate with LLM")
+    else:
+        print(f"  Confidence {confidence:.4f} < {tree.config.get_threshold('uncertain'):.2f}: May need restructure")
+
+    print("✓ GraphConfig integration works correctly")
+
+
+def run_traverse_with_confidence_tests():
+    """Run only the traverse_with_confidence tests."""
+    print("\n" + "="*70)
+    print("RUNNING TRAVERSE_WITH_CONFIDENCE TESTS")
+    print("="*70)
+
+    test_traverse_with_confidence_returns_tuple()
+    test_traverse_with_confidence_score_range()
+    test_traverse_with_confidence_sorted_descending()
+    test_traverse_with_confidence_best_matches_top()
+    test_traverse_with_confidence_empty_summary()
+    test_traverse_with_confidence_top_5_limit()
+    test_format_top_scores()
+    test_format_top_scores_empty()
+    test_get_node_path()
+    test_traverse_with_confidence_with_config()
+
+    print("\n" + "="*70)
+    print("ALL TRAVERSE_WITH_CONFIDENCE TESTS COMPLETED")
+    print("="*70)
+
+
 def run_all_tests():
     """Run all test suites."""
     print("\n" + "="*70)
@@ -1509,6 +1780,18 @@ def run_all_tests():
     test_orphan_node_handling()
     test_depth_boundary_max_depth()
 
+    # Traverse with confidence tests
+    test_traverse_with_confidence_returns_tuple()
+    test_traverse_with_confidence_score_range()
+    test_traverse_with_confidence_sorted_descending()
+    test_traverse_with_confidence_best_matches_top()
+    test_traverse_with_confidence_empty_summary()
+    test_traverse_with_confidence_top_5_limit()
+    test_format_top_scores()
+    test_format_top_scores_empty()
+    test_get_node_path()
+    test_traverse_with_confidence_with_config()
+
     print("\n" + "="*70)
     print("ALL TESTS COMPLETED")
     print("="*70)
@@ -1550,7 +1833,10 @@ if __name__ == "__main__":
     # run_all_tests()
 
     # Or run just graph structure tests:
-    run_graph_structure_tests()
+    # run_graph_structure_tests()
+
+    # Or run traverse_with_confidence tests:
+    run_traverse_with_confidence_tests()
 
     # Or run individual test functions:
     # test_traverse()

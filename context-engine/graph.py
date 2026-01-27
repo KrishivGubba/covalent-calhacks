@@ -4,15 +4,16 @@ import uuid
 import sys
 import asyncio
 from datetime import datetime
+from typing import Tuple, List, Optional
 from dotenv import load_dotenv
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 from graph_dao import GraphDAO, TestGraphDAO
 from model_interface import ModelFactory
+from graph_config import GraphConfig
 
 # Add parent directory to path to import LLMGraph
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from LLMGraph import run_graph
 
 load_dotenv() 
 
@@ -48,21 +49,47 @@ class Tree:
 
         self.dao = GraphDAO(db_path)
 
+        # Initialize graph configuration for thresholds
+        try:
+            self.config = GraphConfig(config_path)
+        except Exception as e:
+            print(f"Warning: Failed to initialize GraphConfig: {e}")
+            self.config = None
+
         # Initialize model factory with configuration
         try:
             self.model_factory = ModelFactory(config_path)
-            self.embedding_model = self.model_factory.get_embedding_model("embedding")
-            self.traversal_model = self.model_factory.get_chat_model("traversal")
-            self.action_model = self.model_factory.get_chat_model("action_creation")
-            self.condensation_model = self.model_factory.get_chat_model("data_condensation")
         except Exception as e:
             print(f"Warning: Failed to initialize model factory: {e}")
             print("Models will not be available for this session.")
             self.model_factory = None
-            self.embedding_model = None
-            self.traversal_model = None
-            self.action_model = None
-            self.condensation_model = None
+        
+        # Initialize each model independently
+        self.embedding_model = None
+        self.traversal_model = None
+        self.action_model = None
+        self.condensation_model = None
+        
+        if self.model_factory:
+            try:
+                self.embedding_model = self.model_factory.get_embedding_model("embedding")
+            except Exception as e:
+                print(f"Warning: Failed to initialize embedding model: {e}")
+            
+            try:
+                self.traversal_model = self.model_factory.get_chat_model("traversal")
+            except Exception as e:
+                print(f"Warning: Failed to initialize traversal model: {e}")
+            
+            try:
+                self.action_model = self.model_factory.get_chat_model("action_creation")
+            except Exception as e:
+                print(f"Warning: Failed to initialize action model: {e}")
+            
+            try:
+                self.condensation_model = self.model_factory.get_chat_model("data_condensation")
+            except Exception as e:
+                print(f"Warning: Failed to initialize condensation model: {e}")
 
         self.construct_graph(self.dao.get_all_nodes())
 
@@ -186,7 +213,8 @@ class Tree:
         print(f"🚀 [graph.py] Data length being passed: {len(collected_data_string)} characters")
         
         # Run the graph and capture the result
-        result = asyncio.run(run_graph(action_text, collected_data_string))
+        result = "MCP not set up yet"
+        # result = asyncio.run(run_graph(action_text, collected_data_string))
         print(f"✅ [graph.py] run_graph() call completed")
         print(f"📊 [graph.py] Result from run_graph: {result}")
         
@@ -378,6 +406,125 @@ class Tree:
         #     response = self.traversal_model.generate(prompt)
 
         return best_node
+
+    def traverse_with_confidence(self, summary: str) -> Tuple[Optional['Node'], float, List[Tuple['Node', float]]]:
+        """
+        Traverse the graph to find the most relevant node with confidence scoring.
+
+        Args:
+            summary: Text describing what the user is currently doing
+
+        Returns:
+            Tuple containing:
+            - best_node: The node with highest similarity to the summary
+            - confidence: The similarity score (0.0 to 1.0) of the best match
+            - top_scores: List of (node, score) tuples for top 5 matches, sorted descending
+        """
+        # Handle edge cases
+        if not summary or not summary.strip():
+            print("⚠️ traverse_with_confidence() - Empty or None summary provided")
+            return (self.root, 0.0, [])
+
+        # Handle empty graph (only root or no nodes)
+        if not self.nodes or len(self.nodes) == 0:
+            print("⚠️ traverse_with_confidence() - Empty graph")
+            return (self.root, 0.0, [(self.root, 0.0)] if self.root else [])
+
+        # Vectorize the input summary
+        summary_embedding = self.vectorize_text(summary)
+        if summary_embedding is None:
+            print("⚠️ traverse_with_confidence() - Vectorization failed")
+            return (self.root, 0.0, [])
+
+        # Calculate cosine similarity against ALL nodes
+        scores = []  # List of (node, score) tuples
+
+        for node_uuid, node in self.nodes.items():
+            if node.embedding is not None:
+                try:
+                    # Calculate cosine similarity
+                    similarity = cosine_similarity(summary_embedding, node.embedding)[0][0]
+                    # Ensure score is between 0 and 1
+                    similarity = max(0.0, min(1.0, float(similarity)))
+                    scores.append((node, similarity))
+                except Exception as e:
+                    print(f"Error calculating similarity for node {node_uuid}: {e}")
+                    continue
+
+        # Handle case where no valid scores were computed
+        if not scores:
+            print("⚠️ traverse_with_confidence() - No valid similarity scores computed")
+            return (self.root, 0.0, [(self.root, 0.0)] if self.root else [])
+
+        # Sort all scores descending
+        scores.sort(key=lambda x: x[1], reverse=True)
+
+        # Get top 5
+        top_scores = scores[:5]
+
+        # Best node is the first one
+        best_node, confidence = top_scores[0]
+
+        # Log results
+        summary_preview = summary[:100] + "..." if len(summary) > 100 else summary
+        print(f"\n🎯 traverse_with_confidence() - Summary: '{summary_preview}'")
+        print(f"🎯 Top 5 matches:")
+        for i, (node, score) in enumerate(top_scores, 1):
+            path = self._get_node_path(node)
+            print(f"   {i}. {node.metadata} (path: {path}) - Score: {score:.4f}")
+        print(f"🎯 Selected: {best_node.metadata} with confidence {confidence:.4f}")
+
+        # Log threshold analysis if config is available
+        if self.config:
+            if self.config.should_insert_directly(confidence):
+                print(f"   → Confidence >= {self.config.get_threshold('perfect_fit'):.2f}: Insert directly (no LLM validation)")
+            elif self.config.should_validate_with_llm(confidence):
+                print(f"   → Confidence >= {self.config.get_threshold('uncertain'):.2f}: Validate with LLM")
+            else:
+                print(f"   → Confidence < {self.config.get_threshold('uncertain'):.2f}: May need restructure")
+
+        return (best_node, confidence, top_scores)
+
+    def _get_node_path(self, node: 'Node') -> str:
+        """
+        Get the path from root to a node as a string.
+
+        Args:
+            node: The node to get the path for
+
+        Returns:
+            str: Path string like "Root > Parent > Node"
+        """
+        path_parts = []
+        current = node
+
+        while current is not None:
+            path_parts.append(current.metadata)
+            current = current.parent
+
+        # Reverse to get root-to-node order
+        path_parts.reverse()
+        return " > ".join(path_parts)
+
+    def _format_top_scores(self, top_scores: List[Tuple['Node', float]]) -> str:
+        """
+        Format the top scores list as a readable string for LLM prompts.
+
+        Args:
+            top_scores: List of (node, score) tuples sorted descending
+
+        Returns:
+            str: Formatted string with numbered entries showing node metadata, path, and score
+        """
+        if not top_scores:
+            return "No matching nodes found."
+
+        lines = []
+        for i, (node, score) in enumerate(top_scores, 1):
+            path = self._get_node_path(node)
+            lines.append(f"{i}. {node.metadata} (path: {path}) - Score: {score:.2f}")
+
+        return "\n".join(lines)
 
     def _generate_learning_prompt(self, node, summary, existing_actions, existing_categories):
         """
