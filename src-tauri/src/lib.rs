@@ -156,6 +156,80 @@ impl Drop for FlaskServer {
     }
 }
 
+// Ollama server state management
+struct OllamaServer {
+    process: Arc<Mutex<Option<Child>>>,
+    was_already_running: Arc<Mutex<bool>>,
+}
+
+impl OllamaServer {
+    fn new() -> Self {
+        Self {
+            process: Arc::new(Mutex::new(None)),
+            was_already_running: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    fn start(&self) -> Result<(), String> {
+        // Check if ollama is already running by trying to connect
+        let already_running = std::process::Command::new("curl")
+            .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:11434/api/tags"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "200")
+            .unwrap_or(false);
+
+        if already_running {
+            println!("✓ Ollama is already running (not managed by Covalent)");
+            *self.was_already_running.lock().unwrap() = true;
+            return Ok(());
+        }
+
+        // Start ollama serve
+        match Command::new("ollama")
+            .arg("serve")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(child) => {
+                println!("✓ Ollama serve started with PID: {:?}", child.id());
+                *self.process.lock().unwrap() = Some(child);
+                // Give it a moment to initialize
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("⚠️  Failed to start Ollama: {}", e);
+                eprintln!("   Make sure Ollama is installed: https://ollama.ai");
+                Err(format!("Failed to start Ollama: {}", e))
+            }
+        }
+    }
+
+    fn stop(&self) {
+        // Only stop if we started it (don't kill user's existing ollama)
+        if *self.was_already_running.lock().unwrap() {
+            println!("🦙 Ollama was already running - leaving it alone");
+            return;
+        }
+
+        if let Ok(mut process_guard) = self.process.lock() {
+            if let Some(mut child) = process_guard.take() {
+                println!("🦙 Stopping Ollama server (PID: {:?})", child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                println!("✓ Ollama server stopped");
+            }
+        }
+    }
+}
+
+impl Drop for OllamaServer {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -325,37 +399,13 @@ pub fn run() {
 
             // Start Ollama serve (for local LLM inference)
             println!("🦙 Starting Ollama serve...");
-            std::thread::spawn(|| {
-                // Check if ollama is already running by trying to connect
-                let already_running = std::process::Command::new("curl")
-                    .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:11434/api/tags"])
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "200")
-                    .unwrap_or(false);
-
-                if already_running {
-                    println!("✓ Ollama is already running");
-                    return;
-                }
-
-                // Start ollama serve
-                match std::process::Command::new("ollama")
-                    .arg("serve")
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
-                    Ok(_child) => {
-                        println!("✓ Ollama serve started");
-                        // Give it a moment to initialize
-                        std::thread::sleep(std::time::Duration::from_secs(2));
-                    }
-                    Err(e) => {
-                        eprintln!("⚠️  Failed to start Ollama: {}", e);
-                        eprintln!("   Make sure Ollama is installed: https://ollama.ai");
-                    }
-                }
-            });
+            let ollama_server = OllamaServer::new();
+            match ollama_server.start() {
+                Ok(_) => {},
+                Err(e) => eprintln!("⚠️  Ollama startup issue: {}", e),
+            }
+            // Store ollama server in app state so it gets cleaned up on exit
+            app.manage(ollama_server);
             
             // Create and manage context state
             let context_state = ContextState::new();
