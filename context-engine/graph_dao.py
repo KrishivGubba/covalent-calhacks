@@ -470,6 +470,365 @@ class GraphDAO:
         results = self.execute_query(query, (threshold,))
         return [row[0] for row in results]
 
+    # ==================== GRAPH STRUCTURE METHODS ====================
+
+    def create_node(self, metadata, parent_uuid=None):
+        '''
+        Create a new node with the given metadata.
+
+        Args:
+            metadata (str): Metadata/name for the node
+            parent_uuid (str, optional): UUID of parent node (None for root-level)
+
+        Returns:
+            str: UUID of the newly created node
+        '''
+        import uuid
+        import json
+        from datetime import datetime
+
+        node_uuid = str(uuid.uuid4())
+        current_time = datetime.now().isoformat()
+        children_uuid_arr = json.dumps([])
+
+        query = """
+            INSERT INTO node_table (UUID, Metadata, created, last_modified, parent_uuid, children_uuid_arr)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """
+        self.execute_query(query, (node_uuid, metadata, current_time, current_time, parent_uuid, children_uuid_arr))
+        return node_uuid
+
+    def add_child_to_node(self, parent_uuid, child_uuid):
+        '''
+        Add a child UUID to a parent node's children array.
+
+        Args:
+            parent_uuid (str): UUID of the parent node
+            child_uuid (str): UUID of the child node to add
+
+        Returns:
+            bool: True on success, False on failure
+        '''
+        import json
+        from datetime import datetime
+
+        try:
+            # Get current children array
+            node = self.get_node_by_id(parent_uuid)
+            if node is None:
+                return False
+
+            children = json.loads(node[5]) if node[5] else []
+            if child_uuid not in children:
+                children.append(child_uuid)
+
+            # Update parent node
+            current_time = datetime.now().isoformat()
+            query = """
+                UPDATE node_table
+                SET children_uuid_arr = ?, last_modified = ?
+                WHERE UUID = ?
+            """
+            self.execute_query(query, (json.dumps(children), current_time, parent_uuid))
+            return True
+        except Exception:
+            return False
+
+    def remove_child_from_node(self, parent_uuid, child_uuid):
+        '''
+        Remove a child UUID from a parent node's children array.
+
+        Args:
+            parent_uuid (str): UUID of the parent node
+            child_uuid (str): UUID of the child node to remove
+
+        Returns:
+            bool: True if child was found and removed, False otherwise
+        '''
+        import json
+        from datetime import datetime
+
+        try:
+            # Get current children array
+            node = self.get_node_by_id(parent_uuid)
+            if node is None:
+                return False
+
+            children = json.loads(node[5]) if node[5] else []
+            if child_uuid not in children:
+                return False
+
+            children.remove(child_uuid)
+
+            # Update parent node
+            current_time = datetime.now().isoformat()
+            query = """
+                UPDATE node_table
+                SET children_uuid_arr = ?, last_modified = ?
+                WHERE UUID = ?
+            """
+            self.execute_query(query, (json.dumps(children), current_time, parent_uuid))
+            return True
+        except Exception:
+            return False
+
+    def update_node_parent(self, node_uuid, new_parent_uuid):
+        '''
+        Update a node's parent, handling all relationship updates.
+
+        Args:
+            node_uuid (str): UUID of the node to move
+            new_parent_uuid (str): UUID of the new parent node
+
+        Returns:
+            bool: True on success, False on failure
+        '''
+        import json
+        from datetime import datetime
+
+        try:
+            # Get the node's current parent
+            node = self.get_node_by_id(node_uuid)
+            if node is None:
+                return False
+
+            old_parent_uuid = node[4]
+            current_time = datetime.now().isoformat()
+
+            # Remove from old parent's children (if it has one)
+            if old_parent_uuid:
+                self.remove_child_from_node(old_parent_uuid, node_uuid)
+
+            # Add to new parent's children (if provided)
+            if new_parent_uuid:
+                self.add_child_to_node(new_parent_uuid, node_uuid)
+
+            # Update the node's parent_uuid
+            query = """
+                UPDATE node_table
+                SET parent_uuid = ?, last_modified = ?
+                WHERE UUID = ?
+            """
+            self.execute_query(query, (new_parent_uuid, current_time, node_uuid))
+            return True
+        except Exception:
+            return False
+
+    def update_node_metadata(self, node_uuid, new_metadata):
+        '''
+        Update a node's metadata field.
+
+        Args:
+            node_uuid (str): UUID of the node
+            new_metadata (str): New metadata value
+
+        Returns:
+            bool: True on success, False on failure
+        '''
+        from datetime import datetime
+
+        try:
+            current_time = datetime.now().isoformat()
+            query = """
+                UPDATE node_table
+                SET Metadata = ?, last_modified = ?
+                WHERE UUID = ?
+            """
+            self.execute_query(query, (new_metadata, current_time, node_uuid))
+            return True
+        except Exception:
+            return False
+
+    def delete_node(self, node_uuid, cascade=False):
+        '''
+        Delete a node from the graph.
+
+        Args:
+            node_uuid (str): UUID of the node to delete
+            cascade (bool): If True, delete all descendants. If False, fail if node has children.
+
+        Returns:
+            bool: True on success, False on failure
+        '''
+        import json
+
+        try:
+            node = self.get_node_by_id(node_uuid)
+            if node is None:
+                return False
+
+            children = json.loads(node[5]) if node[5] else []
+
+            # If has children and not cascading, fail
+            if children and not cascade:
+                return False
+
+            # Cascade delete children first
+            if cascade:
+                for child_uuid in children:
+                    self.delete_node(child_uuid, cascade=True)
+
+            # Remove from parent's children array
+            parent_uuid = node[4]
+            if parent_uuid:
+                self.remove_child_from_node(parent_uuid, node_uuid)
+
+            # Delete associated data
+            query_data = "DELETE FROM data_table WHERE Node_UUID = ?"
+            self.execute_query(query_data, (node_uuid,))
+
+            # Delete associated actions
+            query_actions = "DELETE FROM action_table WHERE Node_UUID = ?"
+            self.execute_query(query_actions, (node_uuid,))
+
+            # Delete the node itself
+            query_node = "DELETE FROM node_table WHERE UUID = ?"
+            self.execute_query(query_node, (node_uuid,))
+
+            return True
+        except Exception:
+            return False
+
+    def get_node_depth(self, node_uuid):
+        '''
+        Get the depth of a node in the tree (root = 0).
+
+        Args:
+            node_uuid (str): UUID of the node
+
+        Returns:
+            int: Depth of the node (0 for root, -1 if node not found)
+        '''
+        depth = 0
+        current_uuid = node_uuid
+
+        while current_uuid:
+            node = self.get_node_by_id(current_uuid)
+            if node is None:
+                return -1
+
+            parent_uuid = node[4]
+            if parent_uuid is None:
+                # Reached root
+                return depth
+
+            depth += 1
+            current_uuid = parent_uuid
+
+        return depth
+
+    def get_siblings(self, node_uuid):
+        '''
+        Get all sibling nodes (nodes with the same parent).
+
+        Args:
+            node_uuid (str): UUID of the node
+
+        Returns:
+            list: List of node tuples for siblings (excludes the node itself)
+        '''
+        import json
+
+        node = self.get_node_by_id(node_uuid)
+        if node is None:
+            return []
+
+        parent_uuid = node[4]
+        if parent_uuid is None:
+            # Root node has no siblings
+            return []
+
+        parent_node = self.get_node_by_id(parent_uuid)
+        if parent_node is None:
+            return []
+
+        children = json.loads(parent_node[5]) if parent_node[5] else []
+        siblings = []
+
+        for child_uuid in children:
+            if child_uuid != node_uuid:
+                sibling = self.get_node_by_id(child_uuid)
+                if sibling:
+                    siblings.append(sibling)
+
+        return siblings
+
+    def move_data_between_nodes(self, from_node_uuid, to_node_uuid, category=None):
+        '''
+        Move data entries from one node to another.
+
+        Args:
+            from_node_uuid (str): Source node UUID
+            to_node_uuid (str): Destination node UUID
+            category (str, optional): If specified, only move data in this category
+
+        Returns:
+            int: Number of entries moved
+        '''
+        if category:
+            # Count entries to move
+            count_query = """
+                SELECT COUNT(*) FROM data_table
+                WHERE Node_UUID = ? AND category = ?
+            """
+            result = self.execute_query(count_query, (from_node_uuid, category))
+            count = result[0][0] if result else 0
+
+            # Move entries
+            query = """
+                UPDATE data_table
+                SET Node_UUID = ?
+                WHERE Node_UUID = ? AND category = ?
+            """
+            self.execute_query(query, (to_node_uuid, from_node_uuid, category))
+        else:
+            # Count all entries
+            count_query = """
+                SELECT COUNT(*) FROM data_table
+                WHERE Node_UUID = ?
+            """
+            result = self.execute_query(count_query, (from_node_uuid,))
+            count = result[0][0] if result else 0
+
+            # Move all entries
+            query = """
+                UPDATE data_table
+                SET Node_UUID = ?
+                WHERE Node_UUID = ?
+            """
+            self.execute_query(query, (to_node_uuid, from_node_uuid))
+
+        return count
+
+    def move_actions_between_nodes(self, from_node_uuid, to_node_uuid):
+        '''
+        Move all actions from one node to another.
+
+        Args:
+            from_node_uuid (str): Source node UUID
+            to_node_uuid (str): Destination node UUID
+
+        Returns:
+            int: Number of actions moved
+        '''
+        # Count actions to move
+        count_query = """
+            SELECT COUNT(*) FROM action_table
+            WHERE Node_UUID = ?
+        """
+        result = self.execute_query(count_query, (from_node_uuid,))
+        count = result[0][0] if result else 0
+
+        # Move actions
+        query = """
+            UPDATE action_table
+            SET Node_UUID = ?
+            WHERE Node_UUID = ?
+        """
+        self.execute_query(query, (to_node_uuid, from_node_uuid))
+
+        return count
+
     def close(self):
         '''Close the database connection.'''
         self.conn.close()
@@ -787,6 +1146,219 @@ class TestGraphDAO:
             if data['insertion_count'] >= threshold:
                 nodes.append(node_uuid)
         return nodes
+
+    # ==================== GRAPH STRUCTURE METHODS ====================
+
+    def create_node(self, metadata, parent_uuid=None):
+        '''Create a new node with the given metadata.'''
+        import uuid
+        import json
+        from datetime import datetime
+
+        node_uuid = str(uuid.uuid4())
+        current_time = datetime.now().isoformat()
+        children_uuid_arr = json.dumps([])
+
+        # Create node tuple matching the structure of nodes_data
+        node_tuple = (node_uuid, metadata, current_time, current_time, parent_uuid, children_uuid_arr, None)
+        self.nodes_data.append(node_tuple)
+
+        # Add to node_uuids dict for easy lookup (using metadata as key if unique)
+        self.node_uuids[metadata.lower().replace(' ', '_')] = node_uuid
+
+        return node_uuid
+
+    def add_child_to_node(self, parent_uuid, child_uuid):
+        '''Add a child UUID to a parent node's children array.'''
+        import json
+        from datetime import datetime
+
+        for i, node in enumerate(self.nodes_data):
+            if node[0] == parent_uuid:
+                children = json.loads(node[5]) if node[5] else []
+                if child_uuid not in children:
+                    children.append(child_uuid)
+
+                current_time = datetime.now().isoformat()
+                # Update node tuple
+                self.nodes_data[i] = (node[0], node[1], node[2], current_time, node[4], json.dumps(children), node[6])
+                return True
+        return False
+
+    def remove_child_from_node(self, parent_uuid, child_uuid):
+        '''Remove a child UUID from a parent node's children array.'''
+        import json
+        from datetime import datetime
+
+        for i, node in enumerate(self.nodes_data):
+            if node[0] == parent_uuid:
+                children = json.loads(node[5]) if node[5] else []
+                if child_uuid not in children:
+                    return False
+
+                children.remove(child_uuid)
+                current_time = datetime.now().isoformat()
+                # Update node tuple
+                self.nodes_data[i] = (node[0], node[1], node[2], current_time, node[4], json.dumps(children), node[6])
+                return True
+        return False
+
+    def update_node_parent(self, node_uuid, new_parent_uuid):
+        '''Update a node's parent, handling all relationship updates.'''
+        import json
+        from datetime import datetime
+
+        # Find the node
+        node_index = None
+        old_parent_uuid = None
+        for i, node in enumerate(self.nodes_data):
+            if node[0] == node_uuid:
+                node_index = i
+                old_parent_uuid = node[4]
+                break
+
+        if node_index is None:
+            return False
+
+        # Remove from old parent's children
+        if old_parent_uuid:
+            self.remove_child_from_node(old_parent_uuid, node_uuid)
+
+        # Add to new parent's children
+        if new_parent_uuid:
+            self.add_child_to_node(new_parent_uuid, node_uuid)
+
+        # Update the node's parent_uuid
+        current_time = datetime.now().isoformat()
+        node = self.nodes_data[node_index]
+        self.nodes_data[node_index] = (node[0], node[1], node[2], current_time, new_parent_uuid, node[5], node[6])
+        return True
+
+    def update_node_metadata(self, node_uuid, new_metadata):
+        '''Update a node's metadata field.'''
+        from datetime import datetime
+
+        for i, node in enumerate(self.nodes_data):
+            if node[0] == node_uuid:
+                current_time = datetime.now().isoformat()
+                self.nodes_data[i] = (node[0], new_metadata, node[2], current_time, node[4], node[5], node[6])
+                return True
+        return False
+
+    def delete_node(self, node_uuid, cascade=False):
+        '''Delete a node from the graph.'''
+        import json
+
+        # Find the node
+        node_index = None
+        node_data = None
+        for i, node in enumerate(self.nodes_data):
+            if node[0] == node_uuid:
+                node_index = i
+                node_data = node
+                break
+
+        if node_index is None:
+            return False
+
+        children = json.loads(node_data[5]) if node_data[5] else []
+
+        # If has children and not cascading, fail
+        if children and not cascade:
+            return False
+
+        # Cascade delete children first
+        if cascade:
+            for child_uuid in list(children):  # Use list() to avoid modification during iteration
+                self.delete_node(child_uuid, cascade=True)
+
+        # Remove from parent's children array
+        parent_uuid = node_data[4]
+        if parent_uuid:
+            self.remove_child_from_node(parent_uuid, node_uuid)
+
+        # Delete associated data
+        self.data_entries = [d for d in self.data_entries if d[1] != node_uuid]
+
+        # Delete associated actions
+        self.actions_data = [a for a in self.actions_data if a[4] != node_uuid]
+
+        # Delete the node itself - need to find it again as index may have changed
+        for i, node in enumerate(self.nodes_data):
+            if node[0] == node_uuid:
+                self.nodes_data.pop(i)
+                break
+
+        return True
+
+    def get_node_depth(self, node_uuid):
+        '''Get the depth of a node in the tree (root = 0).'''
+        depth = 0
+        current_uuid = node_uuid
+
+        while current_uuid:
+            node = self.get_node_by_id(current_uuid)
+            if node is None:
+                return -1
+
+            parent_uuid = node[4]
+            if parent_uuid is None:
+                # Reached root
+                return depth
+
+            depth += 1
+            current_uuid = parent_uuid
+
+        return depth
+
+    def get_siblings(self, node_uuid):
+        '''Get all sibling nodes (nodes with the same parent).'''
+        import json
+
+        node = self.get_node_by_id(node_uuid)
+        if node is None:
+            return []
+
+        parent_uuid = node[4]
+        if parent_uuid is None:
+            # Root node has no siblings
+            return []
+
+        parent_node = self.get_node_by_id(parent_uuid)
+        if parent_node is None:
+            return []
+
+        children = json.loads(parent_node[5]) if parent_node[5] else []
+        siblings = []
+
+        for child_uuid in children:
+            if child_uuid != node_uuid:
+                sibling = self.get_node_by_id(child_uuid)
+                if sibling:
+                    siblings.append(sibling)
+
+        return siblings
+
+    def move_data_between_nodes(self, from_node_uuid, to_node_uuid, category=None):
+        '''Move data entries from one node to another.'''
+        count = 0
+        for i, data in enumerate(self.data_entries):
+            if data[1] == from_node_uuid:
+                if category is None or data[5] == category:
+                    # Update the node_uuid (index 1) in the tuple
+                    self.data_entries[i] = (data[0], to_node_uuid, data[2], data[3], data[4], data[5])
+                    count += 1
+        return count
+
+    def move_actions_between_nodes(self, from_node_uuid, to_node_uuid):
+        '''Move all actions from one node to another.'''
+        count = 0
+        for i, action in enumerate(self.actions_data):
+            if action[4] == from_node_uuid:
+                # Update the node_uuid (index 4) in the tuple
+                self.actions_data[i] = (action[0], action[1], action[2], action[3], to_node_uuid, action[5])
+                count += 1
+        return count
 
 
 # The main method for this adds the testing data into the graph
