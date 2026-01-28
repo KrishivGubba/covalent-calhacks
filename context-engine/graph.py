@@ -1687,6 +1687,309 @@ Return ONLY a JSON object:
 
         return created_nodes
 
+    # ==================== MAIN LEARNING WITH STRUCTURE METHOD ====================
+
+    def learn_with_structure(self, summary: str, data: str) -> dict:
+        """
+        Learn new information, potentially restructuring the graph.
+
+        This method:
+        1. Finds the best matching node using vector similarity
+        2. Evaluates confidence in the match
+        3. Either inserts directly, validates with LLM, or restructures the graph
+        4. Returns information about what was done
+
+        Args:
+            summary: Description of what the user is currently doing
+            data: The actual data/information to store
+
+        Returns:
+            {
+                "operation": "insert" | "create_child" | "create_sibling" | "split" | "bootstrap",
+                "target_node": Node,          # The node where data was ultimately inserted
+                "confidence": float,          # The similarity score
+                "new_nodes": [Node],          # List of any new nodes created (empty if just insert)
+                "actions": [action_tuples],   # 4 most recent actions for the target node
+                "reasoning": str              # Why this operation was chosen
+            }
+        """
+        print(f"\n{'='*70}")
+        print("LEARN WITH STRUCTURE")
+        print(f"{'='*70}")
+        summary_preview = summary[:100] + "..." if len(summary) > 100 else summary
+        print(f"📝 Summary: {summary_preview}")
+        print(f"📊 Data length: {len(data)} chars")
+
+        try:
+            # ============================================================
+            # 1. CHECK FOR EMPTY GRAPH (BOOTSTRAP CASE)
+            # ============================================================
+            if not self.root.children or len(self.root.children) == 0:
+                print("\n🚀 Empty graph detected - bootstrap case")
+
+                # Check if bootstrap is enabled
+                if self.config and not self.config.is_bootstrap_enabled():
+                    print("   Bootstrap disabled - inserting into root")
+                    recent_actions = self.learn(summary, data)
+                    return {
+                        "operation": "insert",
+                        "target_node": self.root,
+                        "confidence": 1.0,
+                        "new_nodes": [],
+                        "actions": recent_actions,
+                        "reasoning": "Bootstrap disabled - inserted into root node"
+                    }
+
+                # Bootstrap - create first node
+                new_node = self._bootstrap_first_node(summary, data)
+                recent_actions = self.dao.get_recent_actions_for_node(new_node.node_uuid, limit=4)
+                print(f"✅ Bootstrapped first node: '{new_node.metadata}'")
+                return {
+                    "operation": "bootstrap",
+                    "target_node": new_node,
+                    "confidence": 1.0,
+                    "new_nodes": [new_node],
+                    "actions": recent_actions,
+                    "reasoning": "Created first node in empty graph"
+                }
+
+            # ============================================================
+            # 2. TRAVERSE WITH CONFIDENCE
+            # ============================================================
+            print("\n🔍 Traversing graph to find best match...")
+            best_node, confidence, top_scores = self.traverse_with_confidence(summary)
+
+            if best_node is None:
+                print("⚠️ No matching node found, using root")
+                best_node = self.root
+                confidence = 0.0
+
+            print(f"   Best match: '{best_node.metadata}' with confidence {confidence:.4f}")
+
+            # ============================================================
+            # 3. HIGH CONFIDENCE - DIRECT INSERT
+            # ============================================================
+            if self.config and self.config.should_insert_directly(confidence):
+                print(f"\n✅ HIGH CONFIDENCE ({confidence:.2f} >= {self.config.get_threshold('perfect_fit'):.2f})")
+                print("   → Inserting directly without LLM validation")
+
+                # Use existing learn() method which handles actions and data
+                recent_actions = self.learn(summary, data)
+                return {
+                    "operation": "insert",
+                    "target_node": best_node,
+                    "confidence": confidence,
+                    "new_nodes": [],
+                    "actions": recent_actions,
+                    "reasoning": f"High confidence match ({confidence:.2f}) - inserted directly"
+                }
+
+            # ============================================================
+            # 4. MEDIUM CONFIDENCE - LLM VALIDATES
+            # ============================================================
+            if self.config and self.config.should_validate_with_llm(confidence):
+                print(f"\n🤔 MEDIUM CONFIDENCE ({confidence:.2f})")
+                print(f"   → Validating fit with LLM...")
+
+                validation = self._llm_validate_fit(best_node, summary, top_scores)
+
+                if validation["fits"]:
+                    print(f"   ✅ LLM validated: {validation['reasoning'][:100]}...")
+                    recent_actions = self.learn(summary, data)
+                    return {
+                        "operation": "insert",
+                        "target_node": best_node,
+                        "confidence": confidence,
+                        "new_nodes": [],
+                        "actions": recent_actions,
+                        "reasoning": f"LLM validated fit: {validation['reasoning']}"
+                    }
+                else:
+                    print(f"   ❌ LLM rejected fit: {validation['reasoning'][:100]}...")
+                    print("   → Falling through to restructuring...")
+                    # Fall through to restructuring
+
+            # ============================================================
+            # 5. LOW CONFIDENCE OR VALIDATION FAILED - RESTRUCTURE
+            # ============================================================
+            print(f"\n🏗️ LOW CONFIDENCE or validation failed")
+            print("   → Asking LLM for structural decision...")
+
+            decision = self._llm_decide_structure(best_node, summary, top_scores)
+            operation_type = decision["type"]
+            reasoning = decision.get("reasoning", "No reasoning provided")
+
+            print(f"   LLM decision: {operation_type}")
+            print(f"   Reasoning: {reasoning[:100]}...")
+
+            # ---------------------------------------------------------
+            # 5a. INSERT ANYWAY
+            # ---------------------------------------------------------
+            if operation_type == "insert_anyway":
+                print("\n📥 INSERT ANYWAY")
+                recent_actions = self.learn(summary, data)
+                return {
+                    "operation": "insert",
+                    "target_node": best_node,
+                    "confidence": confidence,
+                    "new_nodes": [],
+                    "actions": recent_actions,
+                    "reasoning": f"LLM decided to insert anyway: {reasoning}"
+                }
+
+            # ---------------------------------------------------------
+            # 5b. CREATE CHILD
+            # ---------------------------------------------------------
+            elif operation_type == "create_child":
+                new_metadata = decision.get("new_node_metadata", "New Category")
+                print(f"\n🌱 CREATE CHILD: '{new_metadata}'")
+
+                new_node = self._create_child_node(
+                    parent=best_node,
+                    metadata=new_metadata,
+                    summary=summary,
+                    data=data
+                )
+                recent_actions = self.dao.get_recent_actions_for_node(new_node.node_uuid, limit=4)
+                return {
+                    "operation": "create_child",
+                    "target_node": new_node,
+                    "confidence": confidence,
+                    "new_nodes": [new_node],
+                    "actions": recent_actions,
+                    "reasoning": f"Created child node '{new_metadata}': {reasoning}"
+                }
+
+            # ---------------------------------------------------------
+            # 5c. CREATE SIBLING
+            # ---------------------------------------------------------
+            elif operation_type == "create_sibling":
+                new_metadata = decision.get("new_node_metadata", "New Category")
+                print(f"\n🌿 CREATE SIBLING: '{new_metadata}'")
+
+                new_node = self._create_sibling_node(
+                    sibling_of=best_node,
+                    metadata=new_metadata,
+                    summary=summary,
+                    data=data
+                )
+                recent_actions = self.dao.get_recent_actions_for_node(new_node.node_uuid, limit=4)
+                return {
+                    "operation": "create_sibling",
+                    "target_node": new_node,
+                    "confidence": confidence,
+                    "new_nodes": [new_node],
+                    "actions": recent_actions,
+                    "reasoning": f"Created sibling node '{new_metadata}': {reasoning}"
+                }
+
+            # ---------------------------------------------------------
+            # 5d. SPLIT
+            # ---------------------------------------------------------
+            elif operation_type == "split":
+                split_plan = decision.get("split_plan")
+                if not split_plan:
+                    print("⚠️ Split decision but no split_plan - falling back to insert")
+                    recent_actions = self.learn(summary, data)
+                    return {
+                        "operation": "insert",
+                        "target_node": best_node,
+                        "confidence": confidence,
+                        "new_nodes": [],
+                        "actions": recent_actions,
+                        "reasoning": "Split requested but no valid plan - inserted anyway"
+                    }
+
+                print(f"\n✂️ SPLIT into {len(split_plan.get('new_children', []))} children")
+
+                new_nodes = self._split_node(
+                    node=best_node,
+                    split_plan=split_plan,
+                    new_summary=summary,
+                    new_data=data
+                )
+
+                # Find the target node where new data was inserted
+                new_data_goes_to = split_plan.get("new_data_goes_to")
+                target_node = None
+
+                if new_data_goes_to:
+                    for node in new_nodes:
+                        if node.metadata == new_data_goes_to:
+                            target_node = node
+                            break
+
+                if target_node is None and new_nodes:
+                    target_node = new_nodes[0]  # Default to first child
+
+                recent_actions = self.dao.get_recent_actions_for_node(
+                    target_node.node_uuid if target_node else best_node.node_uuid,
+                    limit=4
+                )
+
+                return {
+                    "operation": "split",
+                    "target_node": target_node if target_node else best_node,
+                    "confidence": confidence,
+                    "new_nodes": new_nodes,
+                    "actions": recent_actions,
+                    "reasoning": f"Split node into {len(new_nodes)} children: {reasoning}"
+                }
+
+            # ---------------------------------------------------------
+            # 5e. UNKNOWN OPERATION - FALLBACK
+            # ---------------------------------------------------------
+            else:
+                print(f"⚠️ Unknown operation type: {operation_type} - falling back to insert")
+                recent_actions = self.learn(summary, data)
+                return {
+                    "operation": "insert",
+                    "target_node": best_node,
+                    "confidence": confidence,
+                    "new_nodes": [],
+                    "actions": recent_actions,
+                    "reasoning": f"Unknown operation '{operation_type}' - inserted anyway"
+                }
+
+        except Exception as e:
+            # ============================================================
+            # ERROR HANDLING - GRACEFUL FALLBACK
+            # ============================================================
+            print(f"\n❌ ERROR in learn_with_structure: {e}")
+            import traceback
+            traceback.print_exc()
+
+            # Try to fall back gracefully
+            fallback_node = self.root
+            try:
+                # Try to find best node for fallback
+                if hasattr(self, 'nodes') and self.nodes:
+                    fallback_node = self.traverse(summary) or self.root
+            except:
+                pass
+
+            print(f"🔄 Falling back to simple insert into '{fallback_node.metadata if fallback_node else 'root'}'")
+
+            try:
+                recent_actions = self.learn(summary, data)
+            except Exception as learn_error:
+                print(f"❌ Fallback learn() also failed: {learn_error}")
+                recent_actions = []
+
+            return {
+                "operation": "insert",
+                "target_node": fallback_node,
+                "confidence": 0.0,
+                "new_nodes": [],
+                "actions": recent_actions,
+                "reasoning": f"Error occurred ({str(e)[:50]}) - fell back to insert"
+            }
+
+        finally:
+            print(f"\n{'='*70}")
+            print("LEARN WITH STRUCTURE COMPLETE")
+            print(f"{'='*70}\n")
+
     def _generate_learning_prompt(self, node, summary, existing_actions, existing_categories):
         """
         Generate a prompt for the LLM to decide on action and data insertion.

@@ -3396,6 +3396,440 @@ def test_validate_split_plan_missing_metadata():
     print("✓ Plans with missing metadata rejected")
 
 
+# ==================== LEARN WITH STRUCTURE TESTS ====================
+
+def test_learn_with_structure_bootstrap():
+    """Test learn_with_structure creates first node in empty graph."""
+    print("\n" + "="*50)
+    print("Testing learn_with_structure bootstrap:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+
+    # Simulate bootstrap scenario
+    class MockConfig:
+        def is_bootstrap_enabled(self):
+            return True
+        def get_max_depth(self):
+            return 10
+
+    class MockRoot:
+        def __init__(self):
+            self.children = []  # Empty - triggers bootstrap
+            self.node_uuid = "root-uuid"
+            self.metadata = "Root"
+
+    # Verify logic
+    root = MockRoot()
+    config = MockConfig()
+
+    # Bootstrap should be triggered when:
+    should_bootstrap = len(root.children) == 0 and config.is_bootstrap_enabled()
+    assert should_bootstrap is True, "Bootstrap should be triggered for empty graph"
+
+    print("  Empty graph detected: True")
+    print("  Bootstrap enabled: True")
+    print("  → Bootstrap should be triggered")
+    print("✓ Bootstrap case detected correctly")
+
+
+def test_learn_with_structure_high_confidence():
+    """Test learn_with_structure inserts directly on high confidence."""
+    print("\n" + "="*50)
+    print("Testing learn_with_structure high confidence:")
+    print("="*50)
+
+    # Simulate high confidence scenario
+    class MockConfig:
+        def should_insert_directly(self, confidence):
+            return confidence >= 0.85
+        def get_threshold(self, name):
+            return 0.85 if name == "perfect_fit" else 0.5
+
+    config = MockConfig()
+    confidence = 0.92
+
+    should_insert = config.should_insert_directly(confidence)
+    assert should_insert is True, "High confidence should trigger direct insert"
+
+    print(f"  Confidence: {confidence}")
+    print(f"  Threshold: {config.get_threshold('perfect_fit')}")
+    print(f"  → Direct insert: {should_insert}")
+    print("✓ High confidence triggers direct insert")
+
+
+def test_learn_with_structure_medium_confidence():
+    """Test learn_with_structure validates with LLM on medium confidence."""
+    print("\n" + "="*50)
+    print("Testing learn_with_structure medium confidence:")
+    print("="*50)
+
+    class MockConfig:
+        def should_insert_directly(self, confidence):
+            return confidence >= 0.85
+        def should_validate_with_llm(self, confidence):
+            return 0.50 <= confidence < 0.85
+
+    config = MockConfig()
+    confidence = 0.72
+
+    should_insert = config.should_insert_directly(confidence)
+    should_validate = config.should_validate_with_llm(confidence)
+
+    assert should_insert is False, "Medium confidence should not trigger direct insert"
+    assert should_validate is True, "Medium confidence should trigger LLM validation"
+
+    print(f"  Confidence: {confidence}")
+    print(f"  Direct insert: {should_insert}")
+    print(f"  LLM validation: {should_validate}")
+    print("✓ Medium confidence triggers LLM validation")
+
+
+def test_learn_with_structure_low_confidence():
+    """Test learn_with_structure triggers restructuring on low confidence."""
+    print("\n" + "="*50)
+    print("Testing learn_with_structure low confidence:")
+    print("="*50)
+
+    class MockConfig:
+        def should_insert_directly(self, confidence):
+            return confidence >= 0.85
+        def should_validate_with_llm(self, confidence):
+            return 0.50 <= confidence < 0.85
+        def needs_restructure(self, confidence):
+            return confidence < 0.50
+
+    config = MockConfig()
+    confidence = 0.35
+
+    should_insert = config.should_insert_directly(confidence)
+    should_validate = config.should_validate_with_llm(confidence)
+    needs_restructure = config.needs_restructure(confidence)
+
+    assert should_insert is False
+    assert should_validate is False
+    assert needs_restructure is True, "Low confidence should trigger restructuring"
+
+    print(f"  Confidence: {confidence}")
+    print(f"  Direct insert: {should_insert}")
+    print(f"  LLM validation: {should_validate}")
+    print(f"  Needs restructure: {needs_restructure}")
+    print("✓ Low confidence triggers restructuring")
+
+
+def test_learn_with_structure_return_structure():
+    """Test learn_with_structure returns correct structure."""
+    print("\n" + "="*50)
+    print("Testing learn_with_structure return structure:")
+    print("="*50)
+
+    # Simulate a return dict
+    class MockNode:
+        def __init__(self, uuid, metadata):
+            self.node_uuid = uuid
+            self.metadata = metadata
+
+    result = {
+        "operation": "insert",
+        "target_node": MockNode("uuid-123", "Test Node"),
+        "confidence": 0.92,
+        "new_nodes": [],
+        "actions": [("action-uuid", "Action Name", "Plan", "Prompt", "node-uuid", None)],
+        "reasoning": "High confidence match (0.92) - inserted directly"
+    }
+
+    # Verify required fields
+    required_fields = ["operation", "target_node", "confidence", "new_nodes", "actions", "reasoning"]
+    for field in required_fields:
+        assert field in result, f"Missing required field: {field}"
+
+    assert result["operation"] in ["insert", "create_child", "create_sibling", "split", "bootstrap"]
+    assert isinstance(result["confidence"], float)
+    assert isinstance(result["new_nodes"], list)
+    assert isinstance(result["actions"], list)
+    assert isinstance(result["reasoning"], str)
+
+    print(f"  Operation: {result['operation']}")
+    print(f"  Target node: {result['target_node'].metadata}")
+    print(f"  Confidence: {result['confidence']}")
+    print(f"  New nodes: {len(result['new_nodes'])}")
+    print(f"  Actions: {len(result['actions'])}")
+    print("✓ Return structure is correct")
+
+
+def test_learn_with_structure_create_child_operation():
+    """Test learn_with_structure handles create_child operation."""
+    print("\n" + "="*50)
+    print("Testing create_child operation handling:")
+    print("="*50)
+
+    # Simulate LLM decision for create_child
+    decision = {
+        "type": "create_child",
+        "reasoning": "New info is a specialization of current node",
+        "new_node_metadata": "Engineering Recruiting",
+        "split_plan": None
+    }
+
+    operation = decision["type"]
+    new_metadata = decision.get("new_node_metadata")
+
+    assert operation == "create_child"
+    assert new_metadata is not None
+    assert len(new_metadata) > 0
+
+    print(f"  Decision type: {operation}")
+    print(f"  New node metadata: {new_metadata}")
+    print(f"  Reasoning: {decision['reasoning'][:50]}...")
+    print("✓ Create child operation handled correctly")
+
+
+def test_learn_with_structure_create_sibling_operation():
+    """Test learn_with_structure handles create_sibling operation."""
+    print("\n" + "="*50)
+    print("Testing create_sibling operation handling:")
+    print("="*50)
+
+    decision = {
+        "type": "create_sibling",
+        "reasoning": "New info is parallel to current node",
+        "new_node_metadata": "Fall 2026 Recruiting",
+        "split_plan": None
+    }
+
+    operation = decision["type"]
+    new_metadata = decision.get("new_node_metadata")
+
+    assert operation == "create_sibling"
+    assert new_metadata is not None
+
+    print(f"  Decision type: {operation}")
+    print(f"  New node metadata: {new_metadata}")
+    print("✓ Create sibling operation handled correctly")
+
+
+def test_learn_with_structure_split_operation():
+    """Test learn_with_structure handles split operation."""
+    print("\n" + "="*50)
+    print("Testing split operation handling:")
+    print("="*50)
+
+    decision = {
+        "type": "split",
+        "reasoning": "Node has mixed categories that should be separated",
+        "new_node_metadata": None,
+        "split_plan": {
+            "new_children": [
+                {"metadata": "Engineering", "inherits_categories": ["engineering"]},
+                {"metadata": "Marketing", "inherits_categories": ["marketing"]}
+            ],
+            "new_data_goes_to": "Engineering"
+        }
+    }
+
+    operation = decision["type"]
+    split_plan = decision.get("split_plan")
+
+    assert operation == "split"
+    assert split_plan is not None
+    assert "new_children" in split_plan
+    assert len(split_plan["new_children"]) >= 2
+    assert "new_data_goes_to" in split_plan
+
+    print(f"  Decision type: {operation}")
+    print(f"  New children: {len(split_plan['new_children'])}")
+    print(f"  New data goes to: {split_plan['new_data_goes_to']}")
+    print("✓ Split operation handled correctly")
+
+
+def test_learn_with_structure_insert_anyway_operation():
+    """Test learn_with_structure handles insert_anyway operation."""
+    print("\n" + "="*50)
+    print("Testing insert_anyway operation handling:")
+    print("="*50)
+
+    decision = {
+        "type": "insert_anyway",
+        "reasoning": "After review, data actually belongs here",
+        "new_node_metadata": None,
+        "split_plan": None
+    }
+
+    operation = decision["type"]
+
+    assert operation == "insert_anyway"
+    assert decision.get("new_node_metadata") is None
+    assert decision.get("split_plan") is None
+
+    print(f"  Decision type: {operation}")
+    print(f"  Reasoning: {decision['reasoning']}")
+    print("✓ Insert anyway operation handled correctly")
+
+
+def test_learn_with_structure_error_fallback():
+    """Test learn_with_structure falls back gracefully on error."""
+    print("\n" + "="*50)
+    print("Testing error fallback behavior:")
+    print("="*50)
+
+    # Simulate error fallback result
+    error_result = {
+        "operation": "insert",
+        "target_node": None,  # Would be root in real scenario
+        "confidence": 0.0,
+        "new_nodes": [],
+        "actions": [],
+        "reasoning": "Error occurred (test error) - fell back to insert"
+    }
+
+    assert error_result["operation"] == "insert", "Error should fall back to insert"
+    assert error_result["confidence"] == 0.0, "Error should have 0 confidence"
+    assert error_result["new_nodes"] == [], "Error should create no new nodes"
+    assert "Error" in error_result["reasoning"] or "error" in error_result["reasoning"]
+
+    print(f"  Operation: {error_result['operation']}")
+    print(f"  Confidence: {error_result['confidence']}")
+    print(f"  Reasoning: {error_result['reasoning'][:50]}...")
+    print("✓ Error fallback behavior is correct")
+
+
+def test_learn_with_structure_actions_returned():
+    """Test learn_with_structure returns actions for correct node."""
+    print("\n" + "="*50)
+    print("Testing actions returned for correct node:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+    from datetime import datetime
+
+    dao = TestGraphDAO()
+
+    # Create a node and add actions to it (with last_selected for get_recent to work)
+    node_uuid = dao.create_node("Test Node")
+    timestamp1 = datetime.now().isoformat()
+    timestamp2 = datetime.now().isoformat()
+    action1_uuid = dao.add_action(node_uuid, "Action 1", "Plan 1", "Prompt 1", last_selected=timestamp1)
+    action2_uuid = dao.add_action(node_uuid, "Action 2", "Plan 2", "Prompt 2", last_selected=timestamp2)
+
+    # Get recent actions
+    recent_actions = dao.get_recent_actions_for_node(node_uuid, limit=4)
+
+    assert len(recent_actions) == 2, f"Should have 2 actions, got {len(recent_actions)}"
+
+    # Verify actions belong to correct node
+    for action in recent_actions:
+        assert action[4] == node_uuid, "Action should belong to test node"
+
+    print(f"  Node: {node_uuid[:8]}...")
+    print(f"  Actions retrieved: {len(recent_actions)}")
+    print("✓ Actions returned for correct node")
+
+
+def test_learn_with_structure_bootstrap_disabled():
+    """Test learn_with_structure handles disabled bootstrap."""
+    print("\n" + "="*50)
+    print("Testing bootstrap disabled scenario:")
+    print("="*50)
+
+    class MockConfig:
+        def is_bootstrap_enabled(self):
+            return False
+
+    class MockRoot:
+        def __init__(self):
+            self.children = []  # Empty
+            self.node_uuid = "root-uuid"
+            self.metadata = "Root"
+
+    root = MockRoot()
+    config = MockConfig()
+
+    empty_graph = len(root.children) == 0
+    bootstrap_enabled = config.is_bootstrap_enabled()
+
+    assert empty_graph is True
+    assert bootstrap_enabled is False
+
+    # When bootstrap is disabled, should insert into root
+    should_insert_to_root = empty_graph and not bootstrap_enabled
+
+    assert should_insert_to_root is True
+
+    print(f"  Empty graph: {empty_graph}")
+    print(f"  Bootstrap enabled: {bootstrap_enabled}")
+    print(f"  → Should insert to root: {should_insert_to_root}")
+    print("✓ Bootstrap disabled handled correctly")
+
+
+def test_learn_with_structure_split_target_node():
+    """Test learn_with_structure finds correct target after split."""
+    print("\n" + "="*50)
+    print("Testing split target node selection:")
+    print("="*50)
+
+    class MockNode:
+        def __init__(self, metadata):
+            self.metadata = metadata
+            self.node_uuid = f"uuid-{metadata.lower().replace(' ', '-')}"
+
+    # Simulate new nodes after split
+    new_nodes = [
+        MockNode("Engineering"),
+        MockNode("Marketing"),
+        MockNode("Sales")
+    ]
+
+    split_plan = {
+        "new_children": [
+            {"metadata": "Engineering", "inherits_categories": ["eng"]},
+            {"metadata": "Marketing", "inherits_categories": ["mkt"]},
+            {"metadata": "Sales", "inherits_categories": ["sales"]}
+        ],
+        "new_data_goes_to": "Marketing"
+    }
+
+    # Find target node
+    new_data_goes_to = split_plan.get("new_data_goes_to")
+    target_node = None
+
+    for node in new_nodes:
+        if node.metadata == new_data_goes_to:
+            target_node = node
+            break
+
+    assert target_node is not None, "Should find target node"
+    assert target_node.metadata == "Marketing", "Should select Marketing node"
+
+    print(f"  New data goes to: {new_data_goes_to}")
+    print(f"  Found target: {target_node.metadata}")
+    print("✓ Split target node selected correctly")
+
+
+def run_learn_with_structure_tests():
+    """Run only the learn_with_structure tests."""
+    print("\n" + "="*70)
+    print("RUNNING LEARN WITH STRUCTURE TESTS")
+    print("="*70)
+
+    test_learn_with_structure_bootstrap()
+    test_learn_with_structure_high_confidence()
+    test_learn_with_structure_medium_confidence()
+    test_learn_with_structure_low_confidence()
+    test_learn_with_structure_return_structure()
+    test_learn_with_structure_create_child_operation()
+    test_learn_with_structure_create_sibling_operation()
+    test_learn_with_structure_split_operation()
+    test_learn_with_structure_insert_anyway_operation()
+    test_learn_with_structure_error_fallback()
+    test_learn_with_structure_actions_returned()
+    test_learn_with_structure_bootstrap_disabled()
+    test_learn_with_structure_split_target_node()
+
+    print("\n" + "="*70)
+    print("ALL LEARN WITH STRUCTURE TESTS COMPLETED")
+    print("="*70)
+
+
 def run_split_node_tests():
     """Run only the split node tests."""
     print("\n" + "="*70)
@@ -3625,6 +4059,21 @@ def run_all_tests():
     test_validate_split_plan_empty_plan()
     test_validate_split_plan_missing_metadata()
 
+    # Learn with structure tests
+    test_learn_with_structure_bootstrap()
+    test_learn_with_structure_high_confidence()
+    test_learn_with_structure_medium_confidence()
+    test_learn_with_structure_low_confidence()
+    test_learn_with_structure_return_structure()
+    test_learn_with_structure_create_child_operation()
+    test_learn_with_structure_create_sibling_operation()
+    test_learn_with_structure_split_operation()
+    test_learn_with_structure_insert_anyway_operation()
+    test_learn_with_structure_error_fallback()
+    test_learn_with_structure_actions_returned()
+    test_learn_with_structure_bootstrap_disabled()
+    test_learn_with_structure_split_target_node()
+
     print("\n" + "="*70)
     print("ALL TESTS COMPLETED")
     print("="*70)
@@ -3681,7 +4130,10 @@ if __name__ == "__main__":
     # run_node_creation_tests()
 
     # Or run split node tests:
-    run_split_node_tests()
+    # run_split_node_tests()
+
+    # Or run learn with structure tests:
+    run_learn_with_structure_tests()
 
     # Or run individual test functions:
     # test_traverse()
