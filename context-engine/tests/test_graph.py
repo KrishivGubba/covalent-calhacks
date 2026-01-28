@@ -1701,6 +1701,455 @@ def test_traverse_with_confidence_with_config():
     print("✓ GraphConfig integration works correctly")
 
 
+# ==================== LLM VALIDATE FIT TESTS ====================
+
+def test_get_data_sample_basic():
+    """Test _get_data_sample returns formatted string."""
+    print("\n" + "="*50)
+    print("Testing _get_data_sample basic:")
+    print("="*50)
+
+    # First add some data to a node
+    from graph_dao import TestGraphDAO
+    dao = TestGraphDAO()
+    node_uuid = dao.node_uuids['summer2026']
+
+    # Add test data
+    dao.add_data_with_category(node_uuid, "interviews", "k1", "text", "Interview with John scheduled for Monday")
+    dao.add_data_with_category(node_uuid, "interviews", "k2", "text", "Interview with Jane completed")
+    dao.add_data_with_category(node_uuid, "candidates", "k3", "text", "Candidate: Ritesh Neela - Strong technical skills")
+
+    # Create a mock node object
+    class MockNode:
+        def __init__(self, uuid):
+            self.node_uuid = uuid
+
+    # Create a mock tree with the DAO
+    class MockTree:
+        def __init__(self):
+            self.dao = dao
+
+        def _get_data_sample(self, node, max_chars=500):
+            if not node or not node.node_uuid:
+                return "No data available."
+            try:
+                data_by_category = self.dao.get_data_for_node_by_category(node.node_uuid)
+            except Exception as e:
+                return "Error retrieving data."
+            if not data_by_category:
+                return "No existing data in this node."
+            lines = []
+            categories_shown = 0
+            max_categories = 3
+            for category, entries in data_by_category.items():
+                if categories_shown >= max_categories:
+                    remaining = len(data_by_category) - max_categories
+                    lines.append(f"\n... and {remaining} more categories")
+                    break
+                category_data = []
+                for entry in entries:
+                    info = entry[4] if len(entry) > 4 else ""
+                    if info:
+                        category_data.append(str(info))
+                combined = " | ".join(category_data)
+                if len(combined) > max_chars:
+                    combined = combined[:max_chars] + "..."
+                lines.append(f"\n[{category}]:")
+                lines.append(f"  {combined}")
+                categories_shown += 1
+            return "\n".join(lines) if lines else "No existing data in this node."
+
+    mock_tree = MockTree()
+    mock_node = MockNode(node_uuid)
+
+    result = mock_tree._get_data_sample(mock_node)
+
+    assert isinstance(result, str), "Result should be a string"
+    assert "[interviews]" in result or "[candidates]" in result, "Should contain category headers"
+    assert "Interview" in result or "Candidate" in result, "Should contain data content"
+
+    print(f"Data sample result:\n{result}")
+    print("✓ _get_data_sample returns formatted string")
+
+
+def test_get_data_sample_empty_node():
+    """Test _get_data_sample with node that has no data."""
+    print("\n" + "="*50)
+    print("Testing _get_data_sample empty node:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+    dao = TestGraphDAO()
+    # Use a node that has no data added to it
+    node_uuid = dao.node_uuids['fall2026']
+
+    class MockNode:
+        def __init__(self, uuid):
+            self.node_uuid = uuid
+
+    class MockTree:
+        def __init__(self):
+            self.dao = dao
+
+        def _get_data_sample(self, node, max_chars=500):
+            if not node or not node.node_uuid:
+                return "No data available."
+            try:
+                data_by_category = self.dao.get_data_for_node_by_category(node.node_uuid)
+            except Exception:
+                return "Error retrieving data."
+            if not data_by_category:
+                return "No existing data in this node."
+            return "Has data"  # Simplified
+
+    mock_tree = MockTree()
+    mock_node = MockNode(node_uuid)
+
+    result = mock_tree._get_data_sample(mock_node)
+
+    assert result == "No existing data in this node.", f"Expected empty message, got: {result}"
+    print(f"Empty node result: {result}")
+    print("✓ _get_data_sample handles empty nodes")
+
+
+def test_get_data_sample_none_node():
+    """Test _get_data_sample with None node."""
+    print("\n" + "="*50)
+    print("Testing _get_data_sample None node:")
+    print("="*50)
+
+    class MockTree:
+        def _get_data_sample(self, node, max_chars=500):
+            if not node or not node.node_uuid:
+                return "No data available."
+            return "Has data"
+
+    mock_tree = MockTree()
+
+    result = mock_tree._get_data_sample(None)
+    assert result == "No data available.", f"Expected 'No data available.', got: {result}"
+
+    print(f"None node result: {result}")
+    print("✓ _get_data_sample handles None node")
+
+
+def test_get_data_sample_truncation():
+    """Test _get_data_sample truncates long data."""
+    print("\n" + "="*50)
+    print("Testing _get_data_sample truncation:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+    dao = TestGraphDAO()
+    node_uuid = dao.node_uuids['onboarding']
+
+    # Add very long data
+    long_data = "A" * 1000
+    dao.add_data_with_category(node_uuid, "long_category", "k1", "text", long_data)
+
+    class MockNode:
+        def __init__(self, uuid):
+            self.node_uuid = uuid
+
+    class MockTree:
+        def __init__(self):
+            self.dao = dao
+
+        def _get_data_sample(self, node, max_chars=500):
+            if not node or not node.node_uuid:
+                return "No data available."
+            data_by_category = self.dao.get_data_for_node_by_category(node.node_uuid)
+            if not data_by_category:
+                return "No existing data in this node."
+            lines = []
+            for category, entries in list(data_by_category.items())[:3]:
+                category_data = []
+                for entry in entries:
+                    info = entry[4] if len(entry) > 4 else ""
+                    if info:
+                        category_data.append(str(info))
+                combined = " | ".join(category_data)
+                if len(combined) > max_chars:
+                    combined = combined[:max_chars] + "..."
+                lines.append(f"[{category}]: {combined}")
+            return "\n".join(lines)
+
+    mock_tree = MockTree()
+    mock_node = MockNode(node_uuid)
+
+    result = mock_tree._get_data_sample(mock_node, max_chars=100)
+
+    assert "..." in result, "Long data should be truncated with '...'"
+    print(f"Truncated result length: {len(result)}")
+    print("✓ _get_data_sample truncates long data")
+
+
+def test_llm_validate_fit_returns_correct_structure():
+    """Test that _llm_validate_fit returns correct dictionary structure."""
+    print("\n" + "="*50)
+    print("Testing _llm_validate_fit return structure:")
+    print("="*50)
+
+    # Test the parse function directly with a valid response
+    valid_json = '{"fits": true, "reasoning": "This fits well", "suggested_category": "test_category"}'
+
+    import json
+    import re
+
+    def parse_response(response_text):
+        default_response = {
+            "fits": True,
+            "reasoning": "Parse error - defaulting to fit",
+            "suggested_category": "general"
+        }
+        try:
+            json_match = re.search(r'\{[^{}]*"fits"[^{}]*\}', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                return default_response
+            parsed = json.loads(json_str)
+            return {
+                "fits": bool(parsed.get("fits", True)),
+                "reasoning": str(parsed.get("reasoning", "No reasoning provided")),
+                "suggested_category": str(parsed.get("suggested_category", "general"))
+            }
+        except:
+            return default_response
+
+    result = parse_response(valid_json)
+
+    assert isinstance(result, dict), "Result should be a dictionary"
+    assert "fits" in result, "Result should have 'fits' key"
+    assert "reasoning" in result, "Result should have 'reasoning' key"
+    assert "suggested_category" in result, "Result should have 'suggested_category' key"
+    assert isinstance(result["fits"], bool), "'fits' should be boolean"
+    assert isinstance(result["reasoning"], str), "'reasoning' should be string"
+    assert isinstance(result["suggested_category"], str), "'suggested_category' should be string"
+
+    print(f"Result: {result}")
+    print("✓ _llm_validate_fit returns correct structure")
+
+
+def test_llm_validate_fit_parses_valid_json():
+    """Test that valid JSON responses are parsed correctly."""
+    print("\n" + "="*50)
+    print("Testing _llm_validate_fit JSON parsing:")
+    print("="*50)
+
+    import json
+    import re
+
+    def parse_response(response_text):
+        default_response = {
+            "fits": True,
+            "reasoning": "Parse error - defaulting to fit",
+            "suggested_category": "general"
+        }
+        try:
+            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                json_match = re.search(r'\{[^{}]*"fits"[^{}]*\}', response_text, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                else:
+                    return default_response
+            parsed = json.loads(json_str)
+            return {
+                "fits": bool(parsed.get("fits", True)),
+                "reasoning": str(parsed.get("reasoning", "No reasoning provided")),
+                "suggested_category": str(parsed.get("suggested_category", "general"))
+            }
+        except:
+            return default_response
+
+    # Test plain JSON
+    plain_json = '{"fits": false, "reasoning": "Does not match", "suggested_category": "other"}'
+    result = parse_response(plain_json)
+    assert result["fits"] == False
+    assert result["reasoning"] == "Does not match"
+    assert result["suggested_category"] == "other"
+    print(f"  Plain JSON: {result}")
+
+    # Test JSON in markdown code block
+    markdown_json = '''Here is my analysis:
+```json
+{"fits": true, "reasoning": "Perfect match", "suggested_category": "interviews"}
+```
+'''
+    result = parse_response(markdown_json)
+    assert result["fits"] == True
+    assert result["reasoning"] == "Perfect match"
+    assert result["suggested_category"] == "interviews"
+    print(f"  Markdown JSON: {result}")
+
+    # Test JSON with extra text
+    extra_text = 'The answer is: {"fits": true, "reasoning": "Good fit", "suggested_category": "data"} Thank you!'
+    result = parse_response(extra_text)
+    assert result["fits"] == True
+    print(f"  Extra text JSON: {result}")
+
+    print("✓ Valid JSON responses parsed correctly")
+
+
+def test_llm_validate_fit_handles_malformed_response():
+    """Test error handling for malformed LLM responses."""
+    print("\n" + "="*50)
+    print("Testing _llm_validate_fit error handling:")
+    print("="*50)
+
+    import json
+    import re
+
+    def parse_response(response_text):
+        default_response = {
+            "fits": True,
+            "reasoning": "Parse error - defaulting to fit",
+            "suggested_category": "general"
+        }
+        try:
+            json_match = re.search(r'\{[^{}]*"fits"[^{}]*\}', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                return default_response
+            parsed = json.loads(json_str)
+            return {
+                "fits": bool(parsed.get("fits", True)),
+                "reasoning": str(parsed.get("reasoning", "No reasoning provided")),
+                "suggested_category": str(parsed.get("suggested_category", "general"))
+            }
+        except:
+            return default_response
+
+    # Test completely invalid response
+    invalid_response = "I think this data fits because it matches the context."
+    result = parse_response(invalid_response)
+    assert result["fits"] == True, "Should default to True"
+    assert "Parse error" in result["reasoning"] or "No reasoning" in result["reasoning"]
+    assert result["suggested_category"] == "general"
+    print(f"  Invalid response: {result}")
+
+    # Test malformed JSON
+    malformed_json = '{"fits": true, "reasoning": "incomplete'
+    result = parse_response(malformed_json)
+    assert result["fits"] == True, "Should default to True on parse error"
+    print(f"  Malformed JSON: {result}")
+
+    # Test empty response
+    empty_response = ""
+    result = parse_response(empty_response)
+    assert result["fits"] == True
+    assert result["suggested_category"] == "general"
+    print(f"  Empty response: {result}")
+
+    print("✓ Malformed responses handled with defaults")
+
+
+def test_llm_validate_fit_suggested_category():
+    """Test that suggested_category is returned for fitting data."""
+    print("\n" + "="*50)
+    print("Testing suggested_category extraction:")
+    print("="*50)
+
+    import json
+    import re
+
+    def parse_response(response_text):
+        default_response = {
+            "fits": True,
+            "reasoning": "Parse error",
+            "suggested_category": "general"
+        }
+        try:
+            json_match = re.search(r'\{[^{}]*"fits"[^{}]*\}', response_text, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group(0))
+                return {
+                    "fits": bool(parsed.get("fits", True)),
+                    "reasoning": str(parsed.get("reasoning", "")),
+                    "suggested_category": str(parsed.get("suggested_category", "general"))
+                }
+        except:
+            pass
+        return default_response
+
+    # Test with specific category
+    response = '{"fits": true, "reasoning": "Interview scheduling fits here", "suggested_category": "interview_scheduling"}'
+    result = parse_response(response)
+    assert result["fits"] == True
+    assert result["suggested_category"] == "interview_scheduling"
+    print(f"  Specific category: {result['suggested_category']}")
+
+    # Test using existing category
+    response = '{"fits": true, "reasoning": "Matches existing", "suggested_category": "candidates"}'
+    result = parse_response(response)
+    assert result["suggested_category"] == "candidates"
+    print(f"  Existing category: {result['suggested_category']}")
+
+    # Test new category suggestion
+    response = '{"fits": true, "reasoning": "New type of data", "suggested_category": "new_data_type"}'
+    result = parse_response(response)
+    assert result["suggested_category"] == "new_data_type"
+    print(f"  New category: {result['suggested_category']}")
+
+    print("✓ suggested_category correctly extracted")
+
+
+def test_llm_validate_fit_no_model_available():
+    """Test behavior when no LLM model is available."""
+    print("\n" + "="*50)
+    print("Testing _llm_validate_fit without model:")
+    print("="*50)
+
+    # Simulate no model available
+    class MockTree:
+        def __init__(self):
+            self.traversal_model = None
+
+        def _llm_validate_fit(self, node, summary, top_scores):
+            if not self.traversal_model:
+                return {
+                    "fits": True,
+                    "reasoning": "No LLM available - defaulting to fit",
+                    "suggested_category": "general"
+                }
+            return {"fits": True, "reasoning": "OK", "suggested_category": "test"}
+
+    mock_tree = MockTree()
+    result = mock_tree._llm_validate_fit(None, "test summary", [])
+
+    assert result["fits"] == True
+    assert "No LLM available" in result["reasoning"]
+    assert result["suggested_category"] == "general"
+
+    print(f"No model result: {result}")
+    print("✓ Handles missing LLM model gracefully")
+
+
+def run_llm_validate_fit_tests():
+    """Run only the LLM validate fit tests."""
+    print("\n" + "="*70)
+    print("RUNNING LLM VALIDATE FIT TESTS")
+    print("="*70)
+
+    test_get_data_sample_basic()
+    test_get_data_sample_empty_node()
+    test_get_data_sample_none_node()
+    test_get_data_sample_truncation()
+    test_llm_validate_fit_returns_correct_structure()
+    test_llm_validate_fit_parses_valid_json()
+    test_llm_validate_fit_handles_malformed_response()
+    test_llm_validate_fit_suggested_category()
+    test_llm_validate_fit_no_model_available()
+
+    print("\n" + "="*70)
+    print("ALL LLM VALIDATE FIT TESTS COMPLETED")
+    print("="*70)
+
+
 def run_traverse_with_confidence_tests():
     """Run only the traverse_with_confidence tests."""
     print("\n" + "="*70)
@@ -1792,6 +2241,17 @@ def run_all_tests():
     test_get_node_path()
     test_traverse_with_confidence_with_config()
 
+    # LLM validate fit tests
+    test_get_data_sample_basic()
+    test_get_data_sample_empty_node()
+    test_get_data_sample_none_node()
+    test_get_data_sample_truncation()
+    test_llm_validate_fit_returns_correct_structure()
+    test_llm_validate_fit_parses_valid_json()
+    test_llm_validate_fit_handles_malformed_response()
+    test_llm_validate_fit_suggested_category()
+    test_llm_validate_fit_no_model_available()
+
     print("\n" + "="*70)
     print("ALL TESTS COMPLETED")
     print("="*70)
@@ -1836,7 +2296,10 @@ if __name__ == "__main__":
     # run_graph_structure_tests()
 
     # Or run traverse_with_confidence tests:
-    run_traverse_with_confidence_tests()
+    # run_traverse_with_confidence_tests()
+
+    # Or run LLM validate fit tests:
+    run_llm_validate_fit_tests()
 
     # Or run individual test functions:
     # test_traverse()

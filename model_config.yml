@@ -5,7 +5,7 @@ models:
   # Model for generating embeddings/vectors
   embedding:
     provider: "google"  # Options: google, openai, anthropic
-    model_name: "text-embedding-004"
+    model_name: "gemini-embedding-001"
     api_key_env: "GOOGLE_API_KEY"
     
   # Model for action creation and learning decisions
@@ -27,6 +27,13 @@ models:
     provider: "google"  # Options: google, openai, anthropic, qwen
     model_name: "gemini-2.5-flash"
     api_key_env: "GOOGLE_API_KEY"
+    max_tokens: 1024
+    
+  # Model for fit validation (lightweight model for quick validation checks)
+  fit_validation:
+    provider: "openai"  # Options: google, openai, anthropic, qwen
+    model_name: "gpt-5-nano"
+    api_key_env: "OPENAI_API_KEY"
     max_tokens: 1024
 
 # Provider-specific settings

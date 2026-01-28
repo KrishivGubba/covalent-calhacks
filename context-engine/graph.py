@@ -69,6 +69,7 @@ class Tree:
         self.traversal_model = None
         self.action_model = None
         self.condensation_model = None
+        self.fit_validation_model = None
         
         if self.model_factory:
             try:
@@ -90,6 +91,11 @@ class Tree:
                 self.condensation_model = self.model_factory.get_chat_model("data_condensation")
             except Exception as e:
                 print(f"Warning: Failed to initialize condensation model: {e}")
+            
+            try:
+                self.fit_validation_model = self.model_factory.get_chat_model("fit_validation")
+            except Exception as e:
+                print(f"Warning: Failed to initialize fit validation model: {e}")
 
         self.construct_graph(self.dao.get_all_nodes())
 
@@ -525,6 +531,206 @@ class Tree:
             lines.append(f"{i}. {node.metadata} (path: {path}) - Score: {score:.2f}")
 
         return "\n".join(lines)
+
+    def _get_data_sample(self, node: 'Node', max_chars: int = 500) -> str:
+        """
+        Get a sample of existing data in a node, grouped by category.
+
+        Args:
+            node: The node to get data samples from
+            max_chars: Maximum characters to show per category
+
+        Returns:
+            str: Formatted string showing category names and truncated data samples
+        """
+        if not node or not node.node_uuid:
+            return "No data available."
+
+        try:
+            data_by_category = self.dao.get_data_for_node_by_category(node.node_uuid)
+        except Exception as e:
+            print(f"Error getting data for node {node.node_uuid}: {e}")
+            return "Error retrieving data."
+
+        if not data_by_category:
+            return "No existing data in this node."
+
+        lines = []
+        categories_shown = 0
+        max_categories = 3
+
+        for category, entries in data_by_category.items():
+            if categories_shown >= max_categories:
+                remaining = len(data_by_category) - max_categories
+                lines.append(f"\n... and {remaining} more categories")
+                break
+
+            # Collect data from entries in this category
+            category_data = []
+            for entry in entries:
+                # entry format: (uuid, node_uuid, key, type, info, category)
+                info = entry[4] if len(entry) > 4 else ""
+                if info:
+                    category_data.append(str(info))
+
+            # Combine and truncate
+            combined = " | ".join(category_data)
+            if len(combined) > max_chars:
+                combined = combined[:max_chars] + "..."
+
+            lines.append(f"\n[{category}]:")
+            lines.append(f"  {combined}")
+            categories_shown += 1
+
+        return "\n".join(lines) if lines else "No existing data in this node."
+
+    def _llm_validate_fit(self, node: 'Node', summary: str, top_scores: List[Tuple['Node', float]]) -> dict:
+        """
+        Ask LLM to validate whether the summary fits in the given node.
+
+        Args:
+            node: The node being considered for insertion
+            summary: Description of what the user is doing
+            top_scores: Top 5 alternative nodes with scores for context
+
+        Returns:
+            dict: {
+                "fits": bool,           # Whether data fits in this node
+                "reasoning": str,       # Brief explanation
+                "suggested_category": str  # If fits, which category to use
+            }
+        """
+        default_response = {
+            "fits": True,
+            "reasoning": "Parse error - defaulting to fit",
+            "suggested_category": "general"
+        }
+
+        # Check if fit validation model is available
+        if not self.fit_validation_model:
+            print("⚠️ _llm_validate_fit: Fit validation model not available, defaulting to fit")
+            return {
+                "fits": True,
+                "reasoning": "No LLM available - defaulting to fit",
+                "suggested_category": "general"
+            }
+
+        try:
+            # Build the prompt
+            node_path = self.get_parent_metadata(node)
+            existing_categories = self.dao.get_categories_for_node(node.node_uuid)
+            data_sample = self._get_data_sample(node)
+            alternatives_text = self._format_top_scores(top_scores)
+
+            prompt = f"""{self.BASE_PROMPT}
+
+TASK: Validate whether new information fits in the selected node.
+
+SELECTED NODE:
+- Path from root: {node_path}
+- Current node: {node.metadata}
+- Existing categories: {', '.join(existing_categories) if existing_categories else 'None'}
+
+EXISTING DATA SAMPLE:
+{data_sample}
+
+NEW INFORMATION TO INSERT:
+{summary}
+
+ALTERNATIVE NODES (with similarity scores):
+{alternatives_text}
+
+DECISION CRITERIA:
+1. Is this new information a natural sub-topic of what "{node.metadata}" represents?
+2. Would someone looking for this information expect to find it in "{node.metadata}"?
+3. Is there a better fit among the alternative nodes listed above?
+
+INSTRUCTIONS:
+- If the information fits well in "{node.metadata}", set "fits" to true
+- If another node would be significantly better, set "fits" to false
+- Provide a brief reasoning (1-2 sentences)
+- If it fits, suggest an appropriate category name (use existing category if applicable, or suggest a new one)
+
+OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
+{{
+    "fits": true or false,
+    "reasoning": "Brief explanation of why it fits or doesn't fit",
+    "suggested_category": "category_name_if_fits"
+}}
+"""
+
+            # Call the LLM
+            print(f"🤖 _llm_validate_fit: Calling fit validation model for node '{node.metadata}'")
+            response = self.fit_validation_model.generate(prompt)
+
+            # Parse the response
+            return self._parse_validate_fit_response(response)
+
+        except Exception as e:
+            print(f"❌ _llm_validate_fit: Error during validation: {e}")
+            import traceback
+            traceback.print_exc()
+            return default_response
+
+    def _parse_validate_fit_response(self, response_text: str) -> dict:
+        """
+        Parse the JSON response from the LLM validation.
+
+        Args:
+            response_text: Raw response from LLM
+
+        Returns:
+            dict: Parsed response with fits, reasoning, suggested_category
+        """
+        import re
+
+        default_response = {
+            "fits": True,
+            "reasoning": "Parse error - defaulting to fit",
+            "suggested_category": "general"
+        }
+
+        try:
+            # Try to extract JSON from potential markdown code blocks
+            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                # Try to find raw JSON
+                json_match = re.search(r'\{[^{}]*"fits"[^{}]*\}', response_text, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                else:
+                    print(f"⚠️ _parse_validate_fit_response: Could not find JSON in response")
+                    print(f"   Response preview: {response_text[:200]}...")
+                    return default_response
+
+            parsed = json.loads(json_str)
+
+            # Validate required fields
+            if "fits" not in parsed:
+                print("⚠️ _parse_validate_fit_response: Missing 'fits' field")
+                return default_response
+
+            # Ensure correct types
+            result = {
+                "fits": bool(parsed.get("fits", True)),
+                "reasoning": str(parsed.get("reasoning", "No reasoning provided")),
+                "suggested_category": str(parsed.get("suggested_category", "general"))
+            }
+
+            print(f"✅ _llm_validate_fit result: fits={result['fits']}, category='{result['suggested_category']}'")
+            print(f"   Reasoning: {result['reasoning'][:100]}...")
+
+            return result
+
+        except json.JSONDecodeError as e:
+            print(f"⚠️ _parse_validate_fit_response: JSON decode error: {e}")
+            print(f"   Response preview: {response_text[:200]}...")
+            return default_response
+        except Exception as e:
+            print(f"⚠️ _parse_validate_fit_response: Unexpected error: {e}")
+            return default_response
 
     def _generate_learning_prompt(self, node, summary, existing_actions, existing_categories):
         """
