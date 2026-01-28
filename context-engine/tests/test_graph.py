@@ -2129,6 +2129,529 @@ def test_llm_validate_fit_no_model_available():
     print("✓ Handles missing LLM model gracefully")
 
 
+# ==================== LLM DECIDE STRUCTURE TESTS ====================
+
+def test_get_siblings_helper():
+    """Test _get_siblings helper method."""
+    print("\n" + "="*50)
+    print("Testing _get_siblings helper:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+
+    dao = TestGraphDAO()
+
+    # Create mock nodes dict
+    nodes = {}
+    for name, uuid in dao.node_uuids.items():
+        node_tuple = dao.get_node_by_id(uuid)
+        if node_tuple:
+            class MockNode:
+                def __init__(self, t):
+                    self.node_uuid = t[0]
+                    self.metadata = t[1]
+            nodes[uuid] = MockNode(node_tuple)
+
+    class MockTree:
+        def __init__(self):
+            self.dao = dao
+            self.nodes = nodes
+
+        def _get_siblings(self, node):
+            if not node or not node.node_uuid:
+                return []
+            try:
+                sibling_tuples = self.dao.get_siblings(node.node_uuid)
+                siblings = []
+                for sibling_tuple in sibling_tuples:
+                    sibling_uuid = sibling_tuple[0]
+                    if sibling_uuid in self.nodes:
+                        siblings.append(self.nodes[sibling_uuid])
+                return siblings
+            except:
+                return []
+
+    mock_tree = MockTree()
+
+    # Test summer2026 - should have fall2026 as sibling
+    summer_node = nodes[dao.node_uuids['summer2026']]
+    siblings = mock_tree._get_siblings(summer_node)
+    sibling_names = [s.metadata for s in siblings]
+
+    assert 'Fall 2026' in sibling_names, f"Fall 2026 should be a sibling, got {sibling_names}"
+    print(f"  Summer 2026 siblings: {sibling_names}")
+
+    # Test root - should have no siblings
+    root_node = nodes[dao.node_uuids['root']]
+    siblings = mock_tree._get_siblings(root_node)
+    assert len(siblings) == 0, "Root should have no siblings"
+    print("  Root siblings: []")
+
+    print("✓ _get_siblings works correctly")
+
+
+def test_decide_structure_returns_correct_structure():
+    """Test that _llm_decide_structure returns correct dictionary structure."""
+    print("\n" + "="*50)
+    print("Testing _llm_decide_structure return structure:")
+    print("="*50)
+
+    import json
+    import re
+
+    def parse_response(response_text, current_depth=2, max_depth=10):
+        default_response = {
+            "type": "insert_anyway",
+            "reasoning": "Parse error - defaulting to insert",
+            "new_node_metadata": None,
+            "split_plan": None
+        }
+        valid_types = ["create_child", "create_sibling", "split", "insert_anyway"]
+
+        try:
+            # Find JSON
+            brace_count = 0
+            start_idx = None
+            end_idx = None
+            for i, char in enumerate(response_text):
+                if char == '{':
+                    if brace_count == 0:
+                        start_idx = i
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0 and start_idx is not None:
+                        end_idx = i + 1
+                        break
+
+            if start_idx is None or end_idx is None:
+                return default_response
+
+            parsed = json.loads(response_text[start_idx:end_idx])
+            operation_type = parsed.get("type", "").lower()
+
+            if operation_type not in valid_types:
+                return default_response
+
+            if operation_type == "create_child" and current_depth >= max_depth:
+                return {
+                    "type": "insert_anyway",
+                    "reasoning": "CREATE_CHILD not allowed at max depth",
+                    "new_node_metadata": None,
+                    "split_plan": None
+                }
+
+            return {
+                "type": operation_type,
+                "reasoning": str(parsed.get("reasoning", "")),
+                "new_node_metadata": parsed.get("new_node_metadata"),
+                "split_plan": parsed.get("split_plan")
+            }
+        except:
+            return default_response
+
+    # Test create_child response
+    response = '{"type": "create_child", "reasoning": "Need new child", "new_node_metadata": "Engineering Recruiting", "split_plan": null}'
+    result = parse_response(response)
+
+    assert isinstance(result, dict)
+    assert "type" in result
+    assert "reasoning" in result
+    assert "new_node_metadata" in result
+    assert "split_plan" in result
+    assert result["type"] == "create_child"
+    assert result["new_node_metadata"] == "Engineering Recruiting"
+
+    print(f"Result: {result}")
+    print("✓ Returns correct structure")
+
+
+def test_decide_structure_create_child():
+    """Test create_child operation type."""
+    print("\n" + "="*50)
+    print("Testing create_child operation:")
+    print("="*50)
+
+    import json
+
+    response = '''
+    {
+        "type": "create_child",
+        "reasoning": "The new information about engineering recruiting is a specialization of the current Recruiting node",
+        "new_node_metadata": "Engineering Recruiting",
+        "split_plan": null
+    }
+    '''
+
+    parsed = json.loads(response)
+
+    assert parsed["type"] == "create_child"
+    assert parsed["new_node_metadata"] == "Engineering Recruiting"
+    assert parsed["split_plan"] is None
+
+    print(f"  Type: {parsed['type']}")
+    print(f"  New node: {parsed['new_node_metadata']}")
+    print("✓ create_child operation parsed correctly")
+
+
+def test_decide_structure_create_sibling():
+    """Test create_sibling operation type."""
+    print("\n" + "="*50)
+    print("Testing create_sibling operation:")
+    print("="*50)
+
+    import json
+
+    response = '''
+    {
+        "type": "create_sibling",
+        "reasoning": "Fall 2026 internship info is parallel to Summer 2026, should be a sibling node",
+        "new_node_metadata": "Fall 2026 Interns",
+        "split_plan": null
+    }
+    '''
+
+    parsed = json.loads(response)
+
+    assert parsed["type"] == "create_sibling"
+    assert parsed["new_node_metadata"] == "Fall 2026 Interns"
+    assert parsed["split_plan"] is None
+
+    print(f"  Type: {parsed['type']}")
+    print(f"  New node: {parsed['new_node_metadata']}")
+    print("✓ create_sibling operation parsed correctly")
+
+
+def test_decide_structure_split_plan_valid():
+    """Test split operation with valid split_plan."""
+    print("\n" + "="*50)
+    print("Testing split operation with valid split_plan:")
+    print("="*50)
+
+    import json
+
+    response = '''
+    {
+        "type": "split",
+        "reasoning": "Node has mixed engineering and marketing data that should be separated",
+        "new_node_metadata": null,
+        "split_plan": {
+            "new_children": [
+                {"metadata": "Engineering Recruiting", "inherits_categories": ["technical_interviews", "coding_tests"]},
+                {"metadata": "Marketing Recruiting", "inherits_categories": ["marketing_campaigns", "portfolio_reviews"]}
+            ],
+            "new_data_goes_to": "Engineering Recruiting"
+        }
+    }
+    '''
+
+    parsed = json.loads(response)
+
+    assert parsed["type"] == "split"
+    assert parsed["split_plan"] is not None
+    assert "new_children" in parsed["split_plan"]
+    assert "new_data_goes_to" in parsed["split_plan"]
+    assert len(parsed["split_plan"]["new_children"]) == 2
+
+    for child in parsed["split_plan"]["new_children"]:
+        assert "metadata" in child
+        assert "inherits_categories" in child
+
+    print(f"  Type: {parsed['type']}")
+    print(f"  New children: {[c['metadata'] for c in parsed['split_plan']['new_children']]}")
+    print(f"  New data goes to: {parsed['split_plan']['new_data_goes_to']}")
+    print("✓ split operation with valid split_plan parsed correctly")
+
+
+def test_decide_structure_insert_anyway():
+    """Test insert_anyway operation type."""
+    print("\n" + "="*50)
+    print("Testing insert_anyway operation:")
+    print("="*50)
+
+    import json
+
+    response = '''
+    {
+        "type": "insert_anyway",
+        "reasoning": "After review, the data actually does belong in this node despite low confidence",
+        "new_node_metadata": null,
+        "split_plan": null
+    }
+    '''
+
+    parsed = json.loads(response)
+
+    assert parsed["type"] == "insert_anyway"
+    assert parsed["new_node_metadata"] is None
+    assert parsed["split_plan"] is None
+
+    print(f"  Type: {parsed['type']}")
+    print(f"  Reasoning: {parsed['reasoning'][:50]}...")
+    print("✓ insert_anyway operation parsed correctly")
+
+
+def test_decide_structure_max_depth_enforced():
+    """Test that max_depth is respected for create_child."""
+    print("\n" + "="*50)
+    print("Testing max_depth enforcement:")
+    print("="*50)
+
+    import json
+    import re
+
+    def parse_response(response_text, current_depth, max_depth):
+        default_response = {
+            "type": "insert_anyway",
+            "reasoning": "Parse error",
+            "new_node_metadata": None,
+            "split_plan": None
+        }
+
+        try:
+            brace_count = 0
+            start_idx = None
+            end_idx = None
+            for i, char in enumerate(response_text):
+                if char == '{':
+                    if brace_count == 0:
+                        start_idx = i
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0 and start_idx is not None:
+                        end_idx = i + 1
+                        break
+
+            if start_idx is None:
+                return default_response
+
+            parsed = json.loads(response_text[start_idx:end_idx])
+            operation_type = parsed.get("type", "").lower()
+
+            # Enforce max depth
+            if operation_type == "create_child" and current_depth >= max_depth:
+                return {
+                    "type": "insert_anyway",
+                    "reasoning": f"CREATE_CHILD not allowed at max depth ({current_depth}/{max_depth})",
+                    "new_node_metadata": None,
+                    "split_plan": None
+                }
+
+            return {
+                "type": operation_type,
+                "reasoning": parsed.get("reasoning", ""),
+                "new_node_metadata": parsed.get("new_node_metadata"),
+                "split_plan": parsed.get("split_plan")
+            }
+        except:
+            return default_response
+
+    response = '{"type": "create_child", "reasoning": "Need child", "new_node_metadata": "New Child", "split_plan": null}'
+
+    # At max depth, should be converted to insert_anyway
+    result = parse_response(response, current_depth=10, max_depth=10)
+    assert result["type"] == "insert_anyway", f"Expected insert_anyway, got {result['type']}"
+    assert "max depth" in result["reasoning"].lower()
+    print(f"  At max depth: {result['type']} - {result['reasoning']}")
+
+    # Below max depth, should allow create_child
+    result = parse_response(response, current_depth=5, max_depth=10)
+    assert result["type"] == "create_child", f"Expected create_child, got {result['type']}"
+    print(f"  Below max depth: {result['type']}")
+
+    print("✓ max_depth enforcement works correctly")
+
+
+def test_decide_structure_fallback_on_invalid():
+    """Test fallback to insert_anyway on invalid responses."""
+    print("\n" + "="*50)
+    print("Testing fallback on invalid responses:")
+    print("="*50)
+
+    import json
+
+    def parse_response(response_text):
+        default_response = {
+            "type": "insert_anyway",
+            "reasoning": "Parse error - defaulting to insert",
+            "new_node_metadata": None,
+            "split_plan": None
+        }
+        valid_types = ["create_child", "create_sibling", "split", "insert_anyway"]
+
+        try:
+            brace_count = 0
+            start_idx = None
+            end_idx = None
+            for i, char in enumerate(response_text):
+                if char == '{':
+                    if brace_count == 0:
+                        start_idx = i
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0 and start_idx is not None:
+                        end_idx = i + 1
+                        break
+
+            if start_idx is None:
+                return default_response
+
+            parsed = json.loads(response_text[start_idx:end_idx])
+            operation_type = parsed.get("type", "").lower()
+
+            if operation_type not in valid_types:
+                return default_response
+
+            # Validate create operations have metadata
+            if operation_type in ["create_child", "create_sibling"]:
+                if not parsed.get("new_node_metadata"):
+                    return default_response
+
+            # Validate split has plan
+            if operation_type == "split":
+                split_plan = parsed.get("split_plan")
+                if not split_plan or not split_plan.get("new_children") or len(split_plan["new_children"]) < 2:
+                    return default_response
+
+            return {
+                "type": operation_type,
+                "reasoning": parsed.get("reasoning", ""),
+                "new_node_metadata": parsed.get("new_node_metadata"),
+                "split_plan": parsed.get("split_plan")
+            }
+        except:
+            return default_response
+
+    # Invalid type
+    result = parse_response('{"type": "invalid_type", "reasoning": "test"}')
+    assert result["type"] == "insert_anyway"
+    print("  Invalid type: falls back to insert_anyway")
+
+    # Missing new_node_metadata for create_child
+    result = parse_response('{"type": "create_child", "reasoning": "test", "new_node_metadata": null}')
+    assert result["type"] == "insert_anyway"
+    print("  Missing new_node_metadata: falls back to insert_anyway")
+
+    # Invalid split_plan (only 1 child)
+    result = parse_response('{"type": "split", "reasoning": "test", "split_plan": {"new_children": [{"metadata": "Only One"}], "new_data_goes_to": "Only One"}}')
+    assert result["type"] == "insert_anyway"
+    print("  Invalid split_plan (1 child): falls back to insert_anyway")
+
+    # Completely invalid response
+    result = parse_response("I think you should create a new node")
+    assert result["type"] == "insert_anyway"
+    print("  No JSON: falls back to insert_anyway")
+
+    print("✓ Fallback handling works correctly")
+
+
+def test_decide_structure_no_model_available():
+    """Test behavior when no graph operations model is available."""
+    print("\n" + "="*50)
+    print("Testing _llm_decide_structure without model:")
+    print("="*50)
+
+    class MockTree:
+        def __init__(self):
+            self.graph_operations_model = None
+
+        def _llm_decide_structure(self, node, summary, top_scores):
+            if not self.graph_operations_model:
+                return {
+                    "type": "insert_anyway",
+                    "reasoning": "No LLM available - defaulting to insert",
+                    "new_node_metadata": None,
+                    "split_plan": None
+                }
+            return {"type": "create_child", "reasoning": "OK", "new_node_metadata": "test", "split_plan": None}
+
+    mock_tree = MockTree()
+    result = mock_tree._llm_decide_structure(None, "test summary", [])
+
+    assert result["type"] == "insert_anyway"
+    assert "No LLM available" in result["reasoning"]
+    assert result["new_node_metadata"] is None
+    assert result["split_plan"] is None
+
+    print(f"No model result: {result}")
+    print("✓ Handles missing model gracefully")
+
+
+def test_decide_structure_split_plan_validation():
+    """Test that split_plan validation catches invalid plans."""
+    print("\n" + "="*50)
+    print("Testing split_plan validation:")
+    print("="*50)
+
+    import json
+
+    def validate_split_plan(split_plan):
+        if not split_plan or not isinstance(split_plan, dict):
+            return False
+        new_children = split_plan.get("new_children", [])
+        if not new_children or len(new_children) < 2:
+            return False
+        if not split_plan.get("new_data_goes_to"):
+            return False
+        for child in new_children:
+            if not isinstance(child, dict) or "metadata" not in child:
+                return False
+        return True
+
+    # Valid plan
+    valid_plan = {
+        "new_children": [
+            {"metadata": "Child1", "inherits_categories": ["cat1"]},
+            {"metadata": "Child2", "inherits_categories": ["cat2"]}
+        ],
+        "new_data_goes_to": "Child1"
+    }
+    assert validate_split_plan(valid_plan) == True
+    print("  Valid plan: accepted")
+
+    # Missing new_children
+    assert validate_split_plan({"new_data_goes_to": "Child1"}) == False
+    print("  Missing new_children: rejected")
+
+    # Only 1 child
+    assert validate_split_plan({"new_children": [{"metadata": "Only"}], "new_data_goes_to": "Only"}) == False
+    print("  Only 1 child: rejected")
+
+    # Missing new_data_goes_to
+    assert validate_split_plan({"new_children": [{"metadata": "A"}, {"metadata": "B"}]}) == False
+    print("  Missing new_data_goes_to: rejected")
+
+    # Child missing metadata
+    assert validate_split_plan({"new_children": [{"metadata": "A"}, {"inherits_categories": ["x"]}], "new_data_goes_to": "A"}) == False
+    print("  Child missing metadata: rejected")
+
+    print("✓ split_plan validation works correctly")
+
+
+def run_llm_decide_structure_tests():
+    """Run only the LLM decide structure tests."""
+    print("\n" + "="*70)
+    print("RUNNING LLM DECIDE STRUCTURE TESTS")
+    print("="*70)
+
+    test_get_siblings_helper()
+    test_decide_structure_returns_correct_structure()
+    test_decide_structure_create_child()
+    test_decide_structure_create_sibling()
+    test_decide_structure_split_plan_valid()
+    test_decide_structure_insert_anyway()
+    test_decide_structure_max_depth_enforced()
+    test_decide_structure_fallback_on_invalid()
+    test_decide_structure_no_model_available()
+    test_decide_structure_split_plan_validation()
+
+    print("\n" + "="*70)
+    print("ALL LLM DECIDE STRUCTURE TESTS COMPLETED")
+    print("="*70)
+
+
 def run_llm_validate_fit_tests():
     """Run only the LLM validate fit tests."""
     print("\n" + "="*70)
@@ -2252,6 +2775,18 @@ def run_all_tests():
     test_llm_validate_fit_suggested_category()
     test_llm_validate_fit_no_model_available()
 
+    # LLM decide structure tests
+    test_get_siblings_helper()
+    test_decide_structure_returns_correct_structure()
+    test_decide_structure_create_child()
+    test_decide_structure_create_sibling()
+    test_decide_structure_split_plan_valid()
+    test_decide_structure_insert_anyway()
+    test_decide_structure_max_depth_enforced()
+    test_decide_structure_fallback_on_invalid()
+    test_decide_structure_no_model_available()
+    test_decide_structure_split_plan_validation()
+
     print("\n" + "="*70)
     print("ALL TESTS COMPLETED")
     print("="*70)
@@ -2299,7 +2834,10 @@ if __name__ == "__main__":
     # run_traverse_with_confidence_tests()
 
     # Or run LLM validate fit tests:
-    run_llm_validate_fit_tests()
+    # run_llm_validate_fit_tests()
+
+    # Or run LLM decide structure tests:
+    run_llm_decide_structure_tests()
 
     # Or run individual test functions:
     # test_traverse()

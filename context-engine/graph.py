@@ -70,32 +70,38 @@ class Tree:
         self.action_model = None
         self.condensation_model = None
         self.fit_validation_model = None
-        
+        self.graph_operations_model = None
+
         if self.model_factory:
             try:
                 self.embedding_model = self.model_factory.get_embedding_model("embedding")
             except Exception as e:
                 print(f"Warning: Failed to initialize embedding model: {e}")
-            
+
             try:
                 self.traversal_model = self.model_factory.get_chat_model("traversal")
             except Exception as e:
                 print(f"Warning: Failed to initialize traversal model: {e}")
-            
+
             try:
                 self.action_model = self.model_factory.get_chat_model("action_creation")
             except Exception as e:
                 print(f"Warning: Failed to initialize action model: {e}")
-            
+
             try:
                 self.condensation_model = self.model_factory.get_chat_model("data_condensation")
             except Exception as e:
                 print(f"Warning: Failed to initialize condensation model: {e}")
-            
+
             try:
                 self.fit_validation_model = self.model_factory.get_chat_model("fit_validation")
             except Exception as e:
                 print(f"Warning: Failed to initialize fit validation model: {e}")
+
+            try:
+                self.graph_operations_model = self.model_factory.get_chat_model("graph_operations")
+            except Exception as e:
+                print(f"Warning: Failed to initialize graph operations model: {e}")
 
         self.construct_graph(self.dao.get_all_nodes())
 
@@ -730,6 +736,317 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
             return default_response
         except Exception as e:
             print(f"⚠️ _parse_validate_fit_response: Unexpected error: {e}")
+            return default_response
+
+    def _get_siblings(self, node: 'Node') -> List['Node']:
+        """
+        Get sibling nodes (same parent, excluding self).
+
+        Args:
+            node: The node to find siblings for
+
+        Returns:
+            List[Node]: List of sibling Node objects
+        """
+        if not node or not node.node_uuid:
+            return []
+
+        try:
+            sibling_tuples = self.dao.get_siblings(node.node_uuid)
+            siblings = []
+
+            for sibling_tuple in sibling_tuples:
+                # sibling_tuple format: (uuid, metadata, created, last_modified, parent_uuid, children_uuid_arr)
+                sibling_uuid = sibling_tuple[0]
+                if sibling_uuid in self.nodes:
+                    siblings.append(self.nodes[sibling_uuid])
+
+            return siblings
+        except Exception as e:
+            print(f"Error getting siblings for node {node.node_uuid}: {e}")
+            return []
+
+    def _llm_decide_structure(self, node: 'Node', summary: str, top_scores: List[Tuple['Node', float]]) -> dict:
+        """
+        Ask LLM to decide what graph structural change is needed.
+
+        Args:
+            node: The current best-match node
+            summary: Description of what the user is doing
+            top_scores: Top 5 nodes with scores for context
+
+        Returns:
+            dict: {
+                "type": "create_child" | "create_sibling" | "split" | "insert_anyway",
+                "reasoning": str,
+                "new_node_metadata": str | None,
+                "split_plan": {...} | None
+            }
+        """
+        default_response = {
+            "type": "insert_anyway",
+            "reasoning": "Error during structure decision - defaulting to insert",
+            "new_node_metadata": None,
+            "split_plan": None
+        }
+
+        # Check if graph operations model is available
+        if not self.graph_operations_model:
+            print("⚠️ _llm_decide_structure: Graph operations model not available, defaulting to insert")
+            return {
+                "type": "insert_anyway",
+                "reasoning": "No LLM available - defaulting to insert",
+                "new_node_metadata": None,
+                "split_plan": None
+            }
+
+        try:
+            # Gather context
+            node_path = self.get_parent_metadata(node)
+            existing_categories = self.dao.get_categories_for_node(node.node_uuid)
+            data_sample = self._get_data_sample(node)
+            alternatives_text = self._format_top_scores(top_scores)
+
+            # Get siblings
+            siblings = self._get_siblings(node)
+            siblings_text = "None" if not siblings else "\n".join(
+                [f"  - {s.metadata}" for s in siblings]
+            )
+
+            # Get children
+            children_text = "None" if not node.children else "\n".join(
+                [f"  - {c.metadata}" for c in node.children]
+            )
+
+            # Get parent
+            parent_text = "None (this is root)" if not node.parent else node.parent.metadata
+
+            # Get current depth and max depth from config
+            current_depth = self.dao.get_node_depth(node.node_uuid)
+            max_depth = self.config.get_max_depth() if self.config else 10
+
+            # Get split thresholds from config
+            min_categories = self.config.get_split_min_categories() if self.config else 3
+            min_entries = self.config.get_split_min_entries() if self.config else 5
+
+            # Count current entries
+            data_by_category = self.dao.get_data_for_node_by_category(node.node_uuid)
+            current_categories_count = len(data_by_category) if data_by_category else 0
+            current_entries_count = sum(len(entries) for entries in data_by_category.values()) if data_by_category else 0
+
+            # Determine if split is allowed
+            split_allowed = (current_categories_count >= min_categories and
+                           current_entries_count >= min_entries)
+            split_note = ""
+            if not split_allowed:
+                split_note = f"\nNOTE: SPLIT is NOT recommended for this node (has {current_categories_count} categories and {current_entries_count} entries, needs >= {min_categories} categories and >= {min_entries} entries)"
+
+            # Check if we're at max depth
+            depth_note = ""
+            if current_depth >= max_depth:
+                depth_note = f"\nNOTE: This node is at maximum depth ({current_depth}/{max_depth}). CREATE_CHILD is not allowed - consider CREATE_SIBLING instead."
+
+            prompt = f"""{self.BASE_PROMPT}
+
+TASK: Decide what structural change is needed to accommodate new information that doesn't fit well in existing nodes.
+
+CURRENT NODE CONTEXT:
+- Path from root: {node_path}
+- Current node: {node.metadata}
+- Current depth: {current_depth} (max allowed: {max_depth})
+- Parent: {parent_text}
+- Siblings:
+{siblings_text}
+- Children:
+{children_text}
+- Existing categories ({current_categories_count}): {', '.join(existing_categories) if existing_categories else 'None'}
+- Total data entries: {current_entries_count}
+
+EXISTING DATA SAMPLE:
+{data_sample}
+
+NEW INFORMATION THAT DOESN'T FIT WELL:
+{summary}
+
+ALTERNATIVE NODES (with similarity scores):
+{alternatives_text}
+
+{depth_note}
+{split_note}
+
+AVAILABLE OPERATIONS:
+
+1. **CREATE_CHILD** - Create a new child node under "{node.metadata}"
+   - Use when: New info is a specialization/subset of the current node
+   - Example: Node is "Recruiting", new info is specifically about "Engineering Recruiting"
+   - NOT allowed if current depth >= max_depth
+
+2. **CREATE_SIBLING** - Create a new sibling node (same parent as "{node.metadata}")
+   - Use when: New info is parallel to current node (same parent, different category)
+   - Example: Node is "Summer 2026 Interns", new info is about "Fall 2026 Interns"
+
+3. **SPLIT** - Divide "{node.metadata}" into multiple child nodes
+   - Use when: Current node has become too broad with mixed categories that should be separated
+   - Example: Node has mixed engineering and marketing data that should be separate nodes
+   - Only recommend if node has >= {min_categories} categories AND >= {min_entries} entries
+   - Must provide complete split_plan with new children and category assignments
+
+4. **INSERT_ANYWAY** - Insert into "{node.metadata}" despite low confidence
+   - Use when: After review, the data actually does belong here
+   - Or when none of the other options make sense
+
+OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
+{{
+    "type": "create_child" | "create_sibling" | "split" | "insert_anyway",
+    "reasoning": "Explanation of why this structural change is appropriate",
+    "new_node_metadata": "Name for the new node (required for create_child/create_sibling, null otherwise)",
+    "split_plan": {{
+        "new_children": [
+            {{"metadata": "Child1 Name", "inherits_categories": ["category1", "category2"]}},
+            {{"metadata": "Child2 Name", "inherits_categories": ["category3"]}}
+        ],
+        "new_data_goes_to": "Child1 Name"
+    }}
+}}
+
+Note: split_plan is ONLY required when type is "split", otherwise set to null.
+"""
+
+            # Call the LLM
+            print(f"🏗️ _llm_decide_structure: Calling graph operations model for node '{node.metadata}'")
+            response = self.graph_operations_model.generate(prompt)
+
+            # Parse and validate the response
+            return self._parse_structure_decision_response(response, current_depth, max_depth)
+
+        except Exception as e:
+            print(f"❌ _llm_decide_structure: Error during structure decision: {e}")
+            import traceback
+            traceback.print_exc()
+            return default_response
+
+    def _parse_structure_decision_response(self, response_text: str, current_depth: int, max_depth: int) -> dict:
+        """
+        Parse and validate the JSON response from the LLM structure decision.
+
+        Args:
+            response_text: Raw response from LLM
+            current_depth: Current depth of the node
+            max_depth: Maximum allowed depth from config
+
+        Returns:
+            dict: Validated response with type, reasoning, new_node_metadata, split_plan
+        """
+        import re
+
+        default_response = {
+            "type": "insert_anyway",
+            "reasoning": "Parse error - defaulting to insert",
+            "new_node_metadata": None,
+            "split_plan": None
+        }
+
+        valid_types = ["create_child", "create_sibling", "split", "insert_anyway"]
+
+        try:
+            # Try to extract JSON from potential markdown code blocks
+            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                # Try to find raw JSON - need to handle nested objects
+                # Find the outermost JSON object
+                brace_count = 0
+                start_idx = None
+                end_idx = None
+                for i, char in enumerate(response_text):
+                    if char == '{':
+                        if brace_count == 0:
+                            start_idx = i
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0 and start_idx is not None:
+                            end_idx = i + 1
+                            break
+
+                if start_idx is not None and end_idx is not None:
+                    json_str = response_text[start_idx:end_idx]
+                else:
+                    print(f"⚠️ _parse_structure_decision_response: Could not find JSON in response")
+                    print(f"   Response preview: {response_text[:300]}...")
+                    return default_response
+
+            parsed = json.loads(json_str)
+
+            # Validate type field
+            operation_type = parsed.get("type", "").lower()
+            if operation_type not in valid_types:
+                print(f"⚠️ _parse_structure_decision_response: Invalid type '{operation_type}'")
+                return default_response
+
+            # Enforce max_depth constraint
+            if operation_type == "create_child" and current_depth >= max_depth:
+                print(f"⚠️ _parse_structure_decision_response: CREATE_CHILD not allowed at max depth, switching to INSERT_ANYWAY")
+                return {
+                    "type": "insert_anyway",
+                    "reasoning": f"CREATE_CHILD requested but node is at max depth ({current_depth}/{max_depth}). Inserting anyway.",
+                    "new_node_metadata": None,
+                    "split_plan": None
+                }
+
+            # Validate new_node_metadata for create operations
+            new_node_metadata = parsed.get("new_node_metadata")
+            if operation_type in ["create_child", "create_sibling"]:
+                if not new_node_metadata or not isinstance(new_node_metadata, str):
+                    print(f"⚠️ _parse_structure_decision_response: Missing new_node_metadata for {operation_type}")
+                    return default_response
+
+            # Validate split_plan for split operations
+            split_plan = parsed.get("split_plan")
+            if operation_type == "split":
+                if not split_plan or not isinstance(split_plan, dict):
+                    print("⚠️ _parse_structure_decision_response: Missing split_plan for split operation")
+                    return default_response
+
+                new_children = split_plan.get("new_children", [])
+                if not new_children or len(new_children) < 2:
+                    print("⚠️ _parse_structure_decision_response: split_plan must have at least 2 children")
+                    return default_response
+
+                new_data_goes_to = split_plan.get("new_data_goes_to")
+                if not new_data_goes_to:
+                    print("⚠️ _parse_structure_decision_response: split_plan missing new_data_goes_to")
+                    return default_response
+
+                # Validate each child in the plan
+                for child in new_children:
+                    if not isinstance(child, dict) or "metadata" not in child:
+                        print("⚠️ _parse_structure_decision_response: Invalid child in split_plan")
+                        return default_response
+
+            result = {
+                "type": operation_type,
+                "reasoning": str(parsed.get("reasoning", "No reasoning provided")),
+                "new_node_metadata": new_node_metadata if operation_type in ["create_child", "create_sibling"] else None,
+                "split_plan": split_plan if operation_type == "split" else None
+            }
+
+            print(f"✅ _llm_decide_structure result: type={result['type']}")
+            if result['new_node_metadata']:
+                print(f"   New node: {result['new_node_metadata']}")
+            if result['split_plan']:
+                print(f"   Split into {len(result['split_plan']['new_children'])} children")
+            print(f"   Reasoning: {result['reasoning'][:100]}...")
+
+            return result
+
+        except json.JSONDecodeError as e:
+            print(f"⚠️ _parse_structure_decision_response: JSON decode error: {e}")
+            print(f"   Response preview: {response_text[:300]}...")
+            return default_response
+        except Exception as e:
+            print(f"⚠️ _parse_structure_decision_response: Unexpected error: {e}")
             return default_response
 
     def _generate_learning_prompt(self, node, summary, existing_actions, existing_categories):

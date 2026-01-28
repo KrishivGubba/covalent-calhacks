@@ -36,6 +36,13 @@ models:
     api_key_env: "OPENAI_API_KEY"
     max_tokens: 1024
 
+  # Model for graph structure operations (creating nodes, splitting, etc.)
+  graph_operations:
+    provider: "anthropic"  # Options: google, openai, anthropic, qwen
+    model_name: "claude-sonnet-4-5-20250929"
+    api_key_env: "ANTHROPIC_API_KEY"
+    max_tokens: 2048
+
 # Provider-specific settings
 provider_settings:
   google:
