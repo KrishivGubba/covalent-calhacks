@@ -1049,6 +1049,368 @@ Note: split_plan is ONLY required when type is "split", otherwise set to null.
             print(f"⚠️ _parse_structure_decision_response: Unexpected error: {e}")
             return default_response
 
+    # ==================== NODE CREATION METHODS ====================
+
+    def _refresh_node_embedding(self, node: 'Node') -> None:
+        """
+        Regenerate a node's embedding based on its current metadata chain.
+        Call this after moving a node or changing its metadata.
+
+        Args:
+            node: The node to refresh the embedding for
+        """
+        if not node:
+            return
+
+        try:
+            metadata_chain = self.get_parent_metadata(node)
+            if metadata_chain:
+                node.embedding = self.vectorize_text(metadata_chain)
+                print(f"🔄 Refreshed embedding for node '{node.metadata}'")
+        except Exception as e:
+            print(f"⚠️ Failed to refresh embedding for node {node.node_uuid}: {e}")
+
+    def _create_child_node(self, parent: 'Node', metadata: str, summary: str = None, data: str = None) -> 'Node':
+        """
+        Create a new child node under the given parent.
+
+        Args:
+            parent: The parent node
+            metadata: Name/description for the new node
+            summary: Optional - description of data to insert
+            data: Optional - actual data to insert into the new node
+
+        Returns:
+            The newly created Node object
+
+        Raises:
+            ValueError: If parent is at max_depth or parent is invalid
+        """
+        if not parent:
+            raise ValueError("Parent node cannot be None")
+
+        if not metadata:
+            raise ValueError("Metadata cannot be empty")
+
+        # Check max depth
+        max_depth = self.config.get_max_depth() if self.config else 10
+        current_depth = self.dao.get_node_depth(parent.node_uuid)
+
+        if current_depth >= max_depth:
+            raise ValueError(f"Cannot create child: parent is at maximum depth ({current_depth}/{max_depth})")
+
+        print(f"🌱 Creating child node '{metadata}' under '{parent.metadata}'")
+
+        try:
+            # Create node in database
+            new_uuid = self.dao.create_node(metadata, parent.node_uuid)
+            if not new_uuid:
+                raise RuntimeError("Failed to create node in database")
+
+            # Add child to parent in database
+            self.dao.add_child_to_node(parent.node_uuid, new_uuid)
+
+            # Create Node object in memory
+            from datetime import datetime
+            current_time = datetime.now().isoformat()
+
+            new_node = Node(
+                node_uuid=new_uuid,
+                metadata=metadata,
+                created=current_time,
+                last_modified=current_time,
+                parent_uuid=parent.node_uuid,
+                children_uuid_arr=[],
+                actions=[],
+                data=None,
+                embedding=None
+            )
+
+            # Link in memory
+            new_node.parent = parent
+            parent.children.append(new_node)
+            if new_uuid not in parent.children_uuid_arr:
+                parent.children_uuid_arr.append(new_uuid)
+            self.nodes[new_uuid] = new_node
+
+            # Generate embedding
+            self._refresh_node_embedding(new_node)
+
+            print(f"✅ Created child node '{metadata}' with UUID: {new_uuid[:8]}...")
+
+            # Insert data if provided
+            if summary and data:
+                print(f"📝 Inserting initial data into new node...")
+                # Use the learn method to properly insert data with LLM categorization
+                # But we need to temporarily override traverse to return our new node
+                self._insert_data_to_node(new_node, summary, data)
+
+            return new_node
+
+        except Exception as e:
+            print(f"❌ Failed to create child node: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+    def _insert_data_to_node(self, node: 'Node', summary: str, data: str) -> None:
+        """
+        Insert data directly into a specific node without traversal.
+        Uses comprehensive category creation logic matching learn() method.
+
+        Args:
+            node: The node to insert data into
+            summary: Description of the data
+            data: The data to insert
+        """
+        try:
+            from datetime import datetime
+            import re
+
+            # Get existing context
+            existing_categories = self.dao.get_categories_for_node(node.node_uuid)
+            metadata_chain = self.get_parent_metadata(node)
+
+            # Format existing categories
+            categories_text = ""
+            if existing_categories:
+                categories_text = f"EXISTING DATA CATEGORIES: {', '.join(existing_categories)}\n"
+            else:
+                categories_text = "EXISTING DATA CATEGORIES: None - this node has no data categories yet.\n"
+
+            # If we have an action model, use it to categorize with comprehensive logic
+            if self.action_model:
+                prompt = f"""{self.BASE_PROMPT}
+
+CURRENT CONTEXT:
+Node Path (from root): {metadata_chain}
+Current Node: {node.metadata}
+
+{categories_text}
+
+USER'S CURRENT ACTIVITY:
+{summary}
+
+ADDITIONAL DATA:
+{data}
+
+YOUR TASK:
+Extract and categorize relevant information from the user's activity and data.
+
+**DATA INSERTION** - Extract and categorize relevant information:
+   - Condense the screen summary to preserve ONLY relevant information
+   - Remove UI noise (cursor positions, visual elements, temporary states)
+   - Keep essential context (names, dates, email addresses, decisions, outcomes)
+   - Assign data to categories (can use existing or create new ones)
+   - Can split data across multiple categories if appropriate
+
+OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
+{{
+  "data_insertions": [
+    {{
+      "category": "category_name",
+      "is_new_category": true | false,
+      "condensed_data": "The actual data to store - detailed but concise"
+    }}
+  ]
+}}
+
+IMPORTANT:
+- Output ONLY the JSON object - no explanations, no markdown code blocks
+- Ensure all JSON is properly formatted and valid
+- You can create multiple data_insertions if the information naturally splits across categories
+"""
+                try:
+                    response = self.action_model.generate(prompt)
+                    
+                    # Try to extract JSON from potential markdown code blocks
+                    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response, re.DOTALL)
+                    if json_match:
+                        json_str = json_match.group(1)
+                    else:
+                        # Try to find raw JSON
+                        json_match = re.search(r'\{.*"data_insertions".*\}', response, re.DOTALL)
+                        if json_match:
+                            json_str = json_match.group(0)
+                        else:
+                            raise ValueError("Could not find valid JSON in response")
+                    
+                    parsed = json.loads(json_str)
+                    data_insertions = parsed.get("data_insertions", [])
+                    
+                    if not data_insertions:
+                        # Fallback to single category
+                        data_insertions = [{
+                            "category": "general",
+                            "is_new_category": "general" not in existing_categories,
+                            "condensed_data": data
+                        }]
+                    
+                except Exception as e:
+                    print(f"⚠️ LLM parsing failed: {e}, using fallback")
+                    # Fallback to single category
+                    data_insertions = [{
+                        "category": "general",
+                        "is_new_category": "general" not in existing_categories,
+                        "condensed_data": data
+                    }]
+            else:
+                # No LLM available, use simple fallback
+                data_insertions = [{
+                    "category": "general",
+                    "is_new_category": "general" not in existing_categories,
+                    "condensed_data": data
+                }]
+
+            # Process all data insertions
+            print(f"   → Processing {len(data_insertions)} data insertion(s)...")
+            
+            for insertion in data_insertions:
+                category = insertion.get("category", "general")
+                condensed_data = insertion.get("condensed_data", data)
+                is_new = insertion.get("is_new_category", False)
+                
+                # Generate a unique key for this data entry
+                timestamp_key = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                data_key = f"{category}_{timestamp_key}"
+
+                self.dao.add_data_with_category(
+                    node_uuid=node.node_uuid,
+                    category=category,
+                    key=data_key,
+                    data_type="text",
+                    info=condensed_data
+                )
+                
+                new_indicator = " (new)" if is_new else ""
+                print(f"   → Inserted into category '{category}'{new_indicator}: {condensed_data[:100]}...")
+
+                # Increment counter for each insertion
+                self.dao.increment_node_counter(node.node_uuid)
+
+        except Exception as e:
+            print(f"⚠️ Failed to insert data: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _create_sibling_node(self, sibling_of: 'Node', metadata: str, summary: str = None, data: str = None) -> 'Node':
+        """
+        Create a new node at the same level as the given node (same parent).
+
+        Args:
+            sibling_of: The node to create a sibling of
+            metadata: Name/description for the new node
+            summary: Optional - description of data to insert
+            data: Optional - actual data to insert
+
+        Returns:
+            The newly created Node object
+        """
+        if not sibling_of:
+            raise ValueError("sibling_of node cannot be None")
+
+        if not metadata:
+            raise ValueError("Metadata cannot be empty")
+
+        # Get the parent
+        parent = sibling_of.parent
+
+        # If no parent (sibling_of is root), create as child of root instead
+        if parent is None:
+            print(f"⚠️ Node '{sibling_of.metadata}' is root - creating as child of root instead")
+            return self._create_child_node(sibling_of, metadata, summary, data)
+
+        print(f"🌿 Creating sibling node '{metadata}' next to '{sibling_of.metadata}'")
+
+        # Create as child of the parent
+        return self._create_child_node(parent, metadata, summary, data)
+
+    def _bootstrap_first_node(self, summary: str, data: str) -> 'Node':
+        """
+        Create the first real node when graph only has root.
+
+        Args:
+            summary: Description of what the user is doing
+            data: The data to insert
+
+        Returns:
+            The newly created first child node of root
+
+        Raises:
+            ValueError: If root already has children or if root doesn't exist
+        """
+        if not self.root:
+            raise ValueError("Root node doesn't exist - cannot bootstrap")
+
+        if self.root.children and len(self.root.children) > 0:
+            raise ValueError("Root already has children - bootstrap not needed")
+
+        # Check if bootstrap is enabled
+        if self.config and not self.config.is_bootstrap_enabled():
+            raise ValueError("Bootstrap is disabled in configuration")
+
+        print(f"🚀 Bootstrapping first node from root...")
+
+        # Build prompt to determine first category
+        prompt = f"""{self.BASE_PROMPT}
+
+TASK: Create the first category node for this knowledge graph.
+
+The graph is currently empty (only has a root node). Based on the user's activity, suggest what the first top-level category should be.
+
+USER'S CURRENT ACTIVITY:
+{summary}
+
+DATA TO STORE:
+{data}
+
+Consider:
+- What broad category does this activity fall under?
+- What would be a good umbrella term for similar activities?
+- Categories should be broad enough to contain subcategories later
+- Examples: "Recruiting", "Development", "Finance", "Operations", "Marketing", "HR"
+
+Return ONLY a JSON object:
+{{
+    "node_metadata": "Broad category name (1-3 words)",
+    "initial_category": "First data category within this node",
+    "reasoning": "Brief explanation of why this category"
+}}
+"""
+
+        node_metadata = "General"
+        initial_category = "general"
+
+        # Try to get LLM suggestion
+        if self.graph_operations_model:
+            try:
+                response = self.graph_operations_model.generate(prompt)
+                import re
+                json_match = re.search(r'\{[^{}]*"node_metadata"[^{}]*\}', response, re.DOTALL)
+                if json_match:
+                    parsed = json.loads(json_match.group(0))
+                    node_metadata = parsed.get("node_metadata", "General")
+                    initial_category = parsed.get("initial_category", "general")
+                    reasoning = parsed.get("reasoning", "")
+                    print(f"   LLM suggested: '{node_metadata}' - {reasoning[:100]}...")
+            except Exception as e:
+                print(f"⚠️ LLM bootstrap suggestion failed: {e}")
+                # Fall back to defaults
+        else:
+            print("⚠️ No graph operations model available, using default category")
+
+        # Create the first child node
+        new_node = self._create_child_node(
+            parent=self.root,
+            metadata=node_metadata,
+            summary=summary,
+            data=data
+        )
+
+        print(f"✅ Bootstrapped first node: '{node_metadata}'")
+
+        return new_node
+
     def _generate_learning_prompt(self, node, summary, existing_actions, existing_categories):
         """
         Generate a prompt for the LLM to decide on action and data insertion.

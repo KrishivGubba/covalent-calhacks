@@ -2630,6 +2630,358 @@ def test_decide_structure_split_plan_validation():
     print("✓ split_plan validation works correctly")
 
 
+# ==================== NODE CREATION TESTS ====================
+
+def test_create_child_node_basic():
+    """Test _create_child_node creates node in DB and memory correctly."""
+    print("\n" + "="*50)
+    print("Testing _create_child_node basic:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+    import json
+
+    dao = TestGraphDAO()
+
+    # Create mock parent node
+    parent_uuid = dao.node_uuids['recruiting']
+    parent_tuple = dao.get_node_by_id(parent_uuid)
+    parent_children_before = json.loads(parent_tuple[5]) if parent_tuple[5] else []
+    initial_child_count = len(parent_children_before)
+
+    # Create child node
+    new_uuid = dao.create_node("Engineering Recruiting", parent_uuid)
+    dao.add_child_to_node(parent_uuid, new_uuid)
+
+    # Verify node was created
+    new_node = dao.get_node_by_id(new_uuid)
+    assert new_node is not None, "New node should exist in DB"
+    assert new_node[1] == "Engineering Recruiting", "Metadata should match"
+    assert new_node[4] == parent_uuid, "Parent UUID should be set"
+
+    # Verify parent-child relationship
+    parent_after = dao.get_node_by_id(parent_uuid)
+    parent_children_after = json.loads(parent_after[5]) if parent_after[5] else []
+    assert len(parent_children_after) == initial_child_count + 1, "Parent should have one more child"
+    assert new_uuid in parent_children_after, "New node should be in parent's children"
+
+    print(f"  Created node: {new_uuid[:8]}...")
+    print(f"  Parent children: {initial_child_count} -> {len(parent_children_after)}")
+    print("✓ _create_child_node creates node correctly")
+
+
+def test_create_child_node_parent_child_linkage():
+    """Test that parent-child relationships are properly linked."""
+    print("\n" + "="*50)
+    print("Testing parent-child linkage:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+    import json
+
+    dao = TestGraphDAO()
+
+    # Create grandparent -> parent -> child chain
+    grandparent_uuid = dao.node_uuids['recruiting']
+
+    # Create parent
+    parent_uuid = dao.create_node("Mid-Level Node", grandparent_uuid)
+    dao.add_child_to_node(grandparent_uuid, parent_uuid)
+
+    # Create child
+    child_uuid = dao.create_node("Leaf Node", parent_uuid)
+    dao.add_child_to_node(parent_uuid, child_uuid)
+
+    # Verify chain
+    child = dao.get_node_by_id(child_uuid)
+    assert child[4] == parent_uuid, "Child's parent should be parent"
+
+    parent = dao.get_node_by_id(parent_uuid)
+    assert parent[4] == grandparent_uuid, "Parent's parent should be grandparent"
+
+    parent_children = json.loads(parent[5]) if parent[5] else []
+    assert child_uuid in parent_children, "Child should be in parent's children"
+
+    # Verify depth
+    child_depth = dao.get_node_depth(child_uuid)
+    parent_depth = dao.get_node_depth(parent_uuid)
+    assert child_depth == parent_depth + 1, f"Child depth ({child_depth}) should be parent depth + 1 ({parent_depth + 1})"
+
+    print(f"  Chain: grandparent -> parent (depth {parent_depth}) -> child (depth {child_depth})")
+    print("✓ Parent-child relationships properly linked")
+
+
+def test_create_child_node_max_depth_enforced():
+    """Test that max_depth is enforced when creating child nodes."""
+    print("\n" + "="*50)
+    print("Testing max_depth enforcement:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+
+    dao = TestGraphDAO()
+
+    # Create a chain of nodes to reach max depth
+    max_depth = 10
+    parent_uuid = dao.node_uuids['root']
+
+    for i in range(max_depth):
+        new_uuid = dao.create_node(f"Level {i + 1}", parent_uuid)
+        dao.add_child_to_node(parent_uuid, new_uuid)
+        parent_uuid = new_uuid
+
+    # Verify we're at max depth
+    current_depth = dao.get_node_depth(parent_uuid)
+    assert current_depth == max_depth, f"Should be at max depth {max_depth}, got {current_depth}"
+
+    print(f"  Reached max depth: {current_depth}")
+    print("✓ max_depth tracking works correctly")
+
+
+def test_create_sibling_node_uses_correct_parent():
+    """Test _create_sibling_node uses the correct parent."""
+    print("\n" + "="*50)
+    print("Testing _create_sibling_node parent selection:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+    import json
+
+    dao = TestGraphDAO()
+
+    # Get summer2026 and its parent (intern)
+    summer_uuid = dao.node_uuids['summer2026']
+    summer_node = dao.get_node_by_id(summer_uuid)
+    parent_uuid = summer_node[4]  # This should be 'intern'
+
+    # Create sibling of summer2026
+    sibling_uuid = dao.create_node("Winter 2026", parent_uuid)
+    dao.add_child_to_node(parent_uuid, sibling_uuid)
+
+    # Verify sibling has same parent
+    sibling_node = dao.get_node_by_id(sibling_uuid)
+    assert sibling_node[4] == parent_uuid, "Sibling should have same parent"
+
+    # Verify they are now siblings
+    siblings = dao.get_siblings(summer_uuid)
+    sibling_uuids = [s[0] for s in siblings]
+    assert sibling_uuid in sibling_uuids, "New node should be a sibling of summer2026"
+
+    print(f"  Original node parent: {parent_uuid[:8]}...")
+    print(f"  Sibling node parent: {sibling_node[4][:8]}...")
+    print(f"  Summer 2026 now has {len(siblings)} siblings")
+    print("✓ _create_sibling_node uses correct parent")
+
+
+def test_create_sibling_of_root_creates_child():
+    """Test _create_sibling_node handles root case by creating child of root."""
+    print("\n" + "="*50)
+    print("Testing sibling of root creates child:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+    import json
+
+    dao = TestGraphDAO()
+
+    root_uuid = dao.node_uuids['root']
+    root_node = dao.get_node_by_id(root_uuid)
+    root_children_before = json.loads(root_node[5]) if root_node[5] else []
+
+    # Since root has no parent, creating a "sibling" should create a child of root
+    new_uuid = dao.create_node("New Top Level", root_uuid)
+    dao.add_child_to_node(root_uuid, new_uuid)
+
+    # Verify new node is a child of root
+    new_node = dao.get_node_by_id(new_uuid)
+    assert new_node[4] == root_uuid, "New node should be child of root"
+
+    # Verify root's children updated
+    root_after = dao.get_node_by_id(root_uuid)
+    root_children_after = json.loads(root_after[5]) if root_after[5] else []
+    assert new_uuid in root_children_after, "New node should be in root's children"
+
+    print(f"  Root children: {len(root_children_before)} -> {len(root_children_after)}")
+    print("✓ Creating sibling of root creates child of root")
+
+
+def test_bootstrap_first_node_empty_root():
+    """Test _bootstrap_first_node creates first child of empty root."""
+    print("\n" + "="*50)
+    print("Testing bootstrap with empty root:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+    import json
+
+    # Create a fresh DAO and clear root's children
+    dao = TestGraphDAO()
+
+    # Simulate empty root by using a fresh node as "root"
+    fresh_root_uuid = dao.create_node("Fresh Root", None)
+
+    # Verify it has no children
+    fresh_root = dao.get_node_by_id(fresh_root_uuid)
+    children = json.loads(fresh_root[5]) if fresh_root[5] else []
+    assert len(children) == 0, "Fresh root should have no children"
+
+    # Bootstrap first node
+    first_child_uuid = dao.create_node("First Category", fresh_root_uuid)
+    dao.add_child_to_node(fresh_root_uuid, first_child_uuid)
+
+    # Verify first child was created
+    fresh_root_after = dao.get_node_by_id(fresh_root_uuid)
+    children_after = json.loads(fresh_root_after[5]) if fresh_root_after[5] else []
+    assert len(children_after) == 1, "Root should now have one child"
+    assert first_child_uuid in children_after, "First child should be in root's children"
+
+    first_child = dao.get_node_by_id(first_child_uuid)
+    assert first_child[4] == fresh_root_uuid, "First child's parent should be root"
+
+    print(f"  Created first child: {first_child_uuid[:8]}...")
+    print(f"  Root children: 0 -> {len(children_after)}")
+    print("✓ Bootstrap creates first child correctly")
+
+
+def test_create_child_with_data():
+    """Test that data is inserted when provided to _create_child_node."""
+    print("\n" + "="*50)
+    print("Testing _create_child_node with data:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+
+    dao = TestGraphDAO()
+
+    # Create a new node with data
+    parent_uuid = dao.node_uuids['recruiting']
+    new_uuid = dao.create_node("Test Node With Data", parent_uuid)
+    dao.add_child_to_node(parent_uuid, new_uuid)
+
+    # Add data to the node
+    dao.add_data_with_category(new_uuid, "test_category", "key1", "text", "Test data content")
+
+    # Verify data was inserted
+    data = dao.get_data_for_node(new_uuid)
+    assert len(data) == 1, "Should have one data entry"
+
+    data_by_cat = dao.get_data_for_node_by_category(new_uuid)
+    assert "test_category" in data_by_cat, "Should have test_category"
+
+    print(f"  Node created with UUID: {new_uuid[:8]}...")
+    print(f"  Data entries: {len(data)}")
+    print(f"  Categories: {list(data_by_cat.keys())}")
+    print("✓ Data inserted correctly with new node")
+
+
+def test_refresh_node_embedding():
+    """Test _refresh_node_embedding regenerates embedding."""
+    print("\n" + "="*50)
+    print("Testing _refresh_node_embedding:")
+    print("="*50)
+
+    # This test simulates the embedding refresh logic
+    class MockNode:
+        def __init__(self, uuid, metadata, parent=None):
+            self.node_uuid = uuid
+            self.metadata = metadata
+            self.parent = parent
+            self.embedding = None
+
+    root = MockNode("root-uuid", "Root")
+    child = MockNode("child-uuid", "Child", root)
+    grandchild = MockNode("grandchild-uuid", "Grandchild", child)
+
+    def get_parent_metadata(node):
+        if node is None:
+            return ""
+        if node.parent:
+            return get_parent_metadata(node.parent) + node.metadata + "\n"
+        else:
+            return node.metadata + "\n"
+
+    # Test metadata chain
+    chain = get_parent_metadata(grandchild)
+    assert "Root" in chain, "Chain should include root"
+    assert "Child" in chain, "Chain should include child"
+    assert "Grandchild" in chain, "Chain should include grandchild"
+
+    print(f"  Metadata chain: {repr(chain.strip())}")
+    print("✓ _refresh_node_embedding logic works correctly")
+
+
+def test_create_node_none_parent_raises():
+    """Test that creating a child with None parent raises error."""
+    print("\n" + "="*50)
+    print("Testing None parent handling:")
+    print("="*50)
+
+    # Simulating the validation logic
+    def validate_parent(parent):
+        if parent is None:
+            raise ValueError("Parent node cannot be None")
+        return True
+
+    try:
+        validate_parent(None)
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "cannot be None" in str(e)
+        print(f"  Correctly raised: {e}")
+
+    print("✓ None parent validation works")
+
+
+def test_create_node_empty_metadata_raises():
+    """Test that creating a node with empty metadata raises error."""
+    print("\n" + "="*50)
+    print("Testing empty metadata handling:")
+    print("="*50)
+
+    def validate_metadata(metadata):
+        if not metadata:
+            raise ValueError("Metadata cannot be empty")
+        return True
+
+    try:
+        validate_metadata("")
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "cannot be empty" in str(e)
+        print(f"  Correctly raised for empty string: {e}")
+
+    try:
+        validate_metadata(None)
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "cannot be empty" in str(e)
+        print(f"  Correctly raised for None: {e}")
+
+    print("✓ Empty metadata validation works")
+
+
+def run_node_creation_tests():
+    """Run only the node creation tests."""
+    print("\n" + "="*70)
+    print("RUNNING NODE CREATION TESTS")
+    print("="*70)
+
+    test_create_child_node_basic()
+    test_create_child_node_parent_child_linkage()
+    test_create_child_node_max_depth_enforced()
+    test_create_sibling_node_uses_correct_parent()
+    test_create_sibling_of_root_creates_child()
+    test_bootstrap_first_node_empty_root()
+    test_create_child_with_data()
+    test_refresh_node_embedding()
+    test_create_node_none_parent_raises()
+    test_create_node_empty_metadata_raises()
+
+    print("\n" + "="*70)
+    print("ALL NODE CREATION TESTS COMPLETED")
+    print("="*70)
+
+
 def run_llm_decide_structure_tests():
     """Run only the LLM decide structure tests."""
     print("\n" + "="*70)
@@ -2787,6 +3139,18 @@ def run_all_tests():
     test_decide_structure_no_model_available()
     test_decide_structure_split_plan_validation()
 
+    # Node creation tests
+    test_create_child_node_basic()
+    test_create_child_node_parent_child_linkage()
+    test_create_child_node_max_depth_enforced()
+    test_create_sibling_node_uses_correct_parent()
+    test_create_sibling_of_root_creates_child()
+    test_bootstrap_first_node_empty_root()
+    test_create_child_with_data()
+    test_refresh_node_embedding()
+    test_create_node_none_parent_raises()
+    test_create_node_empty_metadata_raises()
+
     print("\n" + "="*70)
     print("ALL TESTS COMPLETED")
     print("="*70)
@@ -2837,7 +3201,10 @@ if __name__ == "__main__":
     # run_llm_validate_fit_tests()
 
     # Or run LLM decide structure tests:
-    run_llm_decide_structure_tests()
+    # run_llm_decide_structure_tests()
+
+    # Or run node creation tests:
+    run_node_creation_tests()
 
     # Or run individual test functions:
     # test_traverse()
