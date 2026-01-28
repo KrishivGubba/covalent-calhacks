@@ -97,7 +97,7 @@
         <span class="confidence" id="confidence">...</span>
       </div>
       
-      <div class="text" id="text">Generating suggestion...</div>
+      <div class="text" id="text"></div>
       
       <div class="hint">
         <kbd class="kbd">Tab</kbd> to accept · <kbd class="kbd">Esc</kbd> to dismiss
@@ -112,13 +112,13 @@
       function getBadgeText(level) {
         switch (level) {
           case 'L0-exact':
-            return 'Cached (3ms)';
+            return 'Cached';
           case 'L1-llm':
-            return 'Context (110ms)';
+            return 'Local';
           case 'L2-graph':
-            return 'Graph (130ms)';
+            return 'Graph';
           case 'L3-fallback':
-            return 'New (155ms)';
+            return 'Haiku';
           default:
             return 'Suggestion';
         }
@@ -142,23 +142,31 @@
         }
       }
 
-      // Set up listener with retry logic for both methods
-      async function setupListener() {
-        let listenerSet = false;
+      // Set up listener with retry logic for multiple methods
+      let listenerSet = false;
+      let retryCount = 0;
+      const MAX_RETRIES = 50;
 
-        // Method 1: Try dynamic import of @tauri-apps/api/event
-        try {
-          const { listen } = await import('@tauri-apps/api/event');
-          await listen('update-completion-popup', (event) => {
-            updatePopup(event.payload);
-          });
-          console.log('✅ Popup listener ready (dynamic import)');
-          listenerSet = true;
-        } catch (e) {
-          console.log('Dynamic import failed, trying __TAURI__:', e.message);
+      async function setupListener() {
+        if (listenerSet || retryCount >= MAX_RETRIES) return;
+        retryCount++;
+
+        // Method 1: Try window.__TAURI_INTERNALS__ (Tauri 2.x)
+        if (!listenerSet && window.__TAURI_INTERNALS__) {
+          try {
+            const { listen } = await import('@tauri-apps/api/event');
+            await listen('update-completion-popup', (event) => {
+              updatePopup(event.payload);
+            });
+            console.log('✅ Popup listener ready (TAURI_INTERNALS)');
+            listenerSet = true;
+            return;
+          } catch (e) {
+            console.log('TAURI_INTERNALS method failed:', e.message);
+          }
         }
 
-        // Method 2: Try window.__TAURI__ if available
+        // Method 2: Try window.__TAURI__ (older API)
         if (!listenerSet && window.__TAURI__ && window.__TAURI__.event) {
           try {
             await window.__TAURI__.event.listen('update-completion-popup', (event) => {
@@ -166,23 +174,37 @@
             });
             console.log('✅ Popup listener ready (__TAURI__)');
             listenerSet = true;
+            return;
           } catch (e) {
             console.log('__TAURI__ listener failed:', e.message);
           }
         }
 
-        // Retry if neither method worked
+        // Method 3: Direct dynamic import
         if (!listenerSet) {
-          console.log('Retrying listener setup in 100ms...');
+          try {
+            const { listen } = await import('@tauri-apps/api/event');
+            await listen('update-completion-popup', (event) => {
+              updatePopup(event.payload);
+            });
+            console.log('✅ Popup listener ready (dynamic import)');
+            listenerSet = true;
+            return;
+          } catch (e) {
+            console.log('Dynamic import failed:', e.message);
+          }
+        }
+
+        // Retry if not set
+        if (!listenerSet) {
           setTimeout(setupListener, 100);
         }
       }
 
-      // Start setup when DOM is ready
+      // Start setup immediately and on DOMContentLoaded
+      setupListener();
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', setupListener);
-      } else {
-        setupListener();
       }
     </script>
   </body>

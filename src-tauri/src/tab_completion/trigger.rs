@@ -12,6 +12,8 @@ use tokio::runtime::Runtime;
 use super::cache::{CacheResult, MultiTierCache, CachedContext, AppContext, current_timestamp};
 use super::model::MODEL;
 use super::api_client::{TabCompletionApiClient, PredictionRequest, ContextUpdateRequest};
+#[cfg(target_os = "macos")]
+use crate::screen_context::macos_app_detector::MacOSAppDetector;
 
 pub struct CompletionTrigger {
     text_buffer: Arc<Mutex<TextBuffer>>,
@@ -363,6 +365,15 @@ impl CompletionTrigger {
     
     fn trigger_completion(&self) {
         let text = self.text_buffer.lock().get_last_n(100); // Get more context
+
+        // Detect the current active app (updates current_app)
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(detected_app) = Self::detect_current_app() {
+                *self.current_app.lock() = detected_app;
+            }
+        }
+
         let app = self.current_app.lock().clone();
         let cache = self.cache.clone();
         let api_client = self.api_client.clone();
@@ -390,6 +401,26 @@ impl CompletionTrigger {
                 prediction_counter,
             );
         });
+    }
+
+    /// Detect the currently active application using macOS APIs
+    #[cfg(target_os = "macos")]
+    fn detect_current_app() -> Option<String> {
+        // Use MacOSAppDetector to get the frontmost app
+        let mut detector = match MacOSAppDetector::new() {
+            Ok(d) => d,
+            Err(_) => return None,
+        };
+        match detector.get_active_app_info() {
+            Ok(app_info) => Some(app_info.name),
+            Err(e) => {
+                // Silently fail - not critical for predictions
+                if cfg!(debug_assertions) {
+                    eprintln!("⚠️  Could not detect current app: {}", e);
+                }
+                None
+            }
+        }
     }
     
     fn get_and_show_prediction(
@@ -555,8 +586,8 @@ impl CompletionTrigger {
             println!("🔍 Prompt: {}", &prompt[..prompt.len().min(200)]);
         }
 
-        // Use 15 tokens for faster completion (average 5-10 words)
-        match MODEL.predict_sync(&prompt, 15) {
+        // Use 30 tokens for better completions, with automatic Haiku fallback
+        match MODEL.predict_with_fallback(&prompt, 30) {
             Ok(prediction) => {
                 let prediction = prediction.trim().to_string();
 
@@ -716,6 +747,49 @@ impl CompletionTrigger {
     
     pub fn set_current_app(&self, app_name: String) {
         *self.current_app.lock() = app_name;
+    }
+
+    /// Append text to the buffer (called after accepting a suggestion)
+    /// This updates the internal state so predictions can continue from the new position
+    pub fn append_to_buffer(&self, text: String) {
+        {
+            let mut buffer = self.text_buffer.lock();
+            for ch in text.chars() {
+                buffer.append(ch);
+            }
+            buffer.reset_prediction_counter();
+        }
+
+        // Trigger a new prediction after a short delay
+        let self_clone = self.cache.clone();
+        let app = self.current_app.lock().clone();
+        let text_buffer = self.text_buffer.clone();
+        let callback_ref = self.suggestion_callback.clone();
+        let has_callback = self.suggestion_callback.lock().is_some();
+        let api_client = self.api_client.clone();
+        let runtime = self.runtime.clone();
+        let prediction_counter = self.prediction_counter.clone();
+
+        std::thread::spawn(move || {
+            // Small delay before re-triggering
+            std::thread::sleep(Duration::from_millis(300));
+
+            let text = text_buffer.lock().get_last_n(100);
+            if text.trim().is_empty() {
+                return;
+            }
+
+            Self::get_and_show_prediction(
+                self_clone,
+                &app,
+                &text,
+                callback_ref,
+                has_callback,
+                api_client,
+                runtime,
+                prediction_counter,
+            );
+        });
     }
     
     pub fn get_stats(&self) {

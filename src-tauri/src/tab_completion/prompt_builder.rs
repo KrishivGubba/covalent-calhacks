@@ -49,33 +49,38 @@ fn looks_like_command(text: &str) -> bool {
 fn build_terminal_prompt(shell: &str, cwd: &str, text: &str, context: &CachedContext) -> String {
     let mut prompt = String::new();
 
-    // Few-shot examples - THIS IS THE KEY
-    // Show the model exactly what format we expect
-    prompt.push_str("Complete the shell command. Output ONLY the completion, no explanations.\n\n");
+    // Strong instruction with clear examples
+    prompt.push_str("You are a terminal autocomplete. Complete the partial command.\n");
+    prompt.push_str("Rules: Output ONLY the missing characters. No explanations. No quotes.\n\n");
+
+    // Few-shot examples showing the exact format
     prompt.push_str("Examples:\n");
     prompt.push_str("git st -> atus\n");
-    prompt.push_str("git check -> out \n");
+    prompt.push_str("git add -> . -A\n");
+    prompt.push_str("git check -> out main\n");
     prompt.push_str("docker-com -> pose up -d\n");
     prompt.push_str("npm i -> nstall\n");
     prompt.push_str("cargo b -> uild --release\n");
+    prompt.push_str("ls -l -> a\n");
+    prompt.push_str("cd ~ -> /Downloads\n");
 
     // Add learned patterns as additional examples
     for pattern in context.learned_patterns.iter().take(2) {
-        prompt.push_str(&format!("{} -> {}\n",
-            pattern.trigger,
-            pattern.completion.trim_start_matches(&pattern.trigger)
-        ));
+        let completion_suffix = pattern.completion.trim_start_matches(&pattern.trigger);
+        if !completion_suffix.is_empty() {
+            prompt.push_str(&format!("{} -> {}\n", pattern.trigger, completion_suffix));
+        }
     }
 
     prompt.push_str("\n");
 
-    // Minimal context
+    // Context (minimal to keep prompt short)
     if !cwd.is_empty() {
-        prompt.push_str(&format!("# cwd: {}\n", cwd));
+        prompt.push_str(&format!("Working directory: {}\n", cwd));
     }
 
-    // The actual completion request
-    prompt.push_str(&format!("{} ->", text));
+    // The actual completion request - use same arrow format as examples
+    prompt.push_str(&format!("{} ->", text.trim()));
 
     prompt
 }
@@ -192,8 +197,8 @@ mod tests {
         let prompt = build_prompt(&context, "git ");
         // Should include learned pattern as example
         assert!(prompt.contains("git st -> atus") || prompt.contains("git st ->"));
-        // Should end with arrow format
-        assert!(prompt.contains("git  ->"));
+        // Should end with arrow format (trimmed)
+        assert!(prompt.contains("git ->"));
     }
 
     #[test]

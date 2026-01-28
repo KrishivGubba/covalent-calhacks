@@ -6,7 +6,8 @@
       "Bash(npm run tauri:*)",
       "Bash(sed:*)",
       "Bash(cargo build:*)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(find:*)"
     ],
     "deny": []
   }

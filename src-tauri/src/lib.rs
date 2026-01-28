@@ -493,12 +493,17 @@ pub fn run() {
                     // Tauri windows which require main thread execution.
                     let window_manager_accept = window_manager.clone();
                     let app_handle_for_accept = app.handle().clone();
+                    let trigger_for_accept = trigger.clone();
                     hotkey_handler.set_accept_callback(move |text, chars_to_erase| {
                         println!("✅ Accepting completion via hotkey (erasing {} chars first)", chars_to_erase);
                         // Inject the text with backspace for any chars typed during grace period
                         if let Err(e) = tab_completion::injector::inject_with_backspace(text.clone(), chars_to_erase) {
                             eprintln!("⚠️  Failed to inject text: {}", e);
                         }
+
+                        // Update the trigger's buffer with the accepted text and re-trigger prediction
+                        trigger_for_accept.append_to_buffer(text.clone());
+
                         // Hide all completion windows - must run on main thread
                         let wm = window_manager_accept.clone();
                         let _ = app_handle_for_accept.run_on_main_thread(move || {
