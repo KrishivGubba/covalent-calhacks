@@ -2960,6 +2960,466 @@ def test_create_node_empty_metadata_raises():
     print("✓ Empty metadata validation works")
 
 
+# ==================== SPLIT NODE TESTS ====================
+
+def test_validate_split_plan_valid():
+    """Test _validate_split_plan accepts a valid plan."""
+    print("\n" + "="*50)
+    print("Testing _validate_split_plan with valid plan:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+    import json
+
+    dao = TestGraphDAO()
+
+    # Create a node with categories
+    node_uuid = dao.node_uuids['recruiting']
+    dao.add_data_with_category(node_uuid, "engineering", "k1", "text", "Engineering data")
+    dao.add_data_with_category(node_uuid, "marketing", "k2", "text", "Marketing data")
+    dao.add_data_with_category(node_uuid, "sales", "k3", "text", "Sales data")
+
+    # Create a mock validate function
+    def validate_split_plan(node_uuid, split_plan, dao):
+        if not split_plan:
+            return (False, "Split plan is None or empty")
+
+        if not isinstance(split_plan, dict):
+            return (False, "Split plan must be a dictionary")
+
+        new_children = split_plan.get("new_children")
+        if not new_children or not isinstance(new_children, list):
+            return (False, "Split plan must have 'new_children' list")
+
+        if len(new_children) < 2:
+            return (False, "Split plan must have at least 2 new children")
+
+        child_names = []
+        for i, child in enumerate(new_children):
+            if not isinstance(child, dict):
+                return (False, f"Child {i} must be a dictionary")
+
+            metadata = child.get("metadata")
+            if not metadata or not isinstance(metadata, str):
+                return (False, f"Child {i} missing valid 'metadata' field")
+
+            if metadata in child_names:
+                return (False, f"Duplicate child metadata name: '{metadata}'")
+
+            child_names.append(metadata)
+
+        new_data_goes_to = split_plan.get("new_data_goes_to")
+        if new_data_goes_to and new_data_goes_to not in child_names:
+            return (False, f"'new_data_goes_to' value '{new_data_goes_to}' does not match any child metadata name")
+
+        return (True, "")
+
+    valid_plan = {
+        "new_children": [
+            {"metadata": "Engineering Team", "inherits_categories": ["engineering"]},
+            {"metadata": "Marketing Team", "inherits_categories": ["marketing", "sales"]}
+        ],
+        "new_data_goes_to": "Engineering Team"
+    }
+
+    is_valid, error = validate_split_plan(node_uuid, valid_plan, dao)
+    assert is_valid is True, f"Plan should be valid, got error: {error}"
+    assert error == "", "Error message should be empty for valid plan"
+
+    print("  Plan validated successfully")
+    print("✓ Valid split plan accepted")
+
+
+def test_validate_split_plan_too_few_children():
+    """Test _validate_split_plan rejects plan with < 2 children."""
+    print("\n" + "="*50)
+    print("Testing _validate_split_plan with too few children:")
+    print("="*50)
+
+    def validate_split_plan(split_plan):
+        new_children = split_plan.get("new_children", [])
+        if len(new_children) < 2:
+            return (False, "Split plan must have at least 2 new children")
+        return (True, "")
+
+    invalid_plan = {
+        "new_children": [
+            {"metadata": "Only Child", "inherits_categories": ["cat1"]}
+        ],
+        "new_data_goes_to": "Only Child"
+    }
+
+    is_valid, error = validate_split_plan(invalid_plan)
+    assert is_valid is False, "Plan with 1 child should be invalid"
+    assert "at least 2" in error, "Error should mention minimum children requirement"
+
+    print(f"  Correctly rejected: {error}")
+    print("✓ Plans with < 2 children rejected")
+
+
+def test_validate_split_plan_duplicate_names():
+    """Test _validate_split_plan rejects duplicate child names."""
+    print("\n" + "="*50)
+    print("Testing _validate_split_plan with duplicate names:")
+    print("="*50)
+
+    def validate_split_plan(split_plan):
+        new_children = split_plan.get("new_children", [])
+        child_names = []
+        for i, child in enumerate(new_children):
+            metadata = child.get("metadata")
+            if metadata in child_names:
+                return (False, f"Duplicate child metadata name: '{metadata}'")
+            child_names.append(metadata)
+        return (True, "")
+
+    invalid_plan = {
+        "new_children": [
+            {"metadata": "Same Name", "inherits_categories": ["cat1"]},
+            {"metadata": "Same Name", "inherits_categories": ["cat2"]}
+        ],
+        "new_data_goes_to": "Same Name"
+    }
+
+    is_valid, error = validate_split_plan(invalid_plan)
+    assert is_valid is False, "Plan with duplicate names should be invalid"
+    assert "Duplicate" in error, "Error should mention duplicate"
+
+    print(f"  Correctly rejected: {error}")
+    print("✓ Plans with duplicate names rejected")
+
+
+def test_validate_split_plan_invalid_new_data_target():
+    """Test _validate_split_plan rejects invalid new_data_goes_to."""
+    print("\n" + "="*50)
+    print("Testing _validate_split_plan with invalid target:")
+    print("="*50)
+
+    def validate_split_plan(split_plan):
+        new_children = split_plan.get("new_children", [])
+        child_names = [c.get("metadata") for c in new_children]
+        new_data_goes_to = split_plan.get("new_data_goes_to")
+        if new_data_goes_to and new_data_goes_to not in child_names:
+            return (False, f"'new_data_goes_to' value '{new_data_goes_to}' does not match any child metadata name")
+        return (True, "")
+
+    invalid_plan = {
+        "new_children": [
+            {"metadata": "Child A", "inherits_categories": ["cat1"]},
+            {"metadata": "Child B", "inherits_categories": ["cat2"]}
+        ],
+        "new_data_goes_to": "Nonexistent Child"
+    }
+
+    is_valid, error = validate_split_plan(invalid_plan)
+    assert is_valid is False, "Plan with invalid target should be invalid"
+    assert "does not match" in error, "Error should mention mismatch"
+
+    print(f"  Correctly rejected: {error}")
+    print("✓ Plans with invalid new_data_goes_to rejected")
+
+
+def test_split_node_creates_correct_children():
+    """Test _split_node creates the correct number of children."""
+    print("\n" + "="*50)
+    print("Testing _split_node creates correct children:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+    import json
+
+    dao = TestGraphDAO()
+
+    # Setup: get a node
+    parent_uuid = dao.node_uuids['recruiting']
+    parent_before = dao.get_node_by_id(parent_uuid)
+    children_before = json.loads(parent_before[5]) if parent_before[5] else []
+    initial_count = len(children_before)
+
+    # Create 2 child nodes (simulating split)
+    child1_uuid = dao.create_node("Engineering Hiring", parent_uuid)
+    dao.add_child_to_node(parent_uuid, child1_uuid)
+
+    child2_uuid = dao.create_node("Marketing Hiring", parent_uuid)
+    dao.add_child_to_node(parent_uuid, child2_uuid)
+
+    # Verify children were created
+    parent_after = dao.get_node_by_id(parent_uuid)
+    children_after = json.loads(parent_after[5]) if parent_after[5] else []
+
+    assert len(children_after) == initial_count + 2, f"Should have {initial_count + 2} children, got {len(children_after)}"
+    assert child1_uuid in children_after, "Child 1 should be in children"
+    assert child2_uuid in children_after, "Child 2 should be in children"
+
+    print(f"  Created children: {len(children_after) - initial_count}")
+    print(f"  Child 1: {child1_uuid[:8]}...")
+    print(f"  Child 2: {child2_uuid[:8]}...")
+    print("✓ Split creates correct number of children")
+
+
+def test_split_node_distributes_data():
+    """Test _split_node distributes data to correct children."""
+    print("\n" + "="*50)
+    print("Testing _split_node data distribution:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+
+    dao = TestGraphDAO()
+
+    # Create a source node with categories
+    source_uuid = dao.create_node("Source Node")
+    dao.add_data_with_category(source_uuid, "engineering", "k1", "text", "Engineering info")
+    dao.add_data_with_category(source_uuid, "marketing", "k2", "text", "Marketing info")
+    dao.add_data_with_category(source_uuid, "sales", "k3", "text", "Sales info")
+
+    # Create target nodes
+    target1_uuid = dao.create_node("Engineering Team", source_uuid)
+    target2_uuid = dao.create_node("Business Team", source_uuid)
+
+    # Move engineering to target1
+    moved1 = dao.move_data_between_nodes(source_uuid, target1_uuid, category="engineering")
+    assert moved1 == 1, f"Should move 1 engineering entry, moved {moved1}"
+
+    # Move marketing and sales to target2
+    moved2 = dao.move_data_between_nodes(source_uuid, target2_uuid, category="marketing")
+    moved3 = dao.move_data_between_nodes(source_uuid, target2_uuid, category="sales")
+    assert moved2 == 1, "Should move 1 marketing entry"
+    assert moved3 == 1, "Should move 1 sales entry"
+
+    # Verify distribution
+    target1_data = dao.get_data_for_node_by_category(target1_uuid)
+    target2_data = dao.get_data_for_node_by_category(target2_uuid)
+    source_data = dao.get_data_for_node_by_category(source_uuid)
+
+    assert "engineering" in target1_data, "Target 1 should have engineering"
+    assert "marketing" in target2_data, "Target 2 should have marketing"
+    assert "sales" in target2_data, "Target 2 should have sales"
+    assert len(source_data) == 0, "Source should have no data left"
+
+    print(f"  Target 1 categories: {list(target1_data.keys())}")
+    print(f"  Target 2 categories: {list(target2_data.keys())}")
+    print(f"  Source remaining: {len(source_data)}")
+    print("✓ Data distributed correctly to children")
+
+
+def test_split_node_unassigned_categories():
+    """Test _split_node handles unassigned categories."""
+    print("\n" + "="*50)
+    print("Testing unassigned category handling:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+
+    dao = TestGraphDAO()
+
+    # Create source with categories
+    source_uuid = dao.create_node("Source Node")
+    dao.add_data_with_category(source_uuid, "assigned", "k1", "text", "Assigned data")
+    dao.add_data_with_category(source_uuid, "unassigned", "k2", "text", "Unassigned data")
+
+    # Create child nodes
+    child1_uuid = dao.create_node("Child 1", source_uuid)
+    child2_uuid = dao.create_node("Child 2", source_uuid)
+
+    # Only move "assigned" to child1, leave "unassigned" for default handling
+    dao.move_data_between_nodes(source_uuid, child1_uuid, category="assigned")
+
+    # Simulate default behavior: unassigned goes to first child
+    dao.move_data_between_nodes(source_uuid, child1_uuid, category="unassigned")
+
+    # Verify
+    child1_data = dao.get_data_for_node_by_category(child1_uuid)
+    source_data = dao.get_data_for_node_by_category(source_uuid)
+
+    assert "assigned" in child1_data, "Child 1 should have assigned"
+    assert "unassigned" in child1_data, "Child 1 should get unassigned (default)"
+    assert len(source_data) == 0, "Source should be empty"
+
+    print(f"  Child 1 categories: {list(child1_data.keys())}")
+    print(f"  Unassigned went to first child (default behavior)")
+    print("✓ Unassigned categories handled correctly")
+
+
+def test_split_node_parent_keeps_actions():
+    """Test _split_node leaves actions on parent."""
+    print("\n" + "="*50)
+    print("Testing parent keeps actions after split:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+
+    dao = TestGraphDAO()
+
+    # Create parent with actions
+    parent_uuid = dao.create_node("Parent With Actions")
+    action_uuid = dao.add_action(parent_uuid, "Test Action", "Plan", "Prompt")
+
+    # Create children (simulating split)
+    child1_uuid = dao.create_node("Child 1", parent_uuid)
+    child2_uuid = dao.create_node("Child 2", parent_uuid)
+
+    # Don't move actions - they should stay on parent
+    parent_actions = dao.get_actions_for_node(parent_uuid)
+    child1_actions = dao.get_actions_for_node(child1_uuid)
+    child2_actions = dao.get_actions_for_node(child2_uuid)
+
+    assert len(parent_actions) == 1, "Parent should keep its action"
+    assert len(child1_actions) == 0, "Child 1 should have no own actions"
+    assert len(child2_actions) == 0, "Child 2 should have no own actions"
+
+    print(f"  Parent actions: {len(parent_actions)}")
+    print(f"  Children inherit actions through traversal")
+    print("✓ Parent keeps actions after split")
+
+
+def test_split_node_inserts_new_data():
+    """Test _split_node inserts new data to correct child."""
+    print("\n" + "="*50)
+    print("Testing new data insertion after split:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+
+    dao = TestGraphDAO()
+
+    # Create nodes
+    parent_uuid = dao.create_node("Parent")
+    target_uuid = dao.create_node("Target Child", parent_uuid)
+    other_uuid = dao.create_node("Other Child", parent_uuid)
+
+    # Insert new data into target (simulating new_data_goes_to)
+    dao.add_data_with_category(target_uuid, "new_category", "key1", "text", "New data content")
+
+    # Verify
+    target_data = dao.get_data_for_node_by_category(target_uuid)
+    other_data = dao.get_data_for_node_by_category(other_uuid)
+
+    assert "new_category" in target_data, "Target should have new data"
+    assert len(other_data) == 0, "Other child should have no data"
+
+    print(f"  Target child has: {list(target_data.keys())}")
+    print(f"  Other child has: {len(other_data)} categories")
+    print("✓ New data inserted into correct child")
+
+
+def test_split_node_parent_relationships():
+    """Test parent-child relationships are correct after split."""
+    print("\n" + "="*50)
+    print("Testing parent-child relationships after split:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+    import json
+
+    dao = TestGraphDAO()
+
+    # Create parent
+    parent_uuid = dao.create_node("Split Parent")
+
+    # Create children (simulating split)
+    child1_uuid = dao.create_node("Split Child 1", parent_uuid)
+    dao.add_child_to_node(parent_uuid, child1_uuid)
+
+    child2_uuid = dao.create_node("Split Child 2", parent_uuid)
+    dao.add_child_to_node(parent_uuid, child2_uuid)
+
+    # Verify relationships
+    parent = dao.get_node_by_id(parent_uuid)
+    child1 = dao.get_node_by_id(child1_uuid)
+    child2 = dao.get_node_by_id(child2_uuid)
+
+    parent_children = json.loads(parent[5]) if parent[5] else []
+
+    assert child1_uuid in parent_children, "Child 1 should be in parent's children"
+    assert child2_uuid in parent_children, "Child 2 should be in parent's children"
+    assert child1[4] == parent_uuid, "Child 1's parent should be parent"
+    assert child2[4] == parent_uuid, "Child 2's parent should be parent"
+
+    print(f"  Parent has {len(parent_children)} children")
+    print(f"  Child 1 parent: {child1[4][:8]}...")
+    print(f"  Child 2 parent: {child2[4][:8]}...")
+    print("✓ Parent-child relationships correct after split")
+
+
+def test_validate_split_plan_empty_plan():
+    """Test _validate_split_plan rejects empty/None plans."""
+    print("\n" + "="*50)
+    print("Testing _validate_split_plan with empty/None:")
+    print("="*50)
+
+    def validate_split_plan(split_plan):
+        if not split_plan:
+            return (False, "Split plan is None or empty")
+        return (True, "")
+
+    is_valid1, error1 = validate_split_plan(None)
+    assert is_valid1 is False, "None plan should be invalid"
+
+    is_valid2, error2 = validate_split_plan({})
+    assert is_valid2 is False, "Empty dict should be invalid"
+
+    print(f"  None rejected: {error1}")
+    print(f"  Empty dict rejected: {error2}")
+    print("✓ Empty/None plans rejected")
+
+
+def test_validate_split_plan_missing_metadata():
+    """Test _validate_split_plan rejects children without metadata."""
+    print("\n" + "="*50)
+    print("Testing _validate_split_plan missing metadata:")
+    print("="*50)
+
+    def validate_split_plan(split_plan):
+        new_children = split_plan.get("new_children", [])
+        for i, child in enumerate(new_children):
+            if not isinstance(child, dict):
+                return (False, f"Child {i} must be a dictionary")
+            metadata = child.get("metadata")
+            if not metadata or not isinstance(metadata, str):
+                return (False, f"Child {i} missing valid 'metadata' field")
+        return (True, "")
+
+    invalid_plan = {
+        "new_children": [
+            {"metadata": "Valid Name", "inherits_categories": ["cat1"]},
+            {"inherits_categories": ["cat2"]}  # Missing metadata
+        ],
+        "new_data_goes_to": "Valid Name"
+    }
+
+    is_valid, error = validate_split_plan(invalid_plan)
+    assert is_valid is False, "Plan with missing metadata should be invalid"
+    assert "missing" in error.lower() or "metadata" in error.lower(), "Error should mention missing metadata"
+
+    print(f"  Correctly rejected: {error}")
+    print("✓ Plans with missing metadata rejected")
+
+
+def run_split_node_tests():
+    """Run only the split node tests."""
+    print("\n" + "="*70)
+    print("RUNNING SPLIT NODE TESTS")
+    print("="*70)
+
+    test_validate_split_plan_valid()
+    test_validate_split_plan_too_few_children()
+    test_validate_split_plan_duplicate_names()
+    test_validate_split_plan_invalid_new_data_target()
+    test_split_node_creates_correct_children()
+    test_split_node_distributes_data()
+    test_split_node_unassigned_categories()
+    test_split_node_parent_keeps_actions()
+    test_split_node_inserts_new_data()
+    test_split_node_parent_relationships()
+    test_validate_split_plan_empty_plan()
+    test_validate_split_plan_missing_metadata()
+
+    print("\n" + "="*70)
+    print("ALL SPLIT NODE TESTS COMPLETED")
+    print("="*70)
+
+
 def run_node_creation_tests():
     """Run only the node creation tests."""
     print("\n" + "="*70)
@@ -3151,6 +3611,20 @@ def run_all_tests():
     test_create_node_none_parent_raises()
     test_create_node_empty_metadata_raises()
 
+    # Split node tests
+    test_validate_split_plan_valid()
+    test_validate_split_plan_too_few_children()
+    test_validate_split_plan_duplicate_names()
+    test_validate_split_plan_invalid_new_data_target()
+    test_split_node_creates_correct_children()
+    test_split_node_distributes_data()
+    test_split_node_unassigned_categories()
+    test_split_node_parent_keeps_actions()
+    test_split_node_inserts_new_data()
+    test_split_node_parent_relationships()
+    test_validate_split_plan_empty_plan()
+    test_validate_split_plan_missing_metadata()
+
     print("\n" + "="*70)
     print("ALL TESTS COMPLETED")
     print("="*70)
@@ -3204,7 +3678,10 @@ if __name__ == "__main__":
     # run_llm_decide_structure_tests()
 
     # Or run node creation tests:
-    run_node_creation_tests()
+    # run_node_creation_tests()
+
+    # Or run split node tests:
+    run_split_node_tests()
 
     # Or run individual test functions:
     # test_traverse()

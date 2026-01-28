@@ -1411,6 +1411,282 @@ Return ONLY a JSON object:
 
         return new_node
 
+    # ==================== NODE SPLIT METHODS ====================
+
+    def _validate_split_plan(self, node: 'Node', split_plan: dict) -> Tuple[bool, str]:
+        """
+        Validate a split plan before executing it.
+
+        Args:
+            node: The node to be split
+            split_plan: Plan with structure:
+                {
+                    "new_children": [
+                        {"metadata": "Child 1 Name", "inherits_categories": ["cat1", "cat2"]},
+                        {"metadata": "Child 2 Name", "inherits_categories": ["cat3"]}
+                    ],
+                    "new_data_goes_to": "Child 1 Name"
+                }
+
+        Returns:
+            Tuple of (is_valid, error_message)
+            - (True, "") if valid
+            - (False, "error message") if invalid
+        """
+        if not split_plan:
+            return (False, "Split plan is None or empty")
+
+        if not isinstance(split_plan, dict):
+            return (False, "Split plan must be a dictionary")
+
+        # Check for new_children
+        new_children = split_plan.get("new_children")
+        if not new_children:
+            return (False, "Split plan must have 'new_children' list")
+
+        if not isinstance(new_children, list):
+            return (False, "'new_children' must be a list")
+
+        if len(new_children) < 2:
+            return (False, "Split plan must have at least 2 new children")
+
+        # Validate each child has metadata
+        child_names = []
+        for i, child in enumerate(new_children):
+            if not isinstance(child, dict):
+                return (False, f"Child {i} must be a dictionary")
+
+            metadata = child.get("metadata")
+            if not metadata or not isinstance(metadata, str):
+                return (False, f"Child {i} missing valid 'metadata' field")
+
+            if metadata in child_names:
+                return (False, f"Duplicate child metadata name: '{metadata}'")
+
+            child_names.append(metadata)
+
+            # Validate inherits_categories is a list (can be empty)
+            inherits = child.get("inherits_categories")
+            if inherits is not None and not isinstance(inherits, list):
+                return (False, f"Child '{metadata}' has invalid 'inherits_categories' (must be list)")
+
+        # Check new_data_goes_to
+        new_data_goes_to = split_plan.get("new_data_goes_to")
+        if new_data_goes_to:
+            if new_data_goes_to not in child_names:
+                return (False, f"'new_data_goes_to' value '{new_data_goes_to}' does not match any child metadata name")
+
+        # Get existing categories in the node
+        try:
+            existing_categories = self.dao.get_categories_for_node(node.node_uuid)
+        except Exception as e:
+            return (False, f"Failed to get node categories: {e}")
+
+        # Validate that inherits_categories reference existing categories (warning only)
+        all_inherited_categories = set()
+        for child in new_children:
+            inherits = child.get("inherits_categories", [])
+            for cat in inherits:
+                if cat not in existing_categories:
+                    print(f"⚠️ Warning: Category '{cat}' in split plan does not exist in node (will be ignored)")
+                all_inherited_categories.add(cat)
+
+        # Check for overlapping categories (warning only)
+        category_assignments = {}
+        for child in new_children:
+            child_name = child.get("metadata")
+            inherits = child.get("inherits_categories", [])
+            for cat in inherits:
+                if cat in category_assignments:
+                    print(f"⚠️ Warning: Category '{cat}' is assigned to multiple children: '{category_assignments[cat]}' and '{child_name}'")
+                else:
+                    category_assignments[cat] = child_name
+
+        # Check for unassigned categories (warning only)
+        unassigned = set(existing_categories) - all_inherited_categories
+        if unassigned:
+            print(f"⚠️ Warning: Categories not assigned to any child (will stay on parent or go to first child): {unassigned}")
+
+        return (True, "")
+
+    def _split_node(self, node: 'Node', split_plan: dict, new_summary: str = None, new_data: str = None) -> List['Node']:
+        """
+        Split a node into multiple children based on the plan.
+
+        Args:
+            node: The node to split
+            split_plan: Plan from LLM with structure:
+                {
+                    "new_children": [
+                        {"metadata": "Child 1 Name", "inherits_categories": ["cat1", "cat2"]},
+                        {"metadata": "Child 2 Name", "inherits_categories": ["cat3"]}
+                    ],
+                    "new_data_goes_to": "Child 1 Name"
+                }
+            new_summary: Optional - summary of new data that triggered the split
+            new_data: Optional - new data to insert after split
+
+        Returns:
+            List of newly created Node objects
+
+        Raises:
+            ValueError: If split plan is invalid
+            RuntimeError: If split operation fails
+        """
+        print(f"\n{'='*60}")
+        print(f"SPLIT NODE - Splitting '{node.metadata}'")
+        print(f"{'='*60}")
+
+        # 1. Validate the split plan
+        is_valid, error_msg = self._validate_split_plan(node, split_plan)
+        if not is_valid:
+            raise ValueError(f"Invalid split plan: {error_msg}")
+
+        new_children_plan = split_plan.get("new_children", [])
+        new_data_goes_to = split_plan.get("new_data_goes_to")
+
+        print(f"📋 Split plan validated: {len(new_children_plan)} new children")
+        for child in new_children_plan:
+            print(f"   - {child['metadata']}: inherits {child.get('inherits_categories', [])}")
+        if new_data_goes_to:
+            print(f"   New data goes to: '{new_data_goes_to}'")
+
+        # 2. Get existing data before making changes
+        try:
+            existing_data = self.dao.get_data_for_node_by_category(node.node_uuid)
+        except Exception as e:
+            raise RuntimeError(f"Failed to get existing data: {e}")
+
+        existing_categories = list(existing_data.keys()) if existing_data else []
+        total_entries = sum(len(entries) for entries in existing_data.values()) if existing_data else 0
+        print(f"📊 Existing data: {total_entries} entries across {len(existing_categories)} categories")
+
+        # 3. Get existing actions (they stay on parent - children inherit them)
+        try:
+            existing_actions = self.dao.get_actions_for_node(node.node_uuid)
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to get existing actions: {e}")
+            existing_actions = []
+
+        print(f"📋 Existing actions: {len(existing_actions)} (will remain on parent)")
+
+        # 4. Create each new child node
+        created_nodes = []
+        name_to_node = {}  # Map metadata name to Node for easy lookup
+
+        try:
+            for child_plan in new_children_plan:
+                child_metadata = child_plan["metadata"]
+                print(f"\n🌱 Creating child node: '{child_metadata}'")
+
+                # Create child without data - we'll move data after
+                new_node = self._create_child_node(node, child_metadata)
+                created_nodes.append(new_node)
+                name_to_node[child_metadata] = new_node
+
+                print(f"   ✅ Created with UUID: {new_node.node_uuid[:8]}...")
+
+        except Exception as e:
+            # Rollback: delete any created nodes
+            print(f"❌ Error creating child nodes: {e}")
+            for created_node in created_nodes:
+                try:
+                    self.dao.delete_node(created_node.node_uuid, cascade=True)
+                    if created_node.node_uuid in self.nodes:
+                        del self.nodes[created_node.node_uuid]
+                    if created_node in node.children:
+                        node.children.remove(created_node)
+                except Exception as del_e:
+                    print(f"   ⚠️ Failed to rollback node: {del_e}")
+            raise RuntimeError(f"Failed to create child nodes: {e}")
+
+        # 5. Distribute data to children based on category assignments
+        print(f"\n📦 Distributing data to children...")
+
+        # Build category -> child mapping
+        category_to_child = {}
+        for child_plan in new_children_plan:
+            child_metadata = child_plan["metadata"]
+            for cat in child_plan.get("inherits_categories", []):
+                if cat in existing_categories:
+                    category_to_child[cat] = name_to_node[child_metadata]
+
+        # Determine first child for unassigned categories
+        first_child = created_nodes[0] if created_nodes else None
+
+        # Move data by category
+        categories_moved = 0
+        entries_moved = 0
+
+        for category in existing_categories:
+            target_node = category_to_child.get(category)
+
+            if target_node is None:
+                # Category not assigned - move to first child
+                target_node = first_child
+                print(f"   ⚠️ Category '{category}' not assigned, moving to first child '{first_child.metadata if first_child else 'N/A'}'")
+
+            if target_node:
+                try:
+                    count = self.dao.move_data_between_nodes(
+                        node.node_uuid,
+                        target_node.node_uuid,
+                        category=category
+                    )
+                    if count > 0:
+                        entries_moved += count
+                        categories_moved += 1
+                        print(f"   ✅ Moved {count} entries from category '{category}' to '{target_node.metadata}'")
+                except Exception as e:
+                    print(f"   ⚠️ Failed to move category '{category}': {e}")
+
+        print(f"📊 Moved {entries_moved} entries across {categories_moved} categories")
+
+        # 6. Insert new data if provided
+        target_child = None
+        if new_data_goes_to and new_data_goes_to in name_to_node:
+            target_child = name_to_node[new_data_goes_to]
+        elif created_nodes:
+            target_child = created_nodes[0]  # Default to first child
+
+        if new_summary and new_data and target_child:
+            print(f"\n📝 Inserting new data into '{target_child.metadata}'...")
+            try:
+                self._insert_data_to_node(target_child, new_summary, new_data)
+                print(f"   ✅ New data inserted")
+            except Exception as e:
+                print(f"   ⚠️ Failed to insert new data: {e}")
+
+        # 7. Clean up parent node
+        # Data should now be moved - verify parent is empty
+        remaining_data = self.dao.get_data_for_node_by_category(node.node_uuid)
+        remaining_count = sum(len(entries) for entries in remaining_data.values()) if remaining_data else 0
+
+        if remaining_count > 0:
+            print(f"\n⚠️ Parent node still has {remaining_count} data entries (unassigned categories)")
+        else:
+            print(f"\n✅ Parent node '{node.metadata}' now has no data (organizational node)")
+
+        print(f"📋 Parent keeps {len(existing_actions)} actions (children inherit them)")
+
+        # 8. Refresh embeddings for all new children
+        print(f"\n🔄 Refreshing embeddings...")
+        for child_node in created_nodes:
+            self._refresh_node_embedding(child_node)
+
+        # Optionally refresh parent embedding too
+        self._refresh_node_embedding(node)
+
+        print(f"\n{'='*60}")
+        print(f"SPLIT COMPLETE - Created {len(created_nodes)} children under '{node.metadata}'")
+        for child_node in created_nodes:
+            child_data = self.dao.get_data_for_node_by_category(child_node.node_uuid)
+            child_entries = sum(len(entries) for entries in child_data.values()) if child_data else 0
+            print(f"   - {child_node.metadata}: {child_entries} entries")
+        print(f"{'='*60}\n")
+
+        return created_nodes
+
     def _generate_learning_prompt(self, node, summary, existing_actions, existing_categories):
         """
         Generate a prompt for the LLM to decide on action and data insertion.
