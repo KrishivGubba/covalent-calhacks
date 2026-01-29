@@ -53,6 +53,15 @@ fn build_terminal_prompt(shell: &str, cwd: &str, text: &str, context: &CachedCon
     prompt.push_str("You are a terminal autocomplete. Complete the partial command.\n");
     prompt.push_str("Rules: Output ONLY the missing characters. No explanations. No quotes.\n\n");
 
+    // Add context chain if available (recent workflow context)
+    if let Some(ref chain) = context.context_chain {
+        if !chain.chain_summary.is_empty() {
+            prompt.push_str("Recent context:\n");
+            prompt.push_str(&chain.chain_summary);
+            prompt.push_str("\n");
+        }
+    }
+
     // Few-shot examples showing the exact format
     prompt.push_str("Examples:\n");
     prompt.push_str("git st -> atus\n");
@@ -92,6 +101,15 @@ fn build_code_prompt(language: &str, _file_type: &str, text: &str, context: &Cac
     // For code, use a completion-focused format
     prompt.push_str(&format!("Complete this {} code. Output ONLY the completion.\n\n", language));
 
+    // Add context chain if available (recent workflow context)
+    if let Some(ref chain) = context.context_chain {
+        if !chain.chain_summary.is_empty() && chain.chain_length > 1 {
+            prompt.push_str("Recent context:\n");
+            prompt.push_str(&chain.chain_summary);
+            prompt.push_str("\n");
+        }
+    }
+
     // Add screen context if available (surrounding code)
     if let Some(ref screen_text) = context.screen_context {
         if !screen_text.is_empty() {
@@ -112,10 +130,19 @@ fn build_code_prompt(language: &str, _file_type: &str, text: &str, context: &Cac
 }
 
 /// Build prompt for general text completion
-fn build_text_prompt(app_context: &str, text: &str, context: &CachedContext) -> String {
+fn build_text_prompt(_app_context: &str, text: &str, context: &CachedContext) -> String {
     let mut prompt = String::new();
 
     prompt.push_str("Complete this text naturally. Output ONLY the completion, no explanations.\n\n");
+
+    // Add context chain if available (recent workflow context)
+    if let Some(ref chain) = context.context_chain {
+        if !chain.chain_summary.is_empty() && chain.chain_length > 1 {
+            prompt.push_str("Recent context:\n");
+            prompt.push_str(&chain.chain_summary);
+            prompt.push_str("\n");
+        }
+    }
 
     // Add screen context if available
     if let Some(ref screen_text) = context.screen_context {
@@ -157,6 +184,7 @@ mod tests {
             screen_context: None,
             timestamp: current_timestamp(),
             ttl: 300,
+            context_chain: None,
         };
 
         let prompt = build_prompt(&context, "git co");
@@ -192,6 +220,7 @@ mod tests {
             screen_context: None,
             timestamp: current_timestamp(),
             ttl: 300,
+            context_chain: None,
         };
 
         let prompt = build_prompt(&context, "git ");
@@ -228,6 +257,7 @@ mod tests {
             screen_context: Some("fn main() {\n    let x = ".to_string()),
             timestamp: current_timestamp(),
             ttl: 300,
+            context_chain: None,
         };
 
         let prompt = build_prompt(&context, "Vec::new");

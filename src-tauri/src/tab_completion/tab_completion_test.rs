@@ -161,6 +161,7 @@ mod prompt_tests {
             screen_context: None,
             timestamp: current_timestamp(),
             ttl: 120,
+            context_chain: None,
         };
 
         let prompt = build_prompt(&context, "The key innovation is");
@@ -185,8 +186,9 @@ mod prompt_tests {
             screen_context: None,
             timestamp: current_timestamp(),
             ttl: 120,
+            context_chain: None,
         };
-        
+
         let prompt = build_prompt(&context, "Hey, can you");
         assert!(prompt.contains("WhatsApp"));
         assert!(prompt.contains("Hey, can you"));
@@ -209,8 +211,9 @@ mod prompt_tests {
             screen_context: None,
             timestamp: current_timestamp(),
             ttl: 300,
+            context_chain: None,
         };
-        
+
         let prompt = build_prompt(&context, "fn main() {");
         assert!(prompt.contains("code"));
         assert!(prompt.contains("rust"));
@@ -254,8 +257,9 @@ mod prompt_tests {
             screen_context: None,
             timestamp: current_timestamp(),
             ttl: 180,
+            context_chain: None,
         };
-        
+
         let prompt = build_prompt(&context, "test text");
         assert!(prompt.contains("test text"));
     }
@@ -638,8 +642,9 @@ mod edge_case_tests {
             screen_context: None,
             timestamp: current_timestamp(),
             ttl: 300,
+            context_chain: None,
         };
-        
+
         let prompt = build_prompt(&context, "test");
         assert!(!prompt.is_empty());
     }
@@ -786,6 +791,7 @@ fn create_test_terminal_context() -> CachedContext {
         screen_context: None,
         timestamp: current_timestamp(),
         ttl: 300,
+        context_chain: None,
     }
 }
 

@@ -16,6 +16,24 @@ pub struct CachedContext {
     pub screen_context: Option<String>, // OCR or visible text from screen
     pub timestamp: u64,
     pub ttl: u64,
+    /// Context chain information for tracking related contexts
+    #[serde(default)]
+    pub context_chain: Option<ContextChainInfo>,
+}
+
+/// Information about the current context chain for prompt inclusion
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ContextChainInfo {
+    /// Chain ID grouping related contexts
+    pub chain_id: String,
+    /// Formatted summary for prompt inclusion
+    pub chain_summary: String,
+    /// Brief descriptions of related contexts
+    pub related_contexts: Vec<String>,
+    /// Number of contexts in this chain
+    pub chain_length: usize,
+    /// Whether this is a new chain (antichain detected)
+    pub is_new_chain: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,6 +248,7 @@ impl MultiTierCache {
                         screen_context: None,
                         timestamp: current_timestamp(),
                         ttl: 300,
+                        context_chain: None,
                     });
                 }
                 Ok(_) => {
@@ -261,6 +280,7 @@ impl MultiTierCache {
                                 screen_context: None,
                                 timestamp: current_timestamp(),
                                 ttl: 300,
+                                context_chain: None,
                             });
                         }
                     }
@@ -285,6 +305,7 @@ impl MultiTierCache {
             screen_context: None,
             timestamp: current_timestamp(),
             ttl: 300,
+            context_chain: None,
         })
     }
     

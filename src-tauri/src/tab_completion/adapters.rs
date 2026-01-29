@@ -69,12 +69,13 @@ impl ContextExtractor for BrowserAdapter {
                     screen_context: None, // TODO: Add OCR/DOM text extraction
                     timestamp: current_timestamp(),
                     ttl: 120, // 2 minutes for browser (pages change fast)
+                    context_chain: None,
                 })
             }
             Ok(Err(_)) | Err(_) => {
                 // Fallback to basic context if ChromiumBridge fails
                 let page_type = classify_page_from_bundle(&app_ctx.bundle_id);
-                
+
                 Ok(CachedContext {
                     app_context: app_ctx.clone(),
                     activity_type: ActivityType::Browser {
@@ -86,6 +87,7 @@ impl ContextExtractor for BrowserAdapter {
                     screen_context: None,
                     timestamp: current_timestamp(),
                     ttl: 120,
+                    context_chain: None,
                 })
             }
         }
@@ -206,6 +208,7 @@ impl ContextExtractor for TerminalAdapter {
             screen_context: None,
             timestamp: current_timestamp(),
             ttl: 300, // 5 minutes (terminal context is stable)
+            context_chain: None,
         })
     }
     
@@ -249,6 +252,7 @@ impl ContextExtractor for NativeTextAdapter {
             screen_context: None,
             timestamp: current_timestamp(),
             ttl: 180, // 3 minutes
+            context_chain: None,
         })
     }
     
@@ -369,7 +373,7 @@ impl CodeAdapter {
 impl ContextExtractor for CodeAdapter {
     fn extract_context(&self, app_ctx: &AppContext) -> Result<CachedContext> {
         let (language, file_type) = self.detect_code_context(app_ctx);
-        
+
         Ok(CachedContext {
             app_context: app_ctx.clone(),
             activity_type: ActivityType::Code {
@@ -381,6 +385,7 @@ impl ContextExtractor for CodeAdapter {
             screen_context: None,
             timestamp: current_timestamp(),
             ttl: 240, // 4 minutes (code context is relatively stable)
+            context_chain: None,
         })
     }
     

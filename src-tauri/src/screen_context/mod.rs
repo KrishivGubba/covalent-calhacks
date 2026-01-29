@@ -22,6 +22,7 @@ pub mod activity_monitor;
 pub mod enhanced_context_collector;
 pub mod region_analyzer;
 pub mod llm_analyzer;
+pub mod context_memory;
 
 // Legacy modules (can be uncommented when ready to use)
 // pub mod capture;
@@ -44,3 +45,4 @@ pub use screen_capture::ScreenCapture;
 pub use chromium_bridge::{ChromiumBridge, DOMChangeAnalysis};
 pub use region_analyzer::{RegionAnalyzer, RegionChangeAnalysis};
 pub use llm_analyzer::{LLMAnalyzer, ContextAnalysisOutput};
+pub use context_memory::{ContextMemory, ContextSummary, ContextChainResult, ScoredContext, ChainStats, ChainDecision, AntichainReason};
