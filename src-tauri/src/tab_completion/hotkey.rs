@@ -104,11 +104,14 @@ impl HotkeyHandler {
                     let has_suggestion = handler.current_suggestion.lock().is_some();
 
                     if has_suggestion {
-                        // Check for Tab key (keycode 0x30)
-                        if keycode == 0x30 {
+                        // Check for Cmd+Tab (keycode 0x30 with Command flag)
+                        let flags = event.get_flags();
+                        let cmd_pressed = flags.contains(CGEventFlags::CGEventFlagCommand);
+
+                        if keycode == 0x30 && cmd_pressed {
                             if let Some(suggestion) = handler.current_suggestion.lock().clone() {
                                 let chars_to_erase = *handler.chars_typed_since_suggestion.lock();
-                                println!("✅ Tab pressed - accepting suggestion (erasing {} chars)", chars_to_erase);
+                                println!("✅ Cmd+Tab pressed - accepting suggestion (erasing {} chars)", chars_to_erase);
 
                                 // Call accept callback with suggestion and char count
                                 if let Some(ref callback) = *handler.accept_callback.lock() {
@@ -120,7 +123,7 @@ impl HotkeyHandler {
                                 *handler.suggestion_shown_at.lock() = None;
                                 *handler.chars_typed_since_suggestion.lock() = 0;
 
-                                // Suppress the Tab key event by returning None
+                                // Suppress the Cmd+Tab key event by returning None
                                 return None;
                             }
                         }
@@ -188,7 +191,7 @@ impl HotkeyHandler {
         // Enable the event tap
         event_tap.enable();
         
-        println!("✅ Hotkey listener started (Tab to accept, Esc to dismiss)");
+        println!("✅ Hotkey listener started (⌘+Tab to accept, Esc to dismiss)");
         
         // Run the event loop
         unsafe {

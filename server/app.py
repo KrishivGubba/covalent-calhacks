@@ -234,11 +234,17 @@ def tab_context():
         
         # Use tree.learn() to insert this context into the graph
         # This will find the right node and store the context there
-        action, action_id = tree.learn(summary, context_data, key=f"tab_context_{activity_id}")
-        
+        recent_actions = tree.learn(summary, context_data, key=f"tab_context_{activity_id}")
+
+        # Get the node_id from the first action if available
+        node_id = None
+        if recent_actions:
+            # Each action tuple is: (uuid, name, plan, prompt, node_uuid, last_selected)
+            node_id = str(recent_actions[0][4]) if recent_actions[0][4] else None
+
         return jsonify({
             "message": "Context updated successfully",
-            "node_id": action_id if action_id else None
+            "node_id": node_id
         }), 200
         
     except Exception as e:

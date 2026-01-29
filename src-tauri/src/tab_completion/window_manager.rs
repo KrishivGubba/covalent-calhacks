@@ -156,91 +156,60 @@ impl CompletionWindowManager {
         Ok(())
     }
     
-    /// Show completion popup window
+    /// Show completion popup as a separate window near the cursor
     fn show_popup(&self, suggestion: &CompletionSuggestion, cursor_pos: Option<CursorPosition>) -> Result<()> {
-        let window = match self.get_or_create_popup_window() {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("⚠️  Failed to get popup window: {}", e);
-                return Err(e);
-            }
-        };
+        // Get or create the popup window
+        let window = self.get_or_create_popup_window()?;
 
+        // Calculate position
         let popup_width = 500.0;
         let popup_height = 200.0;
         let (screen_width, screen_height) = self.get_screen_dimensions();
 
-        // Calculate final position with smart bounds handling
-        let (final_x, final_y) = if let Some(pos) = cursor_pos {
-            if pos.x >= 0.0 && pos.y >= 0.0 && pos.x < 10000.0 && pos.y < 10000.0 {
-                self.calculate_smart_position(pos, popup_width, popup_height, screen_width, screen_height)
-            } else {
-                // Invalid cursor position, use frontmost window fallback
-                self.get_frontmost_window_corner_position(popup_width, popup_height, screen_width, screen_height)
-            }
+        let (final_x, final_y) = if let Some(cursor) = cursor_pos {
+            self.calculate_smart_position(cursor, popup_width, popup_height, screen_width, screen_height)
         } else {
-            // No cursor position, use frontmost window fallback
             self.get_frontmost_window_corner_position(popup_width, popup_height, screen_width, screen_height)
         };
 
-        println!("📍 Positioning popup at ({:.0}, {:.0})", final_x, final_y);
-
+        // Position the window
         if let Err(e) = window.set_position(LogicalPosition::new(final_x, final_y)) {
-            eprintln!("⚠️  Failed to position popup window: {}, continuing anyway", e);
+            eprintln!("⚠️  Failed to position popup window: {}", e);
         }
-        
-        // Show window first
-        if let Err(e) = window.show() {
-            eprintln!("⚠️  Failed to show popup window: {}", e);
-            return Err(anyhow::anyhow!("Failed to show popup window: {}", e));
+
+        // Set window size
+        if let Err(e) = window.set_size(LogicalSize::new(popup_width, popup_height)) {
+            eprintln!("⚠️  Failed to set popup size: {}", e);
         }
-        
-        // Update popup content
+
+        // Build payload
         let payload = CompletionPopupPayload {
             text: suggestion.text.clone(),
             confidence: suggestion.confidence,
             cache_level: suggestion.cache_level.clone(),
         };
-        
-        // Emit immediately - with error handling to prevent crashes
-        match window.emit("update-completion-popup", &payload) {
-            Ok(_) => println!("✅ Emitted popup content"),
-            Err(e) => {
-                eprintln!("⚠️  Failed to emit popup content: {}", e);
-                // If initial emit fails, likely the window is broken - return error
-                return Err(anyhow::anyhow!("Failed to emit to popup window: {}", e));
-            }
+
+        // Use eval() to directly call the JavaScript function - more reliable than events
+        let js_payload = serde_json::to_string(&payload)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize payload: {}", e))?;
+        let js_code = format!("window.updatePopup({})", js_payload);
+
+        if let Err(e) = window.eval(&js_code) {
+            eprintln!("⚠️  Failed to eval popup update: {}", e);
+            return Err(anyhow::anyhow!("Failed to eval popup update: {}", e));
         }
-        
-        // Also emit after a small delay to ensure the window's JS is ready
-        // Spawn threads with error handling to prevent crashes
-        let window_clone = window.clone();
-        let payload_clone = payload.clone();
-        std::thread::Builder::new()
-            .name("popup-emit-delay-1".to_string())
-            .spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                if let Err(e) = window_clone.emit("update-completion-popup", &payload_clone) {
-                    eprintln!("⚠️  Delayed emit failed: {}", e);
-                }
-            })
-            .map_err(|e| eprintln!("⚠️  Failed to spawn delay thread: {}", e))
-            .ok();
-        
-        // And one more time after 150ms for good measure
-        let window_clone2 = window.clone();
-        let payload_clone2 = payload.clone();
-        std::thread::Builder::new()
-            .name("popup-emit-delay-2".to_string())
-            .spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(150));
-                if let Err(e) = window_clone2.emit("update-completion-popup", &payload_clone2) {
-                    eprintln!("⚠️  Delayed emit 2 failed: {}", e);
-                }
-            })
-            .map_err(|e| eprintln!("⚠️  Failed to spawn delay thread 2: {}", e))
-            .ok();
-        
+
+        // Show the window
+        if let Err(e) = window.show() {
+            eprintln!("⚠️  Failed to show popup window: {}", e);
+        }
+
+        // Make sure it's on top
+        if let Err(e) = window.set_always_on_top(true) {
+            eprintln!("⚠️  Failed to set always on top: {}", e);
+        }
+
+        println!("✅ Showed popup window at ({:.0}, {:.0})", final_x, final_y);
         Ok(())
     }
     
@@ -464,17 +433,16 @@ impl CompletionWindowManager {
     
     /// Hide all completion windows
     pub fn hide_all(&self) -> Result<()> {
-        // Hide ghost text
-        if let Some(window) = self.app_handle.get_webview_window("ghost-text") {
-            let _ = window.hide();
-            let _ = window.emit("hide-ghost-text", ());
-        }
-        
-        // Hide popup
+        // Hide the popup window if it exists
         if let Some(window) = self.app_handle.get_webview_window("completion-popup") {
             let _ = window.hide();
         }
-        
+
+        // Also hide ghost text window if it exists
+        if let Some(window) = self.app_handle.get_webview_window("ghost-text") {
+            let _ = window.hide();
+        }
+
         Ok(())
     }
     

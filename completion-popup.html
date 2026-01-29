@@ -97,18 +97,15 @@
         <span class="confidence" id="confidence">...</span>
       </div>
       
-      <div class="text" id="text"></div>
+      <div class="text" id="text">Loading...</div>
       
       <div class="hint">
-        <kbd class="kbd">Tab</kbd> to accept · <kbd class="kbd">Esc</kbd> to dismiss
+        <kbd class="kbd">⌘</kbd>+<kbd class="kbd">Tab</kbd> to accept · <kbd class="kbd">Esc</kbd> to dismiss
       </div>
     </div>
     
-    <script type="module">
-      const badgeTextEl = document.getElementById('badge-text');
-      const confidenceEl = document.getElementById('confidence');
-      const textEl = document.getElementById('text');
-
+    <script>
+      // Global function that Rust can call directly via window.eval()
       function getBadgeText(level) {
         switch (level) {
           case 'L0-exact':
@@ -124,88 +121,32 @@
         }
       }
 
-      function updatePopup(payload) {
-        console.log('📬 Popup received update:', payload);
+      // Global function - called from Rust via eval()
+      window.updatePopup = function(payload) {
+        console.log('📬 Popup received update:', JSON.stringify(payload));
         const { text, confidence, cache_level } = payload;
 
-        if (textEl && text) {
-          textEl.textContent = text;
+        const textEl = document.getElementById('text');
+        const confidenceEl = document.getElementById('confidence');
+        const badgeTextEl = document.getElementById('badge-text');
+
+        // Always update text, even if empty (shows we received something)
+        if (textEl) {
+          textEl.textContent = text || '(empty prediction)';
+          console.log('📝 Set text to:', text);
         }
 
-        if (confidenceEl && confidence !== undefined) {
-          const confPercent = Math.round(confidence * 100);
+        if (confidenceEl) {
+          const confPercent = confidence !== undefined ? Math.round(confidence * 100) : 0;
           confidenceEl.textContent = `${confPercent}% confident`;
         }
 
-        if (badgeTextEl && cache_level) {
-          badgeTextEl.textContent = getBadgeText(cache_level);
+        if (badgeTextEl) {
+          badgeTextEl.textContent = getBadgeText(cache_level || 'unknown');
         }
-      }
+      };
 
-      // Set up listener with retry logic for multiple methods
-      let listenerSet = false;
-      let retryCount = 0;
-      const MAX_RETRIES = 50;
-
-      async function setupListener() {
-        if (listenerSet || retryCount >= MAX_RETRIES) return;
-        retryCount++;
-
-        // Method 1: Try window.__TAURI_INTERNALS__ (Tauri 2.x)
-        if (!listenerSet && window.__TAURI_INTERNALS__) {
-          try {
-            const { listen } = await import('@tauri-apps/api/event');
-            await listen('update-completion-popup', (event) => {
-              updatePopup(event.payload);
-            });
-            console.log('✅ Popup listener ready (TAURI_INTERNALS)');
-            listenerSet = true;
-            return;
-          } catch (e) {
-            console.log('TAURI_INTERNALS method failed:', e.message);
-          }
-        }
-
-        // Method 2: Try window.__TAURI__ (older API)
-        if (!listenerSet && window.__TAURI__ && window.__TAURI__.event) {
-          try {
-            await window.__TAURI__.event.listen('update-completion-popup', (event) => {
-              updatePopup(event.payload);
-            });
-            console.log('✅ Popup listener ready (__TAURI__)');
-            listenerSet = true;
-            return;
-          } catch (e) {
-            console.log('__TAURI__ listener failed:', e.message);
-          }
-        }
-
-        // Method 3: Direct dynamic import
-        if (!listenerSet) {
-          try {
-            const { listen } = await import('@tauri-apps/api/event');
-            await listen('update-completion-popup', (event) => {
-              updatePopup(event.payload);
-            });
-            console.log('✅ Popup listener ready (dynamic import)');
-            listenerSet = true;
-            return;
-          } catch (e) {
-            console.log('Dynamic import failed:', e.message);
-          }
-        }
-
-        // Retry if not set
-        if (!listenerSet) {
-          setTimeout(setupListener, 100);
-        }
-      }
-
-      // Start setup immediately and on DOMContentLoaded
-      setupListener();
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', setupListener);
-      }
+      console.log('✅ Popup script loaded, updatePopup available globally');
     </script>
   </body>
 </html>

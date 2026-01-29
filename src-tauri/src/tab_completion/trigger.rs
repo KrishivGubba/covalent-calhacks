@@ -231,8 +231,29 @@ impl CompletionTrigger {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    eprintln!("⚠️  Keyboard event channel disconnected");
-                    return;
+                    eprintln!("⚠️  Keyboard event channel disconnected, attempting recovery...");
+
+                    // Drop the lock before trying to recreate
+                    drop(listener_guard);
+
+                    // Clear the old listener
+                    *self.keyboard_listener.lock() = None;
+
+                    // Try to create a new keyboard listener
+                    match MacOSKeyboardListener::new() {
+                        Ok(new_listener) => {
+                            eprintln!("✅ Keyboard listener recovered!");
+                            *self.keyboard_listener.lock() = Some(new_listener);
+                            // Small delay before retrying
+                            std::thread::sleep(Duration::from_millis(100));
+                            continue; // Try again with new listener
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to recover keyboard listener: {}", e);
+                            eprintln!("   Predictions will not work until app restart.");
+                            return; // Give up
+                        }
+                    }
                 }
             }
         }
@@ -757,7 +778,8 @@ impl CompletionTrigger {
             for ch in text.chars() {
                 buffer.append(ch);
             }
-            buffer.reset_prediction_counter();
+            // Don't reset prediction counter - we want the next keystroke to
+            // potentially trigger a prediction immediately, not wait for 3 chars
         }
 
         // Trigger a new prediction after a short delay
@@ -791,7 +813,12 @@ impl CompletionTrigger {
             );
         });
     }
-    
+
+    /// Get the last N characters from the buffer for overlap detection
+    pub fn get_buffer_suffix(&self, n: usize) -> String {
+        self.text_buffer.lock().get_last_n(n)
+    }
+
     pub fn get_stats(&self) {
         self.cache.print_stats();
     }

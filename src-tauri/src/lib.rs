@@ -8,6 +8,23 @@ use std::process::{Child, Command};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::path::PathBuf;
 
+/// Find the overlap between the end of the buffer and the start of the prediction.
+/// Returns the number of characters that overlap.
+/// Example: buffer="git ad", prediction="add ." -> overlap is 2 ("ad")
+fn find_overlap(buffer: &str, prediction: &str) -> usize {
+    let buffer_chars: Vec<char> = buffer.chars().collect();
+    let pred_chars: Vec<char> = prediction.chars().collect();
+
+    // Find longest suffix of buffer that is prefix of prediction
+    for start in 0..buffer_chars.len() {
+        let suffix: Vec<char> = buffer_chars[start..].to_vec();
+        if pred_chars.len() >= suffix.len() && pred_chars[..suffix.len()] == suffix[..] {
+            return suffix.len();
+        }
+    }
+    0
+}
+
 // Suggested action from Flask
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SuggestedAction {
@@ -494,20 +511,40 @@ pub fn run() {
                     let window_manager_accept = window_manager.clone();
                     let app_handle_for_accept = app.handle().clone();
                     let trigger_for_accept = trigger.clone();
-                    hotkey_handler.set_accept_callback(move |text, chars_to_erase| {
-                        println!("✅ Accepting completion via hotkey (erasing {} chars first)", chars_to_erase);
-                        // Inject the text with backspace for any chars typed during grace period
-                        if let Err(e) = tab_completion::injector::inject_with_backspace(text.clone(), chars_to_erase) {
-                            eprintln!("⚠️  Failed to inject text: {}", e);
-                        }
+                    hotkey_handler.set_accept_callback(move |text, chars_typed_during_grace| {
+                        // Get buffer suffix to detect overlap with prediction
+                        // Must do this BEFORE spawning thread while we still have sync access
+                        let buffer_suffix = trigger_for_accept.get_buffer_suffix(text.len());
 
-                        // Update the trigger's buffer with the accepted text and re-trigger prediction
-                        trigger_for_accept.append_to_buffer(text.clone());
+                        // Find overlap between what user typed and what prediction contains
+                        let overlap = find_overlap(&buffer_suffix, &text);
 
-                        // Hide all completion windows - must run on main thread
+                        // Total chars to erase = overlap + chars typed during grace period
+                        let total_erase = overlap + chars_typed_during_grace;
+
+                        println!("✅ Accepting completion via hotkey (overlap: {}, grace: {}, total erase: {})",
+                                 overlap, chars_typed_during_grace, total_erase);
+
+                        // IMPORTANT: Spawn a thread to handle the accept logic.
+                        // The callback runs inside CGEventTap which must return quickly.
+                        // inject_with_backspace has 150ms+ of sleeps that would block the tap.
                         let wm = window_manager_accept.clone();
-                        let _ = app_handle_for_accept.run_on_main_thread(move || {
-                            let _ = wm.hide_all();
+                        let app_handle = app_handle_for_accept.clone();
+                        let trigger = trigger_for_accept.clone();
+
+                        std::thread::spawn(move || {
+                            // Inject the text with backspace for overlap + grace period chars
+                            if let Err(e) = tab_completion::injector::inject_with_backspace(text.clone(), total_erase) {
+                                eprintln!("⚠️  Failed to inject text: {}", e);
+                            }
+
+                            // Update the trigger's buffer with the accepted text and re-trigger prediction
+                            trigger.append_to_buffer(text.clone());
+
+                            // Hide all completion windows - must run on main thread
+                            let _ = app_handle.run_on_main_thread(move || {
+                                let _ = wm.hide_all();
+                            });
                         });
                     });
 
