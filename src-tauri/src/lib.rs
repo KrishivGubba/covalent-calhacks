@@ -494,13 +494,19 @@ pub fn run() {
                         // Dispatch UI operations to main thread to prevent crashes
                         let window_manager = window_manager_clone.clone();
                         let suggestion_clone = suggestion.clone();
+                        let suggestion_text_for_log = suggestion.text.clone();
+                        println!("📤 Dispatching show_suggestion to main thread for: {}...",
+                                 &suggestion_text_for_log[..suggestion_text_for_log.len().min(30)]);
                         if let Err(e) = app_handle_for_callback.run_on_main_thread(move || {
+                            println!("🔄 Main thread executing show_suggestion");
                             // Show suggestion using window manager (ghost text or popup)
                             if let Err(e) = window_manager.show_suggestion(&suggestion_clone) {
                                 eprintln!("⚠️  Failed to show completion: {}", e);
                             }
                         }) {
                             eprintln!("⚠️  Failed to dispatch to main thread: {}", e);
+                        } else {
+                            println!("✅ Dispatch queued successfully");
                         }
                     });
                     
