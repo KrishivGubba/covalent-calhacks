@@ -1725,6 +1725,32 @@ Return ONLY a JSON object:
 
         try:
             # ============================================================
+            # 0. CREATE ROOT IF IT DOESN'T EXIST
+            # ============================================================
+            if self.root is None:
+                print("\n🌱 No root node found - creating root in database")
+                root_uuid = self.dao.create_node("Root", parent_uuid=None)
+                if not root_uuid:
+                    raise RuntimeError("Failed to create root node in database")
+                
+                from datetime import datetime
+                current_time = datetime.now().isoformat()
+                
+                self.root = Node(
+                    node_uuid=root_uuid,
+                    metadata="Root",
+                    created=current_time,
+                    last_modified=current_time,
+                    parent_uuid=None,
+                    children_uuid_arr=[],
+                    actions=[],
+                    data=None,
+                    embedding=None
+                )
+                self.nodes[root_uuid] = self.root
+                print(f"✅ Created root node with UUID: {root_uuid[:8]}...")
+            
+            # ============================================================
             # 1. CHECK FOR EMPTY GRAPH (BOOTSTRAP CASE)
             # ============================================================
             if not self.root.children or len(self.root.children) == 0:

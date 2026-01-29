@@ -31,6 +31,6 @@ echo "Logs available at: $SCRIPT_DIR/flask_server.log"
 
 ## setup DB ## 
 python3 ../context-engine/init_db.py
-python3 ../context-engine/graph_dao.py
+# python3 ../context-engine/graph_dao.py
 ###############
 
