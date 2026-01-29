@@ -41,13 +41,14 @@ const styles = {
     display: 'flex',
     height: '100vh',
     width: '100vw',
-    backgroundColor: '#0A0A12',
+    backgroundColor: '#0a0a0a',
     overflow: 'hidden',
+    fontFamily: 'DM Sans, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
   },
   main: {
     flex: 1,
     overflowY: 'auto' as const,
-    backgroundColor: '#0A0A12',
+    backgroundColor: '#0a0a0a',
   },
 };
 

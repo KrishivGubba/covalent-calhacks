@@ -10,8 +10,8 @@ interface SidebarProps {
 // SVG Icon Components
 const SettingsIcon = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
     <circle cx="12" cy="12" r="3"></circle>
-    <path d="M12 1v6m0 6v6m0-6h6m-6 0H6m12.36-7.36l-4.24 4.24m0 5.66l4.24 4.24M6.64 6.64l4.24 4.24m0 5.66l-4.24 4.24"></path>
   </svg>
 );
 
@@ -75,12 +75,14 @@ const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange }) => {
               onClick={() => onPageChange(item.id)}
               onMouseEnter={(e) => {
                 if (currentPage !== item.id) {
-                  e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
+                  e.currentTarget.style.backgroundColor = '#1a1a1a';
+                  e.currentTarget.style.borderLeft = '3px solid #3f3f46';
                 }
               }}
               onMouseLeave={(e) => {
                 if (currentPage !== item.id) {
                   e.currentTarget.style.backgroundColor = 'transparent';
+                  e.currentTarget.style.borderLeft = 'none';
                 }
               }}
             >
@@ -101,12 +103,14 @@ const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange }) => {
           onClick={() => onPageChange(profileItem.id)}
           onMouseEnter={(e) => {
             if (currentPage !== profileItem.id) {
-              e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
+              e.currentTarget.style.backgroundColor = '#1a1a1a';
+              e.currentTarget.style.borderLeft = '3px solid #3f3f46';
             }
           }}
           onMouseLeave={(e) => {
             if (currentPage !== profileItem.id) {
               e.currentTarget.style.backgroundColor = 'transparent';
+              e.currentTarget.style.borderLeft = 'none';
             }
           }}
         >
@@ -122,11 +126,12 @@ const styles = {
   sidebar: {
     width: '250px',
     height: '100%',
-    backgroundColor: '#0F0F1A',
-    borderRight: '1px solid rgba(255, 255, 255, 0.08)',
+    backgroundColor: '#111111',
+    borderRight: '1px solid #27272a',
     display: 'flex',
     flexDirection: 'column' as const,
     padding: '24px 16px',
+    fontFamily: 'DM Sans, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
   },
   logo: {
     display: 'flex',
@@ -143,7 +148,7 @@ const styles = {
   logoText: {
     fontSize: '1.4rem',
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: '#ffffff',
     margin: 0,
     letterSpacing: '-0.02em',
   },
@@ -161,7 +166,7 @@ const styles = {
     backgroundColor: 'transparent',
     border: 'none',
     borderRadius: '10px',
-    color: 'rgba(255, 255, 255, 0.6)',
+    color: '#a1a1aa',
     fontSize: '0.9rem',
     fontWeight: '500',
     cursor: 'pointer',
@@ -170,9 +175,10 @@ const styles = {
     width: '100%',
   },
   menuItemActive: {
-    backgroundColor: 'rgba(99, 102, 241, 0.15)',
-    color: '#FFFFFF',
-    borderLeft: '3px solid #6366F1',
+    backgroundColor: 'rgba(197, 244, 103, 0.1)',
+    color: '#C5F467',
+    borderLeft: '3px solid #C5F467',
+    boxShadow: '0 0 20px rgba(197, 244, 103, 0.15)',
   },
   menuIcon: {
     display: 'flex',
@@ -187,7 +193,7 @@ const styles = {
   profileSection: {
     marginTop: 'auto',
     paddingTop: '16px',
-    borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+    borderTop: '1px solid #27272a',
   },
 };
 
