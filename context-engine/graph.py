@@ -1141,9 +1141,12 @@ Note: split_plan is ONLY required when type is "split", otherwise set to null.
             # Insert data if provided
             if summary and data:
                 print(f"📝 Inserting initial data into new node...")
-                # Use the learn method to properly insert data with LLM categorization
-                # But we need to temporarily override traverse to return our new node
-                self._insert_data_to_node(new_node, summary, data)
+                # Use _learn_into_node for full action processing, or fall back to simple insert
+                if self.action_model:
+                    self._learn_into_node(new_node, summary, data)
+                else:
+                    # No action model - use simple insert
+                    self._insert_data_to_node(new_node, summary, data)
 
             return new_node
 
@@ -2152,28 +2155,105 @@ IMPORTANT:
 
         return parsed
 
-    def learn(self, summary, data, key=None, data_type="text"):
+    def learn(self, summary: str, data: str, key: str = None, data_type: str = "text") -> list:
         """
-        Learn new information by intelligently managing actions and data insertion.
+        Learn new information by finding the best node and inserting data.
+        This is the simple version that doesn't restructure the graph.
+
+        For learning that can restructure the graph, use learn_with_structure().
 
         Args:
-            summary (str): Description of what the user is doing on screen
-            data (str): Additional context/data (used in prompt, not stored directly)
-            key (str, optional): Deprecated - keys are auto-generated per category
-            data_type (str): Deprecated - type determined by LLM
+            summary: Description of what the user is doing
+            data: The data to store
+            key: Optional key for the data (deprecated - auto-generated)
+            data_type: Type of data (default: "text", deprecated)
+
+        Returns:
+            List of 4 most recently selected actions for the target node
+        """
+        # Find the best node
+        best_node = self.traverse(summary)
+        if best_node is None:
+            print("Warning: Could not find suitable node, using root")
+            best_node = self.root
+
+        # Insert into that node
+        return self._learn_into_node(best_node, summary, data, key, data_type)
+
+    def learn_simple(self, summary: str, data: str, node: 'Node' = None, category: str = "general") -> bool:
+        """
+        Simple learning that just inserts data without action processing.
+        Useful for bulk imports or when you don't need action suggestions.
+
+        Args:
+            summary: Description for finding the right node/category
+            data: The data to store
+            node: Optional specific node to insert into (uses traverse if None)
+            category: Category for the data (default: "general")
+
+        Returns:
+            True on success, False on failure
+        """
+        try:
+            # Find node if not provided
+            if node is None:
+                node = self.traverse(summary)
+                if node is None:
+                    node = self.root
+
+            print(f"📝 learn_simple: Inserting into '{node.metadata}'")
+
+            # Generate unique key
+            timestamp_key = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+            data_key = f"{category}_{timestamp_key}"
+
+            # Insert data directly
+            self.dao.add_data_with_category(
+                node_uuid=node.node_uuid,
+                category=category,
+                key=data_key,
+                data_type="text",
+                info=data
+            )
+
+            # Increment counter
+            self.dao.increment_node_counter(node.node_uuid)
+
+            print(f"   ✅ Inserted into category '{category}'")
+            return True
+
+        except Exception as e:
+            print(f"❌ learn_simple error: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _learn_into_node(self, node: 'Node', summary: str, data: str, key: str = None, data_type: str = "text") -> list:
+        """
+        Internal method: Learn new information into a specific node.
+        Handles action creation/modification/selection and data insertion.
+
+        This method does NOT call traverse() - it receives the target node directly.
+        Use learn() for automatic node selection, or learn_with_structure() for
+        learning that can restructure the graph.
+
+        Args:
+            node: The target node to insert data into
+            summary: Description of what the user is doing on screen
+            data: Additional context/data (used in prompt)
+            key: Deprecated - keys are auto-generated per category
+            data_type: Deprecated - type determined by LLM
 
         Returns:
             list: List of up to 4 most recently selected actions (tuples)
         """
         try:
-            # 1. Find the relevant node using traverse
-            node = self.traverse(summary)
             if node is None:
-                print("Warning: Could not find suitable node, using root")
+                print("Warning: Node is None, using root")
                 node = self.root
 
             print(f"\n{'='*60}")
-            print(f"LEARN - Selected Node: {node.metadata} (UUID: {node.node_uuid})")
+            print(f"LEARN INTO NODE: {node.metadata} (UUID: {node.node_uuid})")
             print(f"{'='*60}")
 
             # 2. Gather context
@@ -2272,7 +2352,7 @@ IMPORTANT:
             return recent_actions
 
         except Exception as e:
-            print(f"Error in learn(): {e}")
+            print(f"Error in _learn_into_node(): {e}")
             import traceback
             traceback.print_exc()
             # Return empty list on error - don't crash

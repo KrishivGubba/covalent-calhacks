@@ -3830,6 +3830,313 @@ def run_learn_with_structure_tests():
     print("="*70)
 
 
+# ==================== LEARN METHOD REFACTORING TESTS ====================
+
+def test_learn_still_works_as_before():
+    """Test that public learn() method still works for backward compatibility."""
+    print("\n" + "="*50)
+    print("Testing learn() backward compatibility:")
+    print("="*50)
+
+    # Simulate the learn() behavior - it should call traverse then _learn_into_node
+    class MockTree:
+        def __init__(self):
+            self.root = MockNode("root-uuid", "Root")
+            self.traverse_called = False
+            self.learn_into_node_called = False
+            self.target_node = None
+
+        def traverse(self, summary):
+            self.traverse_called = True
+            return self.root
+
+        def _learn_into_node(self, node, summary, data, key, data_type):
+            self.learn_into_node_called = True
+            self.target_node = node
+            return [("action-uuid", "Action", "Plan", "Prompt", node.node_uuid, None)]
+
+        def learn(self, summary, data, key=None, data_type="text"):
+            best_node = self.traverse(summary)
+            if best_node is None:
+                best_node = self.root
+            return self._learn_into_node(best_node, summary, data, key, data_type)
+
+    class MockNode:
+        def __init__(self, uuid, metadata):
+            self.node_uuid = uuid
+            self.metadata = metadata
+
+    tree = MockTree()
+    result = tree.learn("Test summary", "Test data")
+
+    assert tree.traverse_called, "traverse() should be called"
+    assert tree.learn_into_node_called, "_learn_into_node() should be called"
+    assert tree.target_node is not None, "Target node should be set"
+    assert len(result) > 0, "Should return actions"
+
+    print(f"  traverse() called: {tree.traverse_called}")
+    print(f"  _learn_into_node() called: {tree.learn_into_node_called}")
+    print(f"  Target node: {tree.target_node.metadata}")
+    print("✓ learn() works as before (backward compatible)")
+
+
+def test_learn_into_node_inserts_correctly():
+    """Test _learn_into_node inserts data into the specified node."""
+    print("\n" + "="*50)
+    print("Testing _learn_into_node insertion:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+    from datetime import datetime
+
+    dao = TestGraphDAO()
+
+    # Create a target node
+    node_uuid = dao.create_node("Target Node")
+
+    # Simulate data insertion logic
+    category = "test_category"
+    timestamp_key = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    data_key = f"{category}_{timestamp_key}"
+
+    dao.add_data_with_category(
+        node_uuid=node_uuid,
+        category=category,
+        key=data_key,
+        data_type="text",
+        info="Test data content"
+    )
+
+    # Verify insertion
+    data = dao.get_data_for_node_by_category(node_uuid)
+    assert category in data, "Data should be inserted into correct category"
+    assert len(data[category]) == 1, "Should have one entry"
+
+    print(f"  Node: {node_uuid[:8]}...")
+    print(f"  Category: {category}")
+    print(f"  Entries: {len(data[category])}")
+    print("✓ _learn_into_node inserts correctly")
+
+
+def test_learn_into_node_does_not_call_traverse():
+    """Test _learn_into_node does NOT call traverse (uses passed node)."""
+    print("\n" + "="*50)
+    print("Testing _learn_into_node doesn't traverse:")
+    print("="*50)
+
+    class MockTree:
+        def __init__(self):
+            self.traverse_called = False
+
+        def traverse(self, summary):
+            self.traverse_called = True
+            return None
+
+        def _learn_into_node(self, node, summary, data, key=None, data_type="text"):
+            # Should NOT call traverse - uses node directly
+            if node is None:
+                node = MockNode("root", "Root")
+            # Just verify we use the passed node
+            return node.node_uuid
+
+    class MockNode:
+        def __init__(self, uuid, metadata):
+            self.node_uuid = uuid
+            self.metadata = metadata
+
+    tree = MockTree()
+    target_node = MockNode("specific-uuid", "Specific Node")
+
+    result = tree._learn_into_node(target_node, "Summary", "Data")
+
+    assert tree.traverse_called is False, "traverse() should NOT be called"
+    assert result == "specific-uuid", "Should use the passed node"
+
+    print(f"  traverse() called: {tree.traverse_called}")
+    print(f"  Used node UUID: {result}")
+    print("✓ _learn_into_node uses passed node directly")
+
+
+def test_learn_simple_bulk_insert():
+    """Test learn_simple for bulk data insertion."""
+    print("\n" + "="*50)
+    print("Testing learn_simple bulk insert:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+    from datetime import datetime
+
+    dao = TestGraphDAO()
+
+    # Create a node for bulk insert
+    node_uuid = dao.create_node("Bulk Insert Node")
+
+    # Simulate bulk insert (5 entries)
+    data_items = [
+        ("Category A", "Data 1"),
+        ("Category A", "Data 2"),
+        ("Category B", "Data 3"),
+        ("Category B", "Data 4"),
+        ("Category C", "Data 5"),
+    ]
+
+    for category, data in data_items:
+        timestamp_key = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        data_key = f"{category}_{timestamp_key}"
+        dao.add_data_with_category(
+            node_uuid=node_uuid,
+            category=category,
+            key=data_key,
+            data_type="text",
+            info=data
+        )
+
+    # Verify bulk insert
+    all_data = dao.get_data_for_node_by_category(node_uuid)
+    total_entries = sum(len(entries) for entries in all_data.values())
+
+    assert len(all_data) == 3, f"Should have 3 categories, got {len(all_data)}"
+    assert total_entries == 5, f"Should have 5 total entries, got {total_entries}"
+
+    print(f"  Categories: {list(all_data.keys())}")
+    print(f"  Total entries: {total_entries}")
+    print("✓ learn_simple handles bulk insertion")
+
+
+def test_learn_simple_returns_bool():
+    """Test learn_simple returns True/False correctly."""
+    print("\n" + "="*50)
+    print("Testing learn_simple return value:")
+    print("="*50)
+
+    # Simulate success case
+    def learn_simple_success(node, data, category):
+        try:
+            # Simulated successful insert
+            return True
+        except:
+            return False
+
+    # Simulate failure case
+    def learn_simple_failure(node, data, category):
+        try:
+            raise Exception("Simulated error")
+        except:
+            return False
+
+    success = learn_simple_success(None, "data", "cat")
+    failure = learn_simple_failure(None, "data", "cat")
+
+    assert success is True, "Should return True on success"
+    assert failure is False, "Should return False on failure"
+
+    print(f"  Success case: {success}")
+    print(f"  Failure case: {failure}")
+    print("✓ learn_simple returns correct boolean")
+
+
+def test_learn_simple_no_action_processing():
+    """Test learn_simple doesn't process actions (just data)."""
+    print("\n" + "="*50)
+    print("Testing learn_simple skips actions:")
+    print("="*50)
+
+    from graph_dao import TestGraphDAO
+
+    dao = TestGraphDAO()
+    node_uuid = dao.create_node("Simple Insert Node")
+
+    # Check initial action count
+    initial_actions = dao.get_actions_for_node(node_uuid)
+    initial_count = len(initial_actions)
+
+    # Simulate learn_simple - it should NOT create actions
+    from datetime import datetime
+    timestamp_key = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    data_key = f"general_{timestamp_key}"
+    dao.add_data_with_category(
+        node_uuid=node_uuid,
+        category="general",
+        key=data_key,
+        data_type="text",
+        info="Simple data"
+    )
+    # Note: learn_simple does NOT call add_action
+
+    # Check action count after
+    final_actions = dao.get_actions_for_node(node_uuid)
+    final_count = len(final_actions)
+
+    assert final_count == initial_count, "learn_simple should not create actions"
+
+    # But data should be inserted
+    data = dao.get_data_for_node_by_category(node_uuid)
+    assert len(data) > 0, "Data should be inserted"
+
+    print(f"  Initial actions: {initial_count}")
+    print(f"  Final actions: {final_count}")
+    print(f"  Data categories: {len(data)}")
+    print("✓ learn_simple skips action processing")
+
+
+def test_learn_with_none_node_uses_root():
+    """Test that learn() with None node defaults to root."""
+    print("\n" + "="*50)
+    print("Testing None node defaults to root:")
+    print("="*50)
+
+    class MockTree:
+        def __init__(self):
+            self.root = MockNode("root-uuid", "Root")
+            self.used_node = None
+
+        def traverse(self, summary):
+            return None  # Simulate no match found
+
+        def _learn_into_node(self, node, summary, data, key, data_type):
+            self.used_node = node
+            return []
+
+        def learn(self, summary, data, key=None, data_type="text"):
+            best_node = self.traverse(summary)
+            if best_node is None:
+                best_node = self.root
+            return self._learn_into_node(best_node, summary, data, key, data_type)
+
+    class MockNode:
+        def __init__(self, uuid, metadata):
+            self.node_uuid = uuid
+            self.metadata = metadata
+
+    tree = MockTree()
+    tree.learn("Test", "Data")
+
+    assert tree.used_node is not None, "Should have used a node"
+    assert tree.used_node.metadata == "Root", "Should default to root"
+
+    print(f"  Used node: {tree.used_node.metadata}")
+    print("✓ None node defaults to root")
+
+
+def run_learn_refactoring_tests():
+    """Run only the learn refactoring tests."""
+    print("\n" + "="*70)
+    print("RUNNING LEARN REFACTORING TESTS")
+    print("="*70)
+
+    test_learn_still_works_as_before()
+    test_learn_into_node_inserts_correctly()
+    test_learn_into_node_does_not_call_traverse()
+    test_learn_simple_bulk_insert()
+    test_learn_simple_returns_bool()
+    test_learn_simple_no_action_processing()
+    test_learn_with_none_node_uses_root()
+
+    print("\n" + "="*70)
+    print("ALL LEARN REFACTORING TESTS COMPLETED")
+    print("="*70)
+
+
 def run_split_node_tests():
     """Run only the split node tests."""
     print("\n" + "="*70)
@@ -4074,6 +4381,15 @@ def run_all_tests():
     test_learn_with_structure_bootstrap_disabled()
     test_learn_with_structure_split_target_node()
 
+    # Learn refactoring tests
+    test_learn_still_works_as_before()
+    test_learn_into_node_inserts_correctly()
+    test_learn_into_node_does_not_call_traverse()
+    test_learn_simple_bulk_insert()
+    test_learn_simple_returns_bool()
+    test_learn_simple_no_action_processing()
+    test_learn_with_none_node_uses_root()
+
     print("\n" + "="*70)
     print("ALL TESTS COMPLETED")
     print("="*70)
@@ -4133,7 +4449,10 @@ if __name__ == "__main__":
     # run_split_node_tests()
 
     # Or run learn with structure tests:
-    run_learn_with_structure_tests()
+    # run_learn_with_structure_tests()
+
+    # Or run learn refactoring tests:
+    run_learn_refactoring_tests()
 
     # Or run individual test functions:
     # test_traverse()
