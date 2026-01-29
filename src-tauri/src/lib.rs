@@ -372,6 +372,105 @@ fn get_cursor_position() -> Result<(i32, i32), String> {
     }
 }
 
+// Dashboard commands
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ActionHistoryItem {
+    pub action_uuid: String,
+    pub action_type: String,
+    pub action_data: String,
+    pub creation_timestamp: String,
+    pub node_uuid: String,
+}
+
+#[tauri::command]
+fn get_actions_history() -> Result<Vec<ActionHistoryItem>, String> {
+    // TODO: Read from actual database
+    // For now, return placeholder data
+    println!("📊 Fetching actions history");
+    Ok(vec![])
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct MemoryGraphData {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct GraphNode {
+    pub id: String,
+    pub label: String,
+    pub metadata: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct GraphEdge {
+    pub from: String,
+    pub to: String,
+}
+
+#[tauri::command]
+fn get_memory_graph_data() -> Result<MemoryGraphData, String> {
+    // TODO: Read from graph.db and format for visualization
+    println!("🧠 Fetching memory graph data");
+    Ok(MemoryGraphData {
+        nodes: vec![],
+        edges: vec![],
+    })
+}
+
+#[tauri::command]
+fn get_excluded_apps() -> Result<Vec<String>, String> {
+    // TODO: Read from settings/config
+    println!("🔒 Fetching excluded apps");
+    Ok(vec![])
+}
+
+#[tauri::command]
+fn set_excluded_apps(apps: Vec<String>) -> Result<(), String> {
+    // TODO: Save to settings/config
+    println!("🔒 Setting excluded apps: {:?}", apps);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_auth_status() -> Result<serde_json::Value, String> {
+    // TODO: Implement actual auth status check
+    println!("🔐 Checking auth status");
+    Ok(serde_json::json!({
+        "authenticated": false,
+        "user": null,
+        "message": "Authentication not yet implemented"
+    }))
+}
+
+#[tauri::command]
+fn get_mcp_integrations() -> Result<Vec<serde_json::Value>, String> {
+    // TODO: Fetch actual MCP integrations from Composio/backend
+    println!("🔌 Fetching MCP integrations");
+    Ok(vec![
+        serde_json::json!({
+            "id": "github",
+            "name": "GitHub",
+            "connected": false,
+            "description": "Manage repositories and issues"
+        }),
+        serde_json::json!({
+            "id": "slack",
+            "name": "Slack",
+            "connected": false,
+            "description": "Send messages and manage channels"
+        }),
+        serde_json::json!({
+            "id": "gmail",
+            "name": "Gmail",
+            "connected": false,
+            "description": "Read and send emails"
+        }),
+    ])
+}
+
 // #[cfg(target_os = "macos")]
 // use tauri_plugin_macos_permissions;
 
@@ -591,6 +690,7 @@ pub fn run() {
             // Create menu items
             let open_profile = MenuItem::with_id(app, "open_profile", "Open Profile", true, None::<&str>)?;
             let link_mcps = MenuItem::with_id(app, "link_mcps", "Link MCPs", true, None::<&str>)?;
+            let open_dashboard = MenuItem::with_id(app, "open_dashboard", "Dashboard", true, Some("cmd+;"))?;
             let quit = PredefinedMenuItem::quit(app, Some("Quit"))?;
             
             // Create Profile submenu
@@ -598,7 +698,7 @@ pub fn run() {
                 app,
                 "Profile",
                 true,
-                &[&open_profile, &link_mcps, &quit],
+                &[&open_profile, &link_mcps, &open_dashboard, &quit],
             )?;
             
             // Create menu bar
@@ -608,7 +708,7 @@ pub fn run() {
             app.set_menu(menu)?;
             
             // Handle menu events
-            app.on_menu_event(move |_app, event| {
+            app.on_menu_event(move |app, event| {
                 match event.id().as_ref() {
                     "open_profile" => {
                         println!("Open Profile clicked");
@@ -617,6 +717,15 @@ pub fn run() {
                     "link_mcps" => {
                         println!("Link MCPs clicked");
                         // TODO: Implement MCP linking functionality
+                    }
+                    "open_dashboard" => {
+                        println!("🎛️  Opening dashboard");
+                        if let Some(window) = app.get_webview_window("dashboard") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        } else {
+                            eprintln!("⚠️  Dashboard window not found");
+                        }
                     }
                     _ => {}
                 }
@@ -637,7 +746,13 @@ pub fn run() {
             clear_suggested_actions,
             tab_completion::injector::inject_completion_text,
             get_cursor_position,
-            get_cache_state
+            get_cache_state,
+            get_actions_history,
+            get_memory_graph_data,
+            get_excluded_apps,
+            set_excluded_apps,
+            get_auth_status,
+            get_mcp_integrations
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

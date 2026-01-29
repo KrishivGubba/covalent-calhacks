@@ -70,6 +70,19 @@
         "acceptFirstMouse": true,
         "titleBarStyle": "Transparent",
         "parent": null
+      },
+      {
+        "label": "dashboard",
+        "title": "Covalent Dashboard",
+        "url": "dashboard.html",
+        "width": 1000,
+        "height": 700,
+        "decorations": true,
+        "transparent": false,
+        "resizable": true,
+        "visible": false,
+        "center": true,
+        "contentProtected": false
       }
     ],
     "security": {
