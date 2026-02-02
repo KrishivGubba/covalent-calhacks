@@ -282,7 +282,7 @@ def handle_invoke(body: Dict[str, Any]) -> Dict[str, Any]:
         return create_response(500, {"error": f"Internal server error: {str(e)}"})
 
 
-def _handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Main Lambda handler.
     
