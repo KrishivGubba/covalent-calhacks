@@ -34,7 +34,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # Bedrock client configuration
-BEDROCK_REGION = os.environ.get("BEDROCK_REGION", "us-west-2")
+BEDROCK_REGION = os.environ.get("BEDROCK_REGION", "us-east-1")
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "anthropic.claude-sonnet-4-20250514-v1:0")
 DEFAULT_MAX_TOKENS = int(os.environ.get("DEFAULT_MAX_TOKENS", "4096"))
 DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", "0.7"))
@@ -282,7 +282,7 @@ def handle_invoke(body: Dict[str, Any]) -> Dict[str, Any]:
         return create_response(500, {"error": f"Internal server error: {str(e)}"})
 
 
-def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+def _handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Main Lambda handler.
     
