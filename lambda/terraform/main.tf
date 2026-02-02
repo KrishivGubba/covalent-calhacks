@@ -24,7 +24,7 @@ terraform {
   # backend "s3" {
   #   bucket = "your-terraform-state-bucket"
   #   key    = "covalent/ai-gateway/terraform.tfstate"
-  #   region = "us-west-2"
+  #   region = "us-east-1"
   # }
 }
 
@@ -44,7 +44,7 @@ provider "aws" {
 variable "aws_region" {
   description = "AWS region for deployment"
   type        = string
-  default     = "us-west-2"
+  default     = "us-east-1"
 }
 
 variable "environment" {
@@ -168,7 +168,7 @@ resource "aws_lambda_function_url" "ai_gateway_url" {
   cors {
     allow_credentials = false
     allow_origins     = ["*"]  # TODO: Restrict in production
-    allow_methods     = ["POST", "GET", "OPTIONS"]
+    allow_methods     = ["*"]
     allow_headers     = ["Content-Type", "Authorization"]
     max_age           = 86400
   }

@@ -6,7 +6,7 @@
 variable "github_org" {
   description = "GitHub organization or username"
   type        = string
-  default     = "your-github-org"  # TODO: Update this
+  default     = "hem8705"  # TODO: Update this
 }
 
 variable "github_repo" {

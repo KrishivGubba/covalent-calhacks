@@ -41,8 +41,6 @@ __pycache__/
 *.pyo
 
 
-*.md 
-*.MD 
 
 
 covalent_mcp/toolclasses/github/github_token.json
