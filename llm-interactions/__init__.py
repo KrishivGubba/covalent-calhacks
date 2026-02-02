@@ -4,11 +4,14 @@ LLM Interactions - Unified interface for interacting with different LLM provider
 This module provides a single entry point for all LLM interactions across the codebase.
 
 Usage:
-    import sys
-    sys.path.insert(0, 'path/to/project')
+    # Direct API calls (requires API keys)
     from llm_interactions import LLMClient
-    
     client = LLMClient()
+    response = client.generate("Hello!")
+    
+    # Via Lambda Gateway (no API keys needed on client)
+    from llm_interactions import GatewayClient
+    client = GatewayClient()
     response = client.generate("Hello!")
 """
 
@@ -23,6 +26,27 @@ _spec = importlib.util.spec_from_file_location(
 _llm_client_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_llm_client_module)
 
-LLMClient = _llm_client_module.LLMClient
+# Load gateway_client module
+_gw_spec = importlib.util.spec_from_file_location(
+    "gateway_client",
+    Path(__file__).parent / "gateway_client.py"
+)
+_gateway_client_module = importlib.util.module_from_spec(_gw_spec)
+_gw_spec.loader.exec_module(_gateway_client_module)
 
-__all__ = ["LLMClient"]
+# Export classes
+LLMClient = _llm_client_module.LLMClient
+GatewayClient = _gateway_client_module.GatewayClient
+GatewayResponse = _gateway_client_module.GatewayResponse
+GatewayError = _gateway_client_module.GatewayError
+MODELS = _gateway_client_module.MODELS
+quick_generate = _gateway_client_module.quick_generate
+
+__all__ = [
+    "LLMClient",
+    "GatewayClient", 
+    "GatewayResponse",
+    "GatewayError",
+    "MODELS",
+    "quick_generate",
+]
