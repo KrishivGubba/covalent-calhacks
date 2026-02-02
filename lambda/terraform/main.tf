@@ -105,9 +105,9 @@ resource "aws_iam_role_policy" "bedrock_policy" {
           "bedrock:ConverseStream"
         ]
         Resource = [
-          "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.*",
-          "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.*",
-          "arn:aws:bedrock:${var.aws_region}:*:inference-profile/us.anthropic.*"
+          "arn:aws:bedrock:*::foundation-model/anthropic.*",
+          "arn:aws:bedrock:*::foundation-model/amazon.*",
+          "arn:aws:bedrock:*:*:inference-profile/us.anthropic.*"
         ]
       }
     ]
