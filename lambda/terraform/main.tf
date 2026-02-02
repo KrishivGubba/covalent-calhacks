@@ -106,7 +106,8 @@ resource "aws_iam_role_policy" "bedrock_policy" {
         ]
         Resource = [
           "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.*",
-          "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.*"
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.*",
+          "arn:aws:bedrock:${var.aws_region}:*:inference-profile/us.anthropic.*"
         ]
       }
     ]
@@ -134,7 +135,7 @@ resource "aws_lambda_function" "ai_gateway" {
   environment {
     variables = {
       BEDROCK_REGION      = var.aws_region
-      DEFAULT_MODEL       = "anthropic.claude-sonnet-4-20250514-v1:0"
+      DEFAULT_MODEL       = "us.anthropic.claude-sonnet-4-20250514-v1:0"
       DEFAULT_MAX_TOKENS  = "4096"
       DEFAULT_TEMPERATURE = "0.7"
     }

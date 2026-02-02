@@ -11,7 +11,7 @@ Endpoints:
 
 Expected request body for /invoke:
 {
-    "model": "anthropic.claude-sonnet-4-20250514-v1:0",  # Bedrock model ID
+    "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",  # Bedrock inference profile ID
     "messages": [{"role": "user", "content": "Hello!"}],
     "system": "You are a helpful assistant.",  # optional
     "max_tokens": 4096,  # optional
@@ -35,14 +35,19 @@ logger.setLevel(logging.INFO)
 
 # Bedrock client configuration
 BEDROCK_REGION = os.environ.get("BEDROCK_REGION", "us-east-1")
-DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "anthropic.claude-sonnet-4-20250514-v1:0")
+DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "us.anthropic.claude-sonnet-4-20250514-v1:0")
 DEFAULT_MAX_TOKENS = int(os.environ.get("DEFAULT_MAX_TOKENS", "4096"))
 DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", "0.7"))
 
 # Allowed models (security: only allow specific models)
+# Use inference profile format (us. prefix) for newer models
 ALLOWED_MODELS = {
-    # Claude 3.5 models
-    "anthropic.claude-sonnet-4-20250514-v1:0",
+    # Claude 4 (inference profiles)
+    "us.anthropic.claude-sonnet-4-20250514-v1:0",
+    # Claude 3.5 (inference profiles)
+    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+    # Claude 3.5 (on-demand - still works)
     "anthropic.claude-3-5-sonnet-20241022-v2:0",
     "anthropic.claude-3-5-haiku-20241022-v1:0",
     # Claude 3 models
@@ -336,7 +341,7 @@ if __name__ == "__main__":
         "httpMethod": "POST",
         "path": "/invoke",
         "body": json.dumps({
-            "model": "anthropic.claude-sonnet-4-20250514-v1:0",
+            "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
             "messages": [{"role": "user", "content": "Hello! What's 2+2?"}],
             "system": "You are a helpful math assistant.",
             "max_tokens": 100,
