@@ -35,6 +35,7 @@ pub struct SmartCollector {
     active_tasks: Arc<AtomicU32>,
     max_concurrent_tasks: u32,
     global_timeout: Duration,
+    ocr_timeout: Duration,  // Separate extended timeout for OCR phase
     
     // Caching
     cache: Arc<RwLock<HashMap<String, CachedResult>>>,
@@ -85,6 +86,7 @@ impl SmartCollector {
             active_tasks: Arc::new(AtomicU32::new(0)),
             max_concurrent_tasks: 4,
             global_timeout: Duration::from_millis(500),
+            ocr_timeout: Duration::from_millis(3000),  // Extended timeout for OCR when needed
             
             cache: Arc::new(RwLock::new(HashMap::new())),
             cache_ttl: Duration::from_millis(100),
@@ -97,45 +99,62 @@ impl SmartCollector {
         self.global_timeout = timeout;
         self
     }
-    
+
+    pub fn with_ocr_timeout(mut self, timeout: Duration) -> Self {
+        self.ocr_timeout = timeout;
+        self
+    }
+
     pub fn with_max_concurrent_tasks(mut self, max_tasks: u32) -> Self {
         self.max_concurrent_tasks = max_tasks;
         self
     }
     
     /// Perform intelligent context collection with priority-based execution
+    /// Uses two-phase collection: fast sources first, then OCR only if needed
     pub async fn collect_context(&self) -> Result<RawContext> {
         let start_time = Instant::now();
-        let mut context = RawContext::default();
-        
+
         // Update stats
         {
             let mut stats = self.collection_stats.lock().await;
             stats.total_collections += 1;
         }
-        
-        // Build collection plan
-        let tasks = self.build_collection_plan().await;
-        
-        // Execute collection with smart strategy
-        let results = self.execute_collection_plan(tasks).await?;
-        
-        // Assemble context from results
-        context = self.assemble_context_from_results(results).await?;
-        
+
+        // Phase A: Collect fast sources (AppInfo, DOM, Accessibility, Screenshot)
+        // Uses the shorter global_timeout (500ms)
+        let phase_a_tasks = self.build_phase_a_tasks().await;
+        let phase_a_results = self.execute_collection_plan(phase_a_tasks, self.global_timeout).await?;
+        let mut context = self.assemble_context_from_results(phase_a_results).await?;
+
+        // Check if OCR is needed (no DOM and insufficient accessibility data)
+        if context.needs_ocr() {
+            eprintln!("🔍 OCR needed - running Phase B with extended timeout ({}ms)", self.ocr_timeout.as_millis());
+
+            // Phase B: Run OCR with extended timeout (3000ms)
+            // Screenshot should already be cached from Phase A
+            let phase_b_tasks = self.build_phase_b_tasks().await;
+            let phase_b_results = self.execute_collection_plan(phase_b_tasks, self.ocr_timeout).await?;
+
+            // Merge OCR results into context
+            context = self.merge_ocr_results(context, phase_b_results).await?;
+        } else {
+            eprintln!("✅ Sufficient context from DOM/Accessibility - skipping OCR");
+        }
+
         // Update metadata
         let duration = start_time.elapsed();
         context.collection_metadata = self.build_collection_metadata(duration).await;
-        
+
         // Update stats
         {
             let mut stats = self.collection_stats.lock().await;
             stats.successful_collections += 1;
-            stats.average_duration_ms = 
-                (stats.average_duration_ms * (stats.successful_collections - 1) as f64 + duration.as_millis() as f64) 
+            stats.average_duration_ms =
+                (stats.average_duration_ms * (stats.successful_collections - 1) as f64 + duration.as_millis() as f64)
                 / stats.successful_collections as f64;
         }
-        
+
         Ok(context)
     }
     
@@ -247,20 +266,105 @@ impl SmartCollector {
         
         tasks
     }
-    
-    async fn execute_collection_plan(&self, tasks: Vec<CollectionTask>) -> Result<HashMap<DataSourceType, CollectionResult>> {
+
+    /// Build Phase A tasks: fast sources (AppInfo, DOM, Accessibility, Screenshot)
+    /// These complete within the global_timeout (500ms)
+    async fn build_phase_a_tasks(&self) -> Vec<CollectionTask> {
+        let available_sources = self.check_available_sources().await;
+        let mut tasks = Vec::new();
+
+        // Priority 0 (highest): App info - always first, fast, needed by others
+        if *available_sources.get(&DataSourceType::AppInfo).unwrap_or(&false) {
+            tasks.push(
+                CollectionTask::new(DataSourceType::AppInfo, 0, 50)
+                    .sequential() // Must run first
+            );
+        }
+
+        // Priority 1: Browser context - fast when available
+        if *available_sources.get(&DataSourceType::DOM).unwrap_or(&false) {
+            tasks.push(
+                CollectionTask::new(DataSourceType::DOM, 1, 200)
+                    .with_dependencies(vec![DataSourceType::AppInfo])
+            );
+        }
+
+        // Priority 2: Accessibility - medium speed, good data
+        if *available_sources.get(&DataSourceType::Accessibility).unwrap_or(&false) {
+            tasks.push(
+                CollectionTask::new(DataSourceType::Accessibility, 2, 150)
+                    .with_dependencies(vec![DataSourceType::AppInfo])
+            );
+        }
+
+        // Priority 3: File system context - fast for IDEs
+        if *available_sources.get(&DataSourceType::FileSystem).unwrap_or(&false) {
+            tasks.push(
+                CollectionTask::new(DataSourceType::FileSystem, 3, 100)
+                    .with_dependencies(vec![DataSourceType::AppInfo])
+            );
+        }
+
+        // Priority 4: Activity monitoring - always available, fast
+        if *available_sources.get(&DataSourceType::ActivityMonitoring).unwrap_or(&false) {
+            tasks.push(
+                CollectionTask::new(DataSourceType::ActivityMonitoring, 4, 50)
+            );
+        }
+
+        // Priority 5: Screenshot - needed for potential OCR in Phase B
+        if *available_sources.get(&DataSourceType::Screenshot).unwrap_or(&false) {
+            tasks.push(
+                CollectionTask::new(DataSourceType::Screenshot, 5, 300)
+            );
+        }
+
+        // Note: OCR is NOT included in Phase A - it runs in Phase B if needed
+        tasks
+    }
+
+    /// Build Phase B tasks: OCR only (slowest, runs with extended timeout)
+    /// Only called when needs_ocr() returns true
+    async fn build_phase_b_tasks(&self) -> Vec<CollectionTask> {
+        let available_sources = self.check_available_sources().await;
+        let mut tasks = Vec::new();
+
+        // Only OCR task - Screenshot should already be cached from Phase A
+        if *available_sources.get(&DataSourceType::OCR).unwrap_or(&false) {
+            tasks.push(
+                CollectionTask::new(DataSourceType::OCR, 0, 2000) // Priority 0 since it's the only task
+                    .sequential() // OCR is CPU intensive
+            );
+        }
+
+        tasks
+    }
+
+    /// Merge OCR results from Phase B into the existing context
+    async fn merge_ocr_results(&self, mut context: RawContext, results: HashMap<DataSourceType, CollectionResult>) -> Result<RawContext> {
+        if let Some(result) = results.get(&DataSourceType::OCR) {
+            if let Some(CachedData::OCRData(ocr_data)) = &result.data {
+                context.ocr_data = Some(ocr_data.clone());
+                eprintln!("✅ OCR completed: {} regions, {:.1}% avg confidence",
+                    ocr_data.results.len(), ocr_data.total_confidence);
+            }
+        }
+        Ok(context)
+    }
+
+    async fn execute_collection_plan(&self, tasks: Vec<CollectionTask>, timeout: Duration) -> Result<HashMap<DataSourceType, CollectionResult>> {
         let mut results = HashMap::new();
         let mut pending_tasks = BinaryHeap::new();
         let mut completed_types = std::collections::HashSet::new();
-        
+
         // Add all tasks to queue
         for task in tasks {
             pending_tasks.push(task);
         }
-        
+
         let global_start = Instant::now();
-        
-        while !pending_tasks.is_empty() && global_start.elapsed() < self.global_timeout {
+
+        while !pending_tasks.is_empty() && global_start.elapsed() < timeout {
             // Find tasks that can run now (dependencies satisfied)
             let mut ready_tasks = Vec::new();
             let mut remaining_tasks = BinaryHeap::new();
@@ -286,11 +390,11 @@ impl SmartCollector {
             if ready_tasks.iter().any(|t| !t.can_run_parallel) {
                 // Run sequential tasks one by one
                 for task in ready_tasks {
-                    if global_start.elapsed() >= self.global_timeout {
+                    if global_start.elapsed() >= timeout {
                         break;
                     }
-                    
-                    let remaining_time = self.global_timeout.saturating_sub(global_start.elapsed());
+
+                    let remaining_time = timeout.saturating_sub(global_start.elapsed());
                     let result = self.execute_single_task(task.task_type, remaining_time).await;
                     results.insert(task.task_type, result);
                     completed_types.insert(task.task_type);
@@ -300,18 +404,18 @@ impl SmartCollector {
                 let parallel_tasks = ready_tasks.into_iter()
                     .take(self.max_concurrent_tasks as usize)
                     .collect::<Vec<_>>();
-                
+
                 let task_futures = parallel_tasks.iter().map(|task| {
-                    let remaining_time = self.global_timeout.saturating_sub(global_start.elapsed());
+                    let remaining_time = timeout.saturating_sub(global_start.elapsed());
                     let task_type = task.task_type;
                     async move {
                         let result = self.execute_single_task(task_type, remaining_time).await;
                         (task_type, result)
                     }
                 });
-                
+
                 let parallel_results = join_all(task_futures).await;
-                
+
                 for (task_type, result) in parallel_results {
                     results.insert(task_type, result);
                     completed_types.insert(task_type);
