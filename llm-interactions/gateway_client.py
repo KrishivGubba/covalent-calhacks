@@ -55,7 +55,10 @@ class GatewayResponse:
 
 # Available models (for reference)
 MODELS = {
-    # Claude 4 (recommended)
+    # Claude 4.5 (latest)
+    "claude-4.5-sonnet": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-4.5-haiku": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Claude 4
     "claude-4-sonnet": "us.anthropic.claude-sonnet-4-20250514-v1:0",
     # Claude 3.5
     "claude-3.5-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -362,7 +365,8 @@ if __name__ == "__main__":
     
     client = GatewayClient()
     print(f"Client: {client}")
-    
+    response = client.generate("Hello", model="claude-4.5-sonnet")
+    print(f"Response: {response.content}, the big response")
     # Health check
     print("\n--- Health Check ---")
     try:

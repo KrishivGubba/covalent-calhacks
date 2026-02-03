@@ -42,6 +42,9 @@ DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", "0.7"))
 # Allowed models (security: only allow specific models)
 # Use inference profile format (us. prefix) for newer models
 ALLOWED_MODELS = {
+    # Claude 4.5 (inference profiles)
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     # Claude 4 (inference profiles)
     "us.anthropic.claude-sonnet-4-20250514-v1:0",
     # Claude 3.5 (inference profiles)
