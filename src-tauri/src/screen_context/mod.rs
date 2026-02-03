@@ -3,7 +3,6 @@
 pub mod context_type;
 pub mod context_data;
 pub mod context_api;
-pub mod claude_client;
 pub mod context_loop;
 //pub mod context_examples;
 pub mod demo;
@@ -23,6 +22,7 @@ pub mod activity_monitor;
 pub mod enhanced_context_collector;
 pub mod region_analyzer;
 pub mod llm_analyzer;
+pub mod context_memory;
 
 // Legacy modules (can be uncommented when ready to use)
 // pub mod capture;
@@ -39,10 +39,10 @@ pub use context_type::{
     CreativeType, DataWorkType, AdministrationType, IntentAnalysis, DeltaAnalysis
 };
 pub use context_api::{ContextApiClient, ContextPayload, ContextResponse};
-pub use claude_client::ClaudeClient;
 pub use context_loop::ContextLoop;
 pub use enhanced_context_collector::{EnhancedContextCollector, SystemReadiness};
 pub use screen_capture::ScreenCapture;
 pub use chromium_bridge::{ChromiumBridge, DOMChangeAnalysis};
 pub use region_analyzer::{RegionAnalyzer, RegionChangeAnalysis};
 pub use llm_analyzer::{LLMAnalyzer, ContextAnalysisOutput};
+pub use context_memory::{ContextMemory, ContextSummary, ContextChainResult, ScoredContext, ChainStats, ChainDecision, AntichainReason};

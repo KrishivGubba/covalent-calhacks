@@ -1,4 +1,4 @@
-# Covalent.ai 🚀
+# Covalent.ai 
 
 **A Promptless AI Desktop Agent with Proactive Intelligence**
 

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Completion Popup</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      
+      body {
+        background: transparent;
+        overflow: hidden;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        padding: 8px;
+      }
+      
+      .popup {
+        background-color: rgba(30, 30, 30, 0.95);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(40px);
+        -webkit-backdrop-filter: blur(40px);
+      }
+      
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      
+      .badge {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: #888;
+        font-weight: 600;
+      }
+      
+      .logo {
+        width: 16px;
+        height: 16px;
+        object-fit: contain;
+      }
+      
+      .confidence {
+        font-size: 10px;
+        color: #666;
+      }
+      
+      .text {
+        color: #fff;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        margin-bottom: 12px;
+        white-space: pre-wrap;
+        padding: 10px;
+        background-color: rgba(42, 42, 42, 0.8);
+        border-radius: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        max-height: 120px;
+        overflow-y: auto;
+      }
+      
+      .hint {
+        font-size: 10px;
+        color: #666;
+        text-align: center;
+      }
+      
+      .kbd {
+        background-color: #333;
+        color: #fff;
+        padding: 2px 5px;
+        border-radius: 3px;
+        font-size: 9px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+        border: 1px solid #444;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="popup">
+      <div class="header">
+        <span class="badge" id="badge">
+          <img src="/icon.png" alt="Covalent" class="logo" />
+          <span id="badge-text">Suggestion</span>
+        </span>
+        <span class="confidence" id="confidence">...</span>
+      </div>
+      
+      <div class="text" id="text">Loading...</div>
+      
+      <div class="hint">
+        <kbd class="kbd">⌘</kbd>+<kbd class="kbd">Tab</kbd> to accept · <kbd class="kbd">Esc</kbd> to dismiss
+      </div>
+    </div>
+    
+    <script>
+      // Global function that Rust can call directly via window.eval()
+      function getBadgeText(level) {
+        switch (level) {
+          case 'L0-exact':
+            return 'Cached';
+          case 'L1-llm':
+            return 'Local';
+          case 'L2-graph':
+            return 'Graph';
+          case 'L3-fallback':
+            return 'Haiku';
+          default:
+            return 'Suggestion';
+        }
+      }
+
+      // Global function - called from Rust via eval()
+      window.updatePopup = function(payload) {
+        console.log('📬 Popup received update:', JSON.stringify(payload));
+        const { text, confidence, cache_level } = payload;
+
+        const textEl = document.getElementById('text');
+        const confidenceEl = document.getElementById('confidence');
+        const badgeTextEl = document.getElementById('badge-text');
+
+        // Always update text, even if empty (shows we received something)
+        if (textEl) {
+          textEl.textContent = text || '(empty prediction)';
+          console.log('📝 Set text to:', text);
+        }
+
+        if (confidenceEl) {
+          const confPercent = confidence !== undefined ? Math.round(confidence * 100) : 0;
+          confidenceEl.textContent = `${confPercent}% confident`;
+        }
+
+        if (badgeTextEl) {
+          badgeTextEl.textContent = getBadgeText(cache_level || 'unknown');
+        }
+      };
+
+      console.log('✅ Popup script loaded, updatePopup available globally');
+    </script>
+  </body>
+</html>
+

@@ -57,6 +57,7 @@ enum CachedData {
     DOMData(crate::screen_context::context_data::DOMData),
     AccessibilityData(crate::screen_context::context_data::AccessibilityData),
     Screenshot(image::DynamicImage),
+    OCRData(crate::screen_context::context_data::OCRData),
 }
 
 #[derive(Debug, Default, Clone)]
@@ -424,17 +425,27 @@ impl SmartCollector {
                 } else {
                     self.screen_capture.capture_full_screen()?
                 };
-                
-                // For now, return empty OCR data
-                // In practice, you'd process the screenshot with OCR
-                let ocr_data = crate::screen_context::context_data::OCRData {
-                    results: Vec::new(),
-                    total_confidence: 0.0,
-                    processing_time_ms: 0,
+
+                let start_time = std::time::Instant::now();
+
+                // Detect text regions and process with OCR
+                let regions = self.ocr_engine.detect_text_regions(&screenshot)?;
+                let ocr_results = self.ocr_engine.batch_process_regions(&regions, &screenshot).await?;
+
+                // OCRResult from ocr_tesseract is already the correct type for OCRData
+                let total_confidence = if ocr_results.is_empty() {
+                    0.0
+                } else {
+                    ocr_results.iter().map(|r| r.confidence).sum::<f32>() / ocr_results.len() as f32
                 };
-                
-                // This is a placeholder - in reality we'd need to convert OCRData to CachedData
-                Err(anyhow::anyhow!("OCR not fully implemented"))
+
+                let ocr_data = crate::screen_context::context_data::OCRData {
+                    results: ocr_results,
+                    total_confidence,
+                    processing_time_ms: start_time.elapsed().as_millis() as u64,
+                };
+
+                Ok(CachedData::OCRData(ocr_data))
             }
             
             DataSourceType::FileSystem => {
@@ -508,7 +519,7 @@ impl SmartCollector {
                 let mut hasher = DefaultHasher::new();
                 screenshot.as_bytes().hash(&mut hasher);
                 let screenshot_hash = format!("{:x}", hasher.finish());
-                
+
                 context.visual_data = Some(crate::screen_context::context_data::VisualData {
                     screenshot_hash,
                     changed_regions: Vec::new(),
@@ -518,9 +529,14 @@ impl SmartCollector {
                 });
             }
         }
-        
-        // TODO: Extract other data types as they're implemented
-        
+
+        // Extract OCR data
+        if let Some(result) = results.get(&DataSourceType::OCR) {
+            if let Some(CachedData::OCRData(ocr_data)) = &result.data {
+                context.ocr_data = Some(ocr_data.clone());
+            }
+        }
+
         Ok(context)
     }
     

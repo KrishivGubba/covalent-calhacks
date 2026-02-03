@@ -1,4 +1,5 @@
 use anyhow::{Context as AnyhowContext, Result};
+use futures::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -8,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::screen_context::context_data::{
     DOMData, FormData, InputData, LinkData, ScrollPosition, ViewportSize,
@@ -102,164 +104,219 @@ impl ChromiumBridge {
         }
     }
     
-    /// Extract DOM data from a specific tab using HTTP API
+    /// Extract DOM data from a specific tab using WebSocket connection to Chrome DevTools
     async fn extract_dom_data_from_tab(&self, tab: &DevToolsTab) -> Result<DOMData> {
-        // Use HTTP API to execute runtime commands
-        let runtime_eval_url = format!(
-            "http://localhost:{}/json/runtime/evaluate",
-            self.debugging_port
-        );
-        
+        // Get WebSocket URL for this tab
+        let ws_url = match &tab.websocket_debugger_url {
+            Some(url) => url.clone(),
+            None => {
+                // Fallback to basic tab information if no WebSocket URL
+                return Ok(self.create_basic_dom_data(tab));
+            }
+        };
+
         // JavaScript to extract comprehensive DOM data
         let js_code = r#"
             (() => {
-                const extractDOMData = () => {
-                    // Get viewport information
-                    const viewport = {
-                        width: window.innerWidth,
-                        height: window.innerHeight
-                    };
-                    
-                    // Get scroll position
-                    const scroll = {
-                        x: window.scrollX,
-                        y: window.scrollY
-                    };
-                    
-                    // Extract visible text (simplified)
-                    const textNodes = [];
-                    const walker = document.createTreeWalker(
-                        document.body,
-                        NodeFilter.SHOW_TEXT,
-                        null,
-                        false
-                    );
-                    
-                    let node;
-                    while (node = walker.nextNode()) {
-                        const text = node.textContent.trim();
-                        if (text.length > 0) {
-                            textNodes.push(text);
+                try {
+                    const extractDOMData = () => {
+                        const viewport = {
+                            width: window.innerWidth,
+                            height: window.innerHeight
+                        };
+
+                        const scroll = {
+                            x: window.scrollX,
+                            y: window.scrollY
+                        };
+
+                        // Extract visible text from body
+                        const textNodes = [];
+                        const walker = document.createTreeWalker(
+                            document.body || document.documentElement,
+                            NodeFilter.SHOW_TEXT,
+                            null,
+                            false
+                        );
+
+                        let node;
+                        while (node = walker.nextNode()) {
+                            const text = node.textContent.trim();
+                            if (text.length > 0) {
+                                textNodes.push(text);
+                            }
                         }
-                    }
-                    
-                    // Extract forms
-                    const forms = Array.from(document.forms).map(form => ({
-                        action: form.action || '',
-                        method: form.method || 'GET',
-                        fields: Array.from(form.elements).map(el => el.name || el.id || '').filter(n => n),
-                        hasFileUpload: Array.from(form.elements).some(el => el.type === 'file')
-                    }));
-                    
-                    // Extract inputs
-                    const inputs = Array.from(document.querySelectorAll('input, textarea, select')).map(input => ({
-                        inputType: input.type || input.tagName.toLowerCase(),
-                        name: input.name || null,
-                        placeholder: input.placeholder || null,
-                        valueLength: (input.value || '').length,
-                        isFocused: document.activeElement === input,
-                        isRequired: input.required || false
-                    }));
-                    
-                    // Extract links
-                    const links = Array.from(document.querySelectorAll('a[href]')).map(link => ({
-                        text: link.textContent.trim(),
-                        href: link.href,
-                        isExternal: !link.href.startsWith(window.location.origin)
-                    }));
-                    
-                    // Extract buttons
-                    const buttons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"]'))
-                        .map(btn => btn.textContent || btn.value || 'Button')
-                        .filter(text => text.trim());
-                    
-                    // Get meta data
-                    const metaData = {};
-                    document.querySelectorAll('meta').forEach(meta => {
-                        const name = meta.name || meta.property;
-                        const content = meta.content;
-                        if (name && content) {
-                            metaData[name] = content;
-                        }
-                    });
-                    
-                    return {
-                        url: window.location.href,
-                        title: document.title,
-                        activeElement: document.activeElement ? document.activeElement.tagName : null,
-                        forms: forms,
-                        visibleText: textNodes.join(' ').substring(0, 5000), // Limit to 5000 chars
-                        buttons: buttons,
-                        inputs: inputs,
-                        links: links.slice(0, 50), // Limit to 50 links
-                        metaData: metaData,
-                        scrollPosition: scroll,
-                        viewportSize: viewport
+
+                        // Extract forms
+                        const forms = Array.from(document.forms || []).map(form => ({
+                            action: form.action || '',
+                            method: form.method || 'GET',
+                            fields: Array.from(form.elements).map(el => el.name || el.id || '').filter(n => n),
+                            hasFileUpload: Array.from(form.elements).some(el => el.type === 'file')
+                        }));
+
+                        // Extract inputs
+                        const inputs = Array.from(document.querySelectorAll('input, textarea, select') || []).map(input => ({
+                            inputType: input.type || input.tagName.toLowerCase(),
+                            name: input.name || null,
+                            placeholder: input.placeholder || null,
+                            valueLength: (input.value || '').length,
+                            isFocused: document.activeElement === input,
+                            isRequired: input.required || false
+                        }));
+
+                        // Extract links
+                        const links = Array.from(document.querySelectorAll('a[href]') || []).map(link => ({
+                            text: link.textContent.trim(),
+                            href: link.href,
+                            isExternal: !link.href.startsWith(window.location.origin)
+                        }));
+
+                        // Extract buttons
+                        const buttons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"]') || [])
+                            .map(btn => btn.textContent || btn.value || 'Button')
+                            .filter(text => text.trim());
+
+                        // Get meta data
+                        const metaData = {};
+                        document.querySelectorAll('meta').forEach(meta => {
+                            const name = meta.name || meta.property;
+                            const content = meta.content;
+                            if (name && content) {
+                                metaData[name] = content;
+                            }
+                        });
+
+                        return {
+                            url: window.location.href,
+                            title: document.title,
+                            activeElement: document.activeElement ? document.activeElement.tagName : null,
+                            forms: forms,
+                            visibleText: textNodes.join(' ').substring(0, 5000),
+                            buttons: buttons,
+                            inputs: inputs,
+                            links: links.slice(0, 50),
+                            metaData: metaData,
+                            scrollPosition: scroll,
+                            viewportSize: viewport
+                        };
                     };
-                };
-                
-                return extractDOMData();
+
+                    return JSON.stringify(extractDOMData());
+                } catch (e) {
+                    return JSON.stringify({ error: e.message });
+                }
             })()
         "#;
-        
-        let request_body = serde_json::json!({
-            "expression": js_code,
-            "returnByValue": true
-        });
-        
-        // Try to execute via DevTools HTTP API
-        let response = self.client
-            .post(&runtime_eval_url)
-            .json(&request_body)
-            .send()
-            .await;
-            
-        match response {
-            Ok(resp) if resp.status().is_success() => {
-                let result: Value = resp.json().await.unwrap_or_default();
-                self.parse_dom_response(result, tab)
+
+        // Use WebSocket to execute JavaScript via Chrome DevTools Protocol
+        match self.execute_js_via_websocket(&ws_url, js_code).await {
+            Ok(result_json) => {
+                // Parse the JSON string result
+                if let Ok(data) = serde_json::from_str::<Value>(&result_json) {
+                    if data.get("error").is_some() {
+                        eprintln!("⚠️  DOM extraction JS error: {:?}", data["error"]);
+                        return Ok(self.create_basic_dom_data(tab));
+                    }
+                    return self.parse_dom_value(data, tab);
+                }
+                Ok(self.create_basic_dom_data(tab))
             }
-            _ => {
-                // Fallback to basic tab information
-                Ok(DOMData {
-                    url: tab.url.clone(),
-                    title: tab.title.clone(),
-                    active_element: None,
-                    forms: Vec::new(),
-                    visible_text: format!("Browser tab: {}", tab.title),
-                    buttons: Vec::new(),
-                    inputs: Vec::new(),
-                    links: Vec::new(),
-                    meta_data: HashMap::new(),
-                    scroll_position: None,
-                    viewport_size: None,
-                    cookies: None,
-                })
+            Err(e) => {
+                eprintln!("⚠️  WebSocket DOM extraction failed: {}, using basic data", e);
+                Ok(self.create_basic_dom_data(tab))
             }
         }
     }
-    
-    /// Parse DOM response from DevTools
-    fn parse_dom_response(&self, response: Value, tab: &DevToolsTab) -> Result<DOMData> {
-        let data = response["result"]["value"].clone();
-        
-        if data.is_null() {
-            return Ok(DOMData {
-                url: tab.url.clone(),
-                title: tab.title.clone(),
-                active_element: None,
-                forms: Vec::new(),
-                visible_text: format!("Browser tab: {}", tab.title),
-                buttons: Vec::new(),
-                inputs: Vec::new(),
-                links: Vec::new(),
-                meta_data: HashMap::new(),
-                scroll_position: None,
-                viewport_size: None,
-                cookies: None,
-            });
+
+    /// Execute JavaScript via WebSocket connection to Chrome DevTools
+    async fn execute_js_via_websocket(&self, ws_url: &str, js_code: &str) -> Result<String> {
+        // Connect to WebSocket with timeout
+        let (ws_stream, _) = timeout(
+            Duration::from_secs(3),
+            connect_async(ws_url)
+        ).await
+            .context("WebSocket connection timeout")?
+            .context("Failed to connect to Chrome DevTools WebSocket")?;
+
+        let (mut write, mut read) = ws_stream.split();
+
+        // Send Runtime.evaluate command
+        let request_id = self.request_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let request = serde_json::json!({
+            "id": request_id,
+            "method": "Runtime.evaluate",
+            "params": {
+                "expression": js_code,
+                "returnByValue": true,
+                "awaitPromise": false
+            }
+        });
+
+        write.send(Message::Text(request.to_string())).await
+            .context("Failed to send WebSocket message")?;
+
+        // Wait for response with timeout
+        let response = timeout(Duration::from_secs(5), async {
+            while let Some(msg) = read.next().await {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        if let Ok(response) = serde_json::from_str::<Value>(&text) {
+                            if response.get("id") == Some(&Value::from(request_id)) {
+                                return Ok(response);
+                            }
+                        }
+                    }
+                    Ok(Message::Close(_)) => break,
+                    Err(e) => return Err(anyhow::anyhow!("WebSocket error: {}", e)),
+                    _ => continue,
+                }
+            }
+            Err(anyhow::anyhow!("WebSocket closed without response"))
+        }).await
+            .context("WebSocket response timeout")??;
+
+        // Close the connection
+        let _ = write.close().await;
+
+        // Extract result
+        if let Some(error) = response.get("error") {
+            return Err(anyhow::anyhow!("DevTools error: {:?}", error));
         }
-        
+
+        if let Some(result) = response.get("result").and_then(|r| r.get("result")).and_then(|r| r.get("value")) {
+            if let Some(s) = result.as_str() {
+                return Ok(s.to_string());
+            }
+        }
+
+        Err(anyhow::anyhow!("Unexpected response format"))
+    }
+
+    /// Create basic DOM data from tab info when JS execution fails
+    fn create_basic_dom_data(&self, tab: &DevToolsTab) -> DOMData {
+        DOMData {
+            url: tab.url.clone(),
+            title: tab.title.clone(),
+            active_element: None,
+            forms: Vec::new(),
+            visible_text: String::new(), // Empty - don't fake it
+            buttons: Vec::new(),
+            inputs: Vec::new(),
+            links: Vec::new(),
+            meta_data: HashMap::new(),
+            scroll_position: None,
+            viewport_size: None,
+            cookies: None,
+        }
+    }
+
+    /// Parse DOM data from a Value (direct JSON, not wrapped in response)
+    fn parse_dom_value(&self, data: Value, tab: &DevToolsTab) -> Result<DOMData> {
+        if data.is_null() {
+            return Ok(self.create_basic_dom_data(tab));
+        }
+
         // Parse forms
         let forms: Vec<FormData> = data["forms"]
             .as_array()
@@ -277,7 +334,7 @@ impl ChromiumBridge {
                 has_file_upload: f["hasFileUpload"].as_bool().unwrap_or(false),
             })
             .collect();
-        
+
         // Parse inputs
         let inputs: Vec<InputData> = data["inputs"]
             .as_array()
@@ -292,7 +349,7 @@ impl ChromiumBridge {
                 is_required: i["isRequired"].as_bool().unwrap_or(false),
             })
             .collect();
-        
+
         // Parse links
         let links: Vec<LinkData> = data["links"]
             .as_array()
@@ -304,7 +361,7 @@ impl ChromiumBridge {
                 is_external: l["isExternal"].as_bool().unwrap_or(false),
             })
             .collect();
-        
+
         // Parse buttons
         let buttons: Vec<String> = data["buttons"]
             .as_array()
@@ -312,7 +369,7 @@ impl ChromiumBridge {
             .iter()
             .map(|b| b.as_str().unwrap_or("").to_string())
             .collect();
-        
+
         // Parse meta data
         let mut meta_data = HashMap::new();
         if let Some(meta_obj) = data["metaData"].as_object() {
@@ -322,7 +379,7 @@ impl ChromiumBridge {
                 }
             }
         }
-        
+
         // Parse scroll position
         let scroll_position = if let Some(scroll) = data["scrollPosition"].as_object() {
             Some(ScrollPosition {
@@ -332,7 +389,7 @@ impl ChromiumBridge {
         } else {
             None
         };
-        
+
         // Parse viewport size
         let viewport_size = if let Some(viewport) = data["viewportSize"].as_object() {
             Some(ViewportSize {
@@ -342,7 +399,7 @@ impl ChromiumBridge {
         } else {
             None
         };
-        
+
         Ok(DOMData {
             url: data["url"].as_str().unwrap_or(&tab.url).to_string(),
             title: data["title"].as_str().unwrap_or(&tab.title).to_string(),
@@ -355,8 +412,15 @@ impl ChromiumBridge {
             meta_data,
             scroll_position,
             viewport_size,
-            cookies: None, // Privacy - not extracting actual cookies
+            cookies: None,
         })
+    }
+
+    /// Parse DOM response from DevTools (legacy method for HTTP API fallback)
+    #[allow(dead_code)]
+    fn parse_dom_response(&self, response: Value, tab: &DevToolsTab) -> Result<DOMData> {
+        let data = response["result"]["value"].clone();
+        self.parse_dom_value(data, tab)
     }
     
     /// Get current page URL

@@ -8,14 +8,14 @@ use crate::screen_context::chromium_bridge::DOMChangeAnalysis;
 use crate::screen_context::context_data::RawContext;
 use crate::screen_context::context_type::{ContextType, IntentAnalysis};
 use crate::screen_context::region_analyzer::RegionChangeAnalysis;
-use crate::screen_context::claude_client::ClaudeClient;
 use crate::screen_context::screen_capture::ScreenCapture;
+use crate::ai_provider::{LLMProvider, ClaudeProvider};
 
 /// LLM-powered context analyzer that generates structured output
 pub struct LLMAnalyzer {
     session_start: SystemTime,
     last_analysis: Option<ContextAnalysisOutput>,
-    claude_client: Option<Arc<ClaudeClient>>,
+    llm_provider: Option<Arc<dyn LLMProvider>>,
     screen_capture: Arc<ScreenCapture>,
 }
 
@@ -49,20 +49,22 @@ pub struct AnalysisMetadata {
 
 impl LLMAnalyzer {
     pub fn new() -> Self {
-        let claude_client = ClaudeClient::new().ok().map(Arc::new);
+        // Try to create fallback provider (will use Claude by default if available)
+        let llm_provider = crate::ai_provider::create_default_provider().ok().map(Arc::from);
+        
         let screen_capture = Arc::new(ScreenCapture::new().unwrap_or_else(|_| {
             // Create a default ScreenCapture if it fails
             panic!("Failed to create ScreenCapture");
         }));
         
-        if claude_client.is_none() {
-            eprintln!("⚠️  Warning: Claude API key not found. Set ANTHROPIC_API_KEY or CLAUDE_API_KEY environment variable.");
+        if llm_provider.is_none() {
+            eprintln!("⚠️  Warning: No AI providers available. Set API keys in environment.");
         }
         
         Self {
             session_start: SystemTime::now(),
             last_analysis: None,
-            claude_client,
+            llm_provider,
             screen_capture,
         }
     }
@@ -167,7 +169,7 @@ impl LLMAnalyzer {
         }
     }
     
-    /// Generate description using Claude API with screenshot fallback
+    /// Generate description using LLM provider with screenshot fallback
     async fn generate_description_with_claude(
         &self,
         raw_context: &RawContext,
@@ -175,8 +177,8 @@ impl LLMAnalyzer {
         dom_changes: Option<&DOMChangeAnalysis>,
         region_changes: Option<&RegionChangeAnalysis>,
     ) -> Result<String> {
-        let claude_client = self.claude_client.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Claude client not available"))?;
+        let llm_provider = self.llm_provider.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("LLM provider not available"))?;
         
         // Build context metadata for Claude
         let metadata = self.build_metadata_for_claude(raw_context, context_type, dom_changes, region_changes);
@@ -190,29 +192,67 @@ impl LLMAnalyzer {
             Generate a concise description of what the user is doing.",
             metadata
         );
-        
-        // Always use screenshot for MVP
-        eprintln!("📸 Using screenshot + Claude for richer context...");
-        return self.generate_with_screenshot(claude_client, &metadata).await;
+
+        // Determine if we have sufficient context data to skip screenshot
+        // Check for meaningful text content from DOM, accessibility, or OCR
+        let has_meaningful_dom = raw_context.dom_data.as_ref()
+            .map_or(false, |d| d.visible_text.trim().len() > 50);
+
+        let has_meaningful_accessibility = raw_context.accessibility_data.as_ref()
+            .map_or(false, |a| a.elements.len() >= 5);
+
+        let has_meaningful_ocr = raw_context.ocr_data.as_ref()
+            .map_or(false, |o| {
+                let total_text_len: usize = o.results.iter().map(|r| r.text.len()).sum();
+                total_text_len > 50 && o.total_confidence > 50.0
+            });
+
+        let has_sufficient_context = has_meaningful_dom || has_meaningful_accessibility || has_meaningful_ocr;
+
+        if has_sufficient_context {
+            // We have enough text context - use fast text-only LLM call
+            eprintln!("📝 Using text-only LLM (sufficient context: DOM={}, Accessibility={}, OCR={})",
+                has_meaningful_dom, has_meaningful_accessibility, has_meaningful_ocr);
+
+            match llm_provider.generate(system_prompt, &user_prompt).await {
+                Ok(description) => return Ok(description),
+                Err(e) => {
+                    // Fallback to screenshot if text-only fails
+                    eprintln!("⚠️  Text-only LLM failed: {}, falling back to screenshot", e);
+                }
+            }
+        } else {
+            eprintln!("📸 Insufficient text context - using screenshot + vision LLM");
+        }
+
+        // Fallback: use screenshot for richer context when text data is insufficient
+        self.generate_with_screenshot(llm_provider, &metadata).await
     }
     
-    /// Generate description with screenshot using Claude vision
+    /// Generate description with screenshot using LLM vision
     async fn generate_with_screenshot(
         &self,
-        claude_client: &Arc<ClaudeClient>,
+        llm_provider: &Arc<dyn LLMProvider>,
         metadata: &str,
     ) -> Result<String> {
-        // Capture screenshot
-        let screenshot = self.screen_capture.capture_full_screen()
-            .map_err(|e| anyhow::anyhow!("Failed to capture screenshot: {}", e))?;
+        // Capture screenshot - with error handling to prevent crashes
+        let screenshot = match self.screen_capture.capture_full_screen() {
+            Ok(img) => img,
+            Err(e) => {
+                eprintln!("⚠️  Screenshot capture failed: {}, falling back to metadata-only analysis", e);
+                return self.generate_fallback_description(metadata);
+            }
+        };
         
-        // Convert to PNG bytes
+        // Convert to PNG bytes - with error handling
         let mut png_bytes = Vec::new();
-        screenshot.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
-            .map_err(|e| anyhow::anyhow!("Failed to encode screenshot: {}", e))?;
+        if let Err(e) = screenshot.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png) {
+            eprintln!("⚠️  PNG encoding failed: {}, falling back to metadata-only analysis", e);
+            return self.generate_fallback_description(metadata);
+        }
         
         // Encode to base64
-        let screenshot_base64 = ClaudeClient::encode_image_to_base64(&png_bytes);
+        let screenshot_base64 = ClaudeProvider::encode_image_to_base64(&png_bytes);
         
         let system_prompt = "You are an AI assistant that analyzes user activity from screenshots and metadata. \
             Generate a concise, natural description (max 200 words) of what the user is currently doing. \
@@ -224,11 +264,47 @@ impl LLMAnalyzer {
             metadata
         );
         
-        claude_client.generate_description_with_image(
+        // Try vision API with fallback on failure (e.g., API credits exhausted, network issues)
+        match llm_provider.generate_with_image(
             system_prompt,
             &user_prompt,
             &screenshot_base64
-        ).await
+        ).await {
+            Ok(description) => Ok(description),
+            Err(e) => {
+                eprintln!("⚠️  Vision API failed: {}, falling back to metadata-only analysis", e);
+                self.generate_fallback_description(metadata)
+            }
+        }
+    }
+    
+    /// Generate a simple fallback description from metadata when screenshot/vision fails
+    fn generate_fallback_description(&self, metadata: &str) -> Result<String> {
+        // Parse metadata to extract key information
+        let lines: Vec<&str> = metadata.lines().collect();
+        
+        let mut app_name = "Unknown App";
+        let mut context_type = "Unknown";
+        let mut activity = "active";
+        
+        for line in lines {
+            if line.starts_with("App: ") {
+                app_name = line.strip_prefix("App: ").unwrap_or(app_name);
+            } else if line.starts_with("Context Type: ") {
+                context_type = line.strip_prefix("Context Type: ").unwrap_or(context_type);
+            } else if line.contains("Idle") {
+                activity = "idle";
+            }
+        }
+        
+        let description = format!(
+            "User is working in {} ({}), currently {}. \
+            Note: Visual analysis unavailable - using metadata only.",
+            app_name, context_type, activity
+        );
+        
+        eprintln!("📝 Generated fallback description: {}", description);
+        Ok(description)
     }
     
     /// Build comprehensive metadata string for Claude
@@ -283,7 +359,25 @@ impl LLMAnalyzer {
                 metadata.push(format!("Active Element: {}", active_el));
             }
         }
-        
+
+        // OCR data (screen text extraction)
+        if let Some(ocr_data) = &raw_context.ocr_data {
+            if !ocr_data.results.is_empty() {
+                let ocr_text: String = ocr_data.results
+                    .iter()
+                    .map(|r| r.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let truncated_ocr = if ocr_text.len() > 500 {
+                    format!("{}...", &ocr_text[..500])
+                } else {
+                    ocr_text
+                };
+                metadata.push(format!("Screen Text (OCR): {}", truncated_ocr));
+                metadata.push(format!("OCR Confidence: {:.1}%", ocr_data.total_confidence));
+            }
+        }
+
         // Activity metrics
         metadata.push(format!("Activity Level: {:?}", raw_context.activity_metrics.activity_level));
         metadata.push(format!("Idle: {}", raw_context.activity_metrics.is_idle));

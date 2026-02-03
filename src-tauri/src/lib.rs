@@ -1,10 +1,29 @@
 // Module declarations
+pub mod ai_provider;
 pub mod screen_context;
+pub mod tab_completion;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::Manager;
+use tauri::{Manager, Emitter};
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::path::PathBuf;
+
+/// Find the overlap between the end of the buffer and the start of the prediction.
+/// Returns the number of characters that overlap.
+/// Example: buffer="git ad", prediction="add ." -> overlap is 2 ("ad")
+fn find_overlap(buffer: &str, prediction: &str) -> usize {
+    let buffer_chars: Vec<char> = buffer.chars().collect();
+    let pred_chars: Vec<char> = prediction.chars().collect();
+
+    // Find longest suffix of buffer that is prefix of prediction
+    for start in 0..buffer_chars.len() {
+        let suffix: Vec<char> = buffer_chars[start..].to_vec();
+        if pred_chars.len() >= suffix.len() && pred_chars[..suffix.len()] == suffix[..] {
+            return suffix.len();
+        }
+    }
+    0
+}
 
 // Suggested action from Flask
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -154,6 +173,80 @@ impl Drop for FlaskServer {
     }
 }
 
+// Ollama server state management
+struct OllamaServer {
+    process: Arc<Mutex<Option<Child>>>,
+    was_already_running: Arc<Mutex<bool>>,
+}
+
+impl OllamaServer {
+    fn new() -> Self {
+        Self {
+            process: Arc::new(Mutex::new(None)),
+            was_already_running: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    fn start(&self) -> Result<(), String> {
+        // Check if ollama is already running by trying to connect
+        let already_running = std::process::Command::new("curl")
+            .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:11434/api/tags"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "200")
+            .unwrap_or(false);
+
+        if already_running {
+            println!("✓ Ollama is already running (not managed by Covalent)");
+            *self.was_already_running.lock().unwrap() = true;
+            return Ok(());
+        }
+
+        // Start ollama serve
+        match Command::new("ollama")
+            .arg("serve")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(child) => {
+                println!("✓ Ollama serve started with PID: {:?}", child.id());
+                *self.process.lock().unwrap() = Some(child);
+                // Give it a moment to initialize
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("⚠️  Failed to start Ollama: {}", e);
+                eprintln!("   Make sure Ollama is installed: https://ollama.ai");
+                Err(format!("Failed to start Ollama: {}", e))
+            }
+        }
+    }
+
+    fn stop(&self) {
+        // Only stop if we started it (don't kill user's existing ollama)
+        if *self.was_already_running.lock().unwrap() {
+            println!("🦙 Ollama was already running - leaving it alone");
+            return;
+        }
+
+        if let Ok(mut process_guard) = self.process.lock() {
+            if let Some(mut child) = process_guard.take() {
+                println!("🦙 Stopping Ollama server (PID: {:?})", child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                println!("✓ Ollama server stopped");
+            }
+        }
+    }
+}
+
+impl Drop for OllamaServer {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -241,6 +334,143 @@ fn clear_suggested_actions(store: tauri::State<ActionsStore>) {
     store.clear_actions();
 }
 
+// Get cache state visualization (for observability)
+#[tauri::command]
+fn get_cache_state(trigger: tauri::State<std::sync::Arc<tab_completion::CompletionTrigger>>) -> String {
+    // Print to terminal
+    trigger.visualize_cache();
+    // Return JSON for frontend
+    trigger.get_cache_state_json()
+}
+
+// Get cursor position for ghost text overlay
+#[tauri::command]
+fn get_cursor_position() -> Result<(i32, i32), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use core_graphics::display::CGDisplay;
+        use core_graphics::event::CGEvent;
+        use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+        
+        // Get mouse location (best approximation for cursor position)
+        if let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) {
+            if let Ok(event) = CGEvent::new(source) {
+                let location = event.location();
+                return Ok((location.x as i32, location.y as i32));
+            }
+        }
+        
+        // Fallback to display center
+        let main_display = CGDisplay::main();
+        let bounds = main_display.bounds();
+        Ok((bounds.size.width as i32 / 2, bounds.size.height as i32 / 2))
+    }
+    
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Cursor position only supported on macOS".to_string())
+    }
+}
+
+// Dashboard commands
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ActionHistoryItem {
+    pub action_uuid: String,
+    pub action_type: String,
+    pub action_data: String,
+    pub creation_timestamp: String,
+    pub node_uuid: String,
+}
+
+#[tauri::command]
+fn get_actions_history() -> Result<Vec<ActionHistoryItem>, String> {
+    // TODO: Read from actual database
+    // For now, return placeholder data
+    println!("📊 Fetching actions history");
+    Ok(vec![])
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct MemoryGraphData {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct GraphNode {
+    pub id: String,
+    pub label: String,
+    pub metadata: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct GraphEdge {
+    pub from: String,
+    pub to: String,
+}
+
+#[tauri::command]
+fn get_memory_graph_data() -> Result<MemoryGraphData, String> {
+    // TODO: Read from graph.db and format for visualization
+    println!("🧠 Fetching memory graph data");
+    Ok(MemoryGraphData {
+        nodes: vec![],
+        edges: vec![],
+    })
+}
+
+#[tauri::command]
+fn get_excluded_apps() -> Result<Vec<String>, String> {
+    // TODO: Read from settings/config
+    println!("🔒 Fetching excluded apps");
+    Ok(vec![])
+}
+
+#[tauri::command]
+fn set_excluded_apps(apps: Vec<String>) -> Result<(), String> {
+    // TODO: Save to settings/config
+    println!("🔒 Setting excluded apps: {:?}", apps);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_auth_status() -> Result<serde_json::Value, String> {
+    // TODO: Implement actual auth status check
+    println!("🔐 Checking auth status");
+    Ok(serde_json::json!({
+        "authenticated": false,
+        "user": null,
+        "message": "Authentication not yet implemented"
+    }))
+}
+
+#[tauri::command]
+fn get_mcp_integrations() -> Result<Vec<serde_json::Value>, String> {
+    // TODO: Fetch actual MCP integrations from Composio/backend
+    println!("🔌 Fetching MCP integrations");
+    Ok(vec![
+        serde_json::json!({
+            "id": "github",
+            "name": "GitHub",
+            "connected": false,
+            "description": "Manage repositories and issues"
+        }),
+        serde_json::json!({
+            "id": "slack",
+            "name": "Slack",
+            "connected": false,
+            "description": "Send messages and manage channels"
+        }),
+        serde_json::json!({
+            "id": "gmail",
+            "name": "Gmail",
+            "connected": false,
+            "description": "Read and send emails"
+        }),
+    ])
+}
+
 // #[cfg(target_os = "macos")]
 // use tauri_plugin_macos_permissions;
 
@@ -275,13 +505,23 @@ pub fn run() {
             
             let flask_server = FlaskServer::new();
             
-            match flask_server.start(app_dir) {
+            match flask_server.start(app_dir.clone()) {
                 Ok(_) => println!("✓ Flask server started successfully"),
                 Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
             }
-            
+
             // Store flask server in app state so it stays alive
             app.manage(flask_server);
+
+            // Start Ollama serve (for local LLM inference)
+            println!("🦙 Starting Ollama serve...");
+            let ollama_server = OllamaServer::new();
+            match ollama_server.start() {
+                Ok(_) => {},
+                Err(e) => eprintln!("⚠️  Ollama startup issue: {}", e),
+            }
+            // Store ollama server in app state so it gets cleaned up on exit
+            app.manage(ollama_server);
             
             // Create and manage context state
             let context_state = ContextState::new();
@@ -321,9 +561,143 @@ pub fn run() {
                 }
             });
             
+            // Initialize tab completion system
+            println!("⌨️  Initializing tab completion system...");
+            let graph_db_path = app_dir.clone().join("server/graph.db");
+            let graph_db_path_str = graph_db_path.to_string_lossy().to_string();
+            
+            match tab_completion::initialize(graph_db_path_str) {
+                Ok(trigger) => {
+                    println!("✓ Tab completion system initialized");
+                    
+                    // Create window manager for ghost text and popup
+                    let window_manager = std::sync::Arc::new(
+                        tab_completion::CompletionWindowManager::new(app.handle().clone())
+                    );
+                    
+                    // Create hotkey handler
+                    let hotkey_handler = std::sync::Arc::new(tab_completion::HotkeyHandler::new());
+                    
+                    // Set up callback to show suggestions via window manager
+                    // IMPORTANT: This callback is invoked from a background thread, but Tauri/Cocoa
+                    // window operations MUST run on the main thread. We use run_on_main_thread to dispatch.
+                    let window_manager_clone = window_manager.clone();
+                    let hotkey_handler_clone = hotkey_handler.clone();
+                    let app_handle_for_callback = app.handle().clone();
+                    trigger.set_suggestion_callback(move |suggestion| {
+                        println!("📤 Showing completion suggestion");
+
+                        // Update hotkey handler with new suggestion (this is thread-safe via parking_lot::Mutex)
+                        hotkey_handler_clone.set_suggestion(Some(suggestion.text.clone()));
+
+                        // Dispatch UI operations to main thread to prevent crashes
+                        let window_manager = window_manager_clone.clone();
+                        let suggestion_clone = suggestion.clone();
+                        let suggestion_text_for_log = suggestion.text.clone();
+                        println!("📤 Dispatching show_suggestion to main thread for: {}...",
+                                 &suggestion_text_for_log[..suggestion_text_for_log.len().min(30)]);
+                        if let Err(e) = app_handle_for_callback.run_on_main_thread(move || {
+                            println!("🔄 Main thread executing show_suggestion");
+                            // Show suggestion using window manager (ghost text or popup)
+                            if let Err(e) = window_manager.show_suggestion(&suggestion_clone) {
+                                eprintln!("⚠️  Failed to show completion: {}", e);
+                            }
+                        }) {
+                            eprintln!("⚠️  Failed to dispatch to main thread: {}", e);
+                        } else {
+                            println!("✅ Dispatch queued successfully");
+                        }
+                    });
+                    
+                    // Set up hotkey callbacks
+                    // NOTE: These callbacks are invoked from the CGEventTap thread (background thread).
+                    // inject_completion_text uses CGEvent which is thread-safe, but hide_all() touches
+                    // Tauri windows which require main thread execution.
+                    let window_manager_accept = window_manager.clone();
+                    let app_handle_for_accept = app.handle().clone();
+                    let trigger_for_accept = trigger.clone();
+                    hotkey_handler.set_accept_callback(move |text, chars_typed_during_grace| {
+                        // Get buffer suffix to detect overlap with prediction
+                        // Must do this BEFORE spawning thread while we still have sync access
+                        let buffer_suffix = trigger_for_accept.get_buffer_suffix(text.len());
+
+                        // Find overlap between what user typed and what prediction contains
+                        let overlap = find_overlap(&buffer_suffix, &text);
+
+                        // Total chars to erase = overlap + chars typed during grace period
+                        let total_erase = overlap + chars_typed_during_grace;
+
+                        println!("✅ Accepting completion via hotkey (overlap: {}, grace: {}, total erase: {})",
+                                 overlap, chars_typed_during_grace, total_erase);
+
+                        // IMPORTANT: Spawn a thread to handle the accept logic.
+                        // The callback runs inside CGEventTap which must return quickly.
+                        // inject_with_backspace has 150ms+ of sleeps that would block the tap.
+                        let wm = window_manager_accept.clone();
+                        let app_handle = app_handle_for_accept.clone();
+                        let trigger = trigger_for_accept.clone();
+
+                        std::thread::spawn(move || {
+                            // Inject the text with backspace for overlap + grace period chars
+                            if let Err(e) = tab_completion::injector::inject_with_backspace(text.clone(), total_erase) {
+                                eprintln!("⚠️  Failed to inject text: {}", e);
+                            }
+
+                            // Hide completion windows BEFORE triggering new prediction
+                            // This prevents race condition where hide_all interferes with new show_suggestion
+                            let wm_clone = wm.clone();
+                            let app_handle_clone = app_handle.clone();
+                            let _ = app_handle_clone.run_on_main_thread(move || {
+                                let _ = wm_clone.hide_all();
+                            });
+
+                            // Small delay to ensure hide completes before new prediction cycle
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+
+                            // Update the trigger's buffer with the accepted text and re-trigger prediction
+                            // NOTE: This spawns a thread with 300ms delay, then shows popup if prediction found
+                            trigger.append_to_buffer(text.clone());
+                        });
+                    });
+
+                    let window_manager_dismiss = window_manager.clone();
+                    let app_handle_for_dismiss = app.handle().clone();
+                    hotkey_handler.set_dismiss_callback(move || {
+                        println!("❌ Dismissing completion via hotkey");
+                        // Hide all completion windows - must run on main thread
+                        let wm = window_manager_dismiss.clone();
+                        let _ = app_handle_for_dismiss.run_on_main_thread(move || {
+                            let _ = wm.hide_all();
+                        });
+                    });
+                    
+                    // Start hotkey listener
+                    if let Err(e) = hotkey_handler.clone().start_listening() {
+                        eprintln!("⚠️  Failed to start hotkey listener: {}", e);
+                        eprintln!("   Hotkeys will not be available");
+                    }
+                    
+                    // Start listening for keystrokes
+                    let trigger_clone = trigger.clone();
+                    trigger_clone.start_listening();
+                    
+                    // Store trigger, hotkey handler, and window manager in app state
+                    app.manage(trigger);
+                    app.manage(hotkey_handler);
+                    app.manage(window_manager);
+                    
+                    println!("✓ Tab completion listener started");
+                }
+                Err(e) => {
+                    eprintln!("✗ Failed to initialize tab completion: {}", e);
+                    eprintln!("   Tab completion will not be available");
+                }
+            }
+            
             // Create menu items
             let open_profile = MenuItem::with_id(app, "open_profile", "Open Profile", true, None::<&str>)?;
             let link_mcps = MenuItem::with_id(app, "link_mcps", "Link MCPs", true, None::<&str>)?;
+            let open_dashboard = MenuItem::with_id(app, "open_dashboard", "Dashboard", true, Some("cmd+;"))?;
             let quit = PredefinedMenuItem::quit(app, Some("Quit"))?;
             
             // Create Profile submenu
@@ -331,7 +705,7 @@ pub fn run() {
                 app,
                 "Profile",
                 true,
-                &[&open_profile, &link_mcps, &quit],
+                &[&open_profile, &link_mcps, &open_dashboard, &quit],
             )?;
             
             // Create menu bar
@@ -341,7 +715,7 @@ pub fn run() {
             app.set_menu(menu)?;
             
             // Handle menu events
-            app.on_menu_event(move |_app, event| {
+            app.on_menu_event(move |app, event| {
                 match event.id().as_ref() {
                     "open_profile" => {
                         println!("Open Profile clicked");
@@ -350,6 +724,15 @@ pub fn run() {
                     "link_mcps" => {
                         println!("Link MCPs clicked");
                         // TODO: Implement MCP linking functionality
+                    }
+                    "open_dashboard" => {
+                        println!("🎛️  Opening dashboard");
+                        if let Some(window) = app.get_webview_window("dashboard") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        } else {
+                            eprintln!("⚠️  Dashboard window not found");
+                        }
                     }
                     _ => {}
                 }
@@ -367,7 +750,16 @@ pub fn run() {
             get_context_collection_status,
             trigger_action,
             get_suggested_actions,
-            clear_suggested_actions
+            clear_suggested_actions,
+            tab_completion::injector::inject_completion_text,
+            get_cursor_position,
+            get_cache_state,
+            get_actions_history,
+            get_memory_graph_data,
+            get_excluded_apps,
+            set_excluded_apps,
+            get_auth_status,
+            get_mcp_integrations
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
