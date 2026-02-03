@@ -643,13 +643,20 @@ pub fn run() {
                                 eprintln!("⚠️  Failed to inject text: {}", e);
                             }
 
-                            // Update the trigger's buffer with the accepted text and re-trigger prediction
-                            trigger.append_to_buffer(text.clone());
-
-                            // Hide all completion windows - must run on main thread
-                            let _ = app_handle.run_on_main_thread(move || {
-                                let _ = wm.hide_all();
+                            // Hide completion windows BEFORE triggering new prediction
+                            // This prevents race condition where hide_all interferes with new show_suggestion
+                            let wm_clone = wm.clone();
+                            let app_handle_clone = app_handle.clone();
+                            let _ = app_handle_clone.run_on_main_thread(move || {
+                                let _ = wm_clone.hide_all();
                             });
+
+                            // Small delay to ensure hide completes before new prediction cycle
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+
+                            // Update the trigger's buffer with the accepted text and re-trigger prediction
+                            // NOTE: This spawns a thread with 300ms delay, then shows popup if prediction found
+                            trigger.append_to_buffer(text.clone());
                         });
                     });
 
