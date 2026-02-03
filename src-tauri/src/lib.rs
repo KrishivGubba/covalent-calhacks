@@ -641,16 +641,22 @@ pub fn run() {
                         let trigger = trigger_for_accept.clone();
 
                         std::thread::spawn(move || {
+                            println!("🧵 Accept thread started");
+
                             // Inject the text with backspace for overlap + grace period chars
+                            println!("🧵 Injecting text...");
                             if let Err(e) = tab_completion::injector::inject_with_backspace(text.clone(), total_erase) {
                                 eprintln!("⚠️  Failed to inject text: {}", e);
                             }
+                            println!("🧵 Text injection complete");
 
                             // Hide completion windows BEFORE triggering new prediction
                             // This prevents race condition where hide_all interferes with new show_suggestion
+                            println!("🧵 Hiding windows...");
                             let wm_clone = wm.clone();
                             let app_handle_clone = app_handle.clone();
                             let _ = app_handle_clone.run_on_main_thread(move || {
+                                println!("🧵 [main thread] Hiding all windows");
                                 let _ = wm_clone.hide_all();
                             });
 
@@ -659,7 +665,9 @@ pub fn run() {
 
                             // Update the trigger's buffer with the accepted text and re-trigger prediction
                             // NOTE: This spawns a thread with 300ms delay, then shows popup if prediction found
+                            println!("🧵 Calling append_to_buffer...");
                             trigger.append_to_buffer(text.clone());
+                            println!("🧵 Accept thread complete");
                         });
                     });
 

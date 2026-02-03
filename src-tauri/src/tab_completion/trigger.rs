@@ -296,6 +296,7 @@ impl CompletionTrigger {
     /// Process keyboard events from macOS CGEventTap (macOS only)
     #[cfg(target_os = "macos")]
     fn process_macos_keyboard_events(&self) {
+        let mut event_count: u64 = 0;
         loop {
             // Get the keyboard listener
             let listener_guard = self.keyboard_listener.lock();
@@ -306,34 +307,41 @@ impl CompletionTrigger {
                     return;
                 }
             };
-            
+
             // Try to receive keyboard events (non-blocking with small sleep)
             match listener.try_recv() {
                 Ok(event) => {
+                    event_count += 1;
                     // Process the keyboard event
                     if let Some(ch) = event.character {
+                        // Log every 10th event to avoid spam
+                        if event_count % 10 == 0 {
+                            println!("⌨️  Keyboard event #{}: char='{}'", event_count, ch);
+                        }
+
                         // Add character to text buffer
                         {
                             let mut buffer = self.text_buffer.lock();
                             buffer.append(ch);
-                            
+
                             // Check if we should trigger prediction
                             if !buffer.should_trigger_prediction() {
                                 continue;
                             }
-                            
+
                             buffer.reset_prediction_counter();
                         }
-                        
+
                         // Check debounce
                         let now = Instant::now();
                         let last_prediction = *self.last_prediction_time.lock();
                         if now.duration_since(last_prediction) < self.prediction_debounce {
                             continue; // Too soon, skip
                         }
-                        
+
                         *self.last_prediction_time.lock() = now;
-                        
+
+                        println!("🔮 Triggering completion from keyboard event #{}", event_count);
                         // Trigger proactive completion
                         self.trigger_completion();
                     }
@@ -517,9 +525,17 @@ impl CompletionTrigger {
         let has_callback = self.suggestion_callback.lock().is_some();
         let callback_ref = self.suggestion_callback.clone();
 
+        // Clear any stale decline context when doing normal predictions
+        // This ensures we don't carry over state from previous dismiss cycles
+        *self.decline_context.lock() = None;
+
         if text.trim().is_empty() {
+            println!("⏭️  trigger_completion: empty buffer, skipping");
             return; // Silent skip for empty buffer
         }
+
+        println!("🔮 trigger_completion: app={}, text='{}...' has_callback={}",
+                 app, &text[..text.len().min(20)], has_callback);
 
         // Spawn thread to avoid blocking key listener
         std::thread::spawn(move || {
@@ -1034,6 +1050,9 @@ impl CompletionTrigger {
     /// Append text to the buffer (called after accepting a suggestion)
     /// This updates the internal state so predictions can continue from the new position
     pub fn append_to_buffer(&self, text: String) {
+        println!("📝 append_to_buffer: adding '{}' ({} chars)",
+                 &text[..text.len().min(30)], text.len());
+
         {
             let mut buffer = self.text_buffer.lock();
             for ch in text.chars() {
@@ -1042,6 +1061,9 @@ impl CompletionTrigger {
             // Don't reset prediction counter - we want the next keystroke to
             // potentially trigger a prediction immediately, not wait for 3 chars
         }
+
+        // Clear decline context since we just accepted a prediction
+        *self.decline_context.lock() = None;
 
         // Trigger a new prediction after a short delay
         let self_clone = self.cache.clone();
@@ -1053,14 +1075,21 @@ impl CompletionTrigger {
         let runtime = self.runtime.clone();
         let prediction_counter = self.prediction_counter.clone();
 
+        println!("📝 append_to_buffer: spawning prediction thread (app={}, has_callback={})",
+                 app, has_callback);
+
         std::thread::spawn(move || {
             // Small delay before re-triggering
             std::thread::sleep(Duration::from_millis(300));
 
             let text = text_buffer.lock().get_last_n(100);
             if text.trim().is_empty() {
+                println!("⏭️  append_to_buffer thread: buffer is empty, skipping prediction");
                 return;
             }
+
+            println!("🔮 append_to_buffer thread: generating prediction for '{}...'",
+                     &text[..text.len().min(30)]);
 
             Self::get_and_show_prediction(
                 self_clone,
