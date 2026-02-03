@@ -40,7 +40,7 @@ __pycache__/
 *.pyc
 *.pyo
 
-
+*.md 
 
 
 covalent_mcp/toolclasses/github/github_token.json
