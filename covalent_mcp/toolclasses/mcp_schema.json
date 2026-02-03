@@ -1,0 +1,1492 @@
+{
+  "tools": [
+    {
+      "name": "create_repo",
+      "title": null,
+      "description": "Create a new GitHub repository.\n\nArgs:\n    name: Repository name\n    owner: Organization/user to create repo under (default: authenticated user)\n    private: Whether repository should be private\n    description: Repository description\n    auto_init: Initialize with README\n    gitignore_template: .gitignore template name (e.g., \"Node\", \"Python\")\n    license_template: License template name (e.g., \"mit\", \"apache-2.0\")\n\nReturns:\n    Repository information including URL and name",
+      "inputSchema": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "private": {
+            "default": false,
+            "type": "boolean"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "auto_init": {
+            "default": false,
+            "type": "boolean"
+          },
+          "gitignore_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "license_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "create_repo_from_template",
+      "title": null,
+      "description": "Create a new GitHub repository from a template repository.\n\nArgs:\n    template_owner: Owner of the template repository\n    template_repo: Name of the template repository\n    name: Name for the new repository\n    owner: Organization/user to create repo under (default: authenticated user)\n    private: Whether repository should be private\n    description: Repository description\n\nReturns:\n    Repository information including URL and name",
+      "inputSchema": {
+        "properties": {
+          "template_owner": {
+            "type": "string"
+          },
+          "template_repo": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "private": {
+            "default": false,
+            "type": "boolean"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "template_owner",
+          "template_repo",
+          "name"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "create_issue",
+      "title": null,
+      "description": "Create a GitHub issue.\n\nArgs:\n    owner: Repository owner\n    repo: Repository name\n    title: Issue title\n    body: Issue description/body\n    labels: List of label names to apply\n\nReturns:\n    Issue information including number and URL",
+      "inputSchema": {
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "title"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "create_pull_request",
+      "title": null,
+      "description": "Create a GitHub pull request.\n\nArgs:\n    owner: Repository owner\n    repo: Repository name\n    title: PR title\n    head: Branch to merge FROM (e.g., \"feature-branch\")\n    base: Branch to merge INTO (e.g., \"main\")\n    body: PR description\n    draft: Whether PR should be created as draft\n\nReturns:\n    Pull request information including number and URL",
+      "inputSchema": {
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "head": {
+            "type": "string"
+          },
+          "base": {
+            "type": "string"
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "draft": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "title",
+          "head",
+          "base"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "update_repo_description",
+      "title": null,
+      "description": "Update the description of an existing GitHub repository.\n\nArgs:\n    owner: Repository owner\n    repo: Repository name\n    description: New description\n\nReturns:\n    Updated repository information",
+      "inputSchema": {
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "description"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "set_repo_topics",
+      "title": null,
+      "description": "Set topics (tags) for an existing GitHub repository.\n\nArgs:\n    owner: Repository owner\n    repo: Repository name\n    topics: List of topic names (e.g., [\"python\", \"api\", \"web\"])\n\nReturns:\n    Response with topics that were set",
+      "inputSchema": {
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "topics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "topics"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "rename_default_branch",
+      "title": null,
+      "description": "Rename the default branch of an existing GitHub repository.\n\nArgs:\n    owner: Repository owner\n    repo: Repository name\n    new_name: New name for the default branch (e.g., \"main\", \"master\")\n\nReturns:\n    Response indicating success",
+      "inputSchema": {
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "new_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner",
+          "repo",
+          "new_name"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "create_event",
+      "title": null,
+      "description": "Create a new calendar event.\n\nArgs:\n    summary: Title of the event\n    start_time: Start time in RFC3339 format (e.g., \"2024-01-15T10:00:00-08:00\")\n    end_time: End time in RFC3339 format\n    calendar_id: Calendar ID (default: \"primary\")\n    location: Location of the event\n    description: Description of the event\n    attendees: List of attendee email addresses\n    timezone: Timezone for the event (e.g., \"America/New_York\")\n    send_notifications: Whether to send notifications to attendees\n\nReturns:\n    Event information including ID and HTML link",
+      "inputSchema": {
+        "properties": {
+          "summary": {
+            "type": "string"
+          },
+          "start_time": {
+            "type": "string"
+          },
+          "end_time": {
+            "type": "string"
+          },
+          "calendar_id": {
+            "default": "primary",
+            "type": "string"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "attendees": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "send_notifications": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "summary",
+          "start_time",
+          "end_time"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "update_event",
+      "title": null,
+      "description": "Update an existing calendar event.\n\nArgs:\n    event_id: Event ID to update\n    calendar_id: Calendar ID (default: \"primary\")\n    summary: New title (optional)\n    start_time: New start time in RFC3339 format (optional)\n    end_time: New end time in RFC3339 format (optional)\n    location: New location (optional)\n    description: New description (optional)\n    attendees: New list of attendee emails (optional)\n    timezone: Timezone for times (optional)\n    send_notifications: Whether to send notifications\n\nReturns:\n    Updated event information",
+      "inputSchema": {
+        "properties": {
+          "event_id": {
+            "type": "string"
+          },
+          "calendar_id": {
+            "default": "primary",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "start_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "end_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "attendees": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "send_notifications": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "event_id"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "delete_event",
+      "title": null,
+      "description": "Delete a calendar event.\n\nArgs:\n    event_id: Event ID to delete\n    calendar_id: Calendar ID (default: \"primary\")\n    send_notifications: Whether to send cancellation notifications\n\nReturns:\n    Success status",
+      "inputSchema": {
+        "properties": {
+          "event_id": {
+            "type": "string"
+          },
+          "calendar_id": {
+            "default": "primary",
+            "type": "string"
+          },
+          "send_notifications": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "event_id"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "update_calendar",
+      "title": null,
+      "description": "Update calendar settings.\n\n\u26a0\ufe0f NOT WORKING: Requires additional OAuth scopes (insufficient permissions).\n\nArgs:\n    calendar_id: Calendar ID to update\n    summary: New summary/title (optional)\n    description: New description (optional)\n    time_zone: New timezone (optional)\n    location: New location (optional)\n\nReturns:\n    Updated calendar information",
+      "inputSchema": {
+        "properties": {
+          "calendar_id": {
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "time_zone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "calendar_id"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "send_email",
+      "title": null,
+      "description": "Send an email message.\n\nArgs:\n    to: Recipient email address\n    subject: Email subject line\n    body: Email body content\n    body_type: MIME type - \"text/plain\" or \"text/html\" (default: \"text/plain\")\n    cc: CC email address (optional)\n    bcc: BCC email address (optional)\n\nReturns:\n    Sent message information including ID and thread ID",
+      "inputSchema": {
+        "properties": {
+          "to": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_type": {
+            "default": "text/plain",
+            "type": "string"
+          },
+          "cc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "bcc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "body"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "create_text_file",
+      "title": null,
+      "description": "Create a new text file in Google Drive.\n\nArgs:\n    name: File name (must end with .txt, .md, or .json)\n    content: File content\n    parent_folder_id: Parent folder ID (defaults to root)\n\nReturns:\n    Created file information including ID and web view link",
+      "inputSchema": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "parent_folder_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "name",
+          "content"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "update_text_file",
+      "title": null,
+      "description": "Update an existing text file in Google Drive.\n\nArgs:\n    file_id: File ID to update\n    content: New file content\n    name: Optional new file name\n\nReturns:\n    Updated file information",
+      "inputSchema": {
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "file_id",
+          "content"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "create_folder",
+      "title": null,
+      "description": "Create a new folder in Google Drive.\n\nArgs:\n    name: Folder name\n    parent_folder_id: Parent folder ID (defaults to root)\n\nReturns:\n    Created folder information including ID and web view link",
+      "inputSchema": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "parent_folder_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "delete_file",
+      "title": null,
+      "description": "Move a file or folder to trash in Google Drive.\n\nArgs:\n    file_id: File or folder ID to delete\n\nReturns:\n    Success status",
+      "inputSchema": {
+        "properties": {
+          "file_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "rename_file",
+      "title": null,
+      "description": "Rename a file or folder in Google Drive.\n\nArgs:\n    file_id: File or folder ID to rename\n    new_name: New name\n\nReturns:\n    Updated file information",
+      "inputSchema": {
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "new_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id",
+          "new_name"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "move_file",
+      "title": null,
+      "description": "Move a file or folder to a different folder in Google Drive.\n\nArgs:\n    file_id: File or folder ID to move\n    destination_folder_id: Destination folder ID (defaults to root)\n\nReturns:\n    Updated file information",
+      "inputSchema": {
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "destination_folder_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "file_id"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "read_file",
+      "title": null,
+      "description": "Read the contents of a text file.\n\nArgs:\n    path: Path relative to the filesystem root (e.g. \"foo/bar.txt\")\n    encoding: Text encoding (default: utf-8)\n\nReturns:\n    Dict with success, content (or error message). Content is empty if failed.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "encoding": {
+            "default": "utf-8",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "write_file",
+      "title": null,
+      "description": "Write content to a text file. Creates parent directories if create_dirs is True.\n\nArgs:\n    path: Path relative to the filesystem root\n    content: File content\n    encoding: Text encoding (default: utf-8)\n    create_dirs: Create parent directories if missing (default: True)\n\nReturns:\n    Dict with success and message (or error).",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "encoding": {
+            "default": "utf-8",
+            "type": "string"
+          },
+          "create_dirs": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "list_directory",
+      "title": null,
+      "description": "List contents of a directory.\n\nArgs:\n    path: Directory path relative to root (default: \".\" for root)\n\nReturns:\n    Dict with success, entries (list of {name, path, is_dir}), or error.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "default": ".",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "create_directory",
+      "title": null,
+      "description": "Create a directory. Creates parent directories if parents is True.\n\nArgs:\n    path: Directory path relative to root\n    parents: Create parent directories if missing (default: True)\n\nReturns:\n    Dict with success and message (or error).",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "parents": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "delete_path",
+      "title": null,
+      "description": "Delete a file or directory. Directories must be empty unless recursive is True.\n\nArgs:\n    path: Path relative to root\n    recursive: If True, delete non-empty directories (default: False)\n\nReturns:\n    Dict with success and message (or error).",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "recursive": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "file_exists",
+      "title": null,
+      "description": "Check if a path exists (file or directory).\n\nArgs:\n    path: Path relative to root\n\nReturns:\n    Dict with success and exists (bool).",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "move_path",
+      "title": null,
+      "description": "Move or rename a file or directory.\n\nArgs:\n    src: Source path relative to root\n    dst: Destination path relative to root\n\nReturns:\n    Dict with success and message (or error).",
+      "inputSchema": {
+        "properties": {
+          "src": {
+            "type": "string"
+          },
+          "dst": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "src",
+          "dst"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "copy_path",
+      "title": null,
+      "description": "Copy a file or directory.\n\nArgs:\n    src: Source path relative to root\n    dst: Destination path relative to root\n\nReturns:\n    Dict with success and message (or error).",
+      "inputSchema": {
+        "properties": {
+          "src": {
+            "type": "string"
+          },
+          "dst": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "src",
+          "dst"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "grep",
+      "title": null,
+      "description": "Search directory for pattern in file contents (grep-style).\nReturns matches as {path, line_number, line}. Truncates to max_matches.\n\nArgs:\n    path: Directory path relative to root to search in\n    pattern: String to search for (substring or regex if use_regex)\n    max_matches: Maximum number of matches to return (default: 100)\n    recursive: Search subdirectories (default: True)\n    use_regex: Treat pattern as regex (default: False)\n    encoding: Text encoding for files (default: utf-8)\n\nReturns:\n    Dict with success, matches (list of {path, line_number, line}), truncated (bool).",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "max_matches": {
+            "default": 25,
+            "type": "integer"
+          },
+          "recursive": {
+            "default": true,
+            "type": "boolean"
+          },
+          "use_regex": {
+            "default": false,
+            "type": "boolean"
+          },
+          "encoding": {
+            "default": "utf-8",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "pattern"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    },
+    {
+      "name": "read_pdf",
+      "title": null,
+      "description": "Extract text from a PDF. Returns structured output the agent can parse:\n{pages: [{page, text, has_text_layer}], total_pages, extraction_method, warnings}.\n\nArgs:\n    path: PDF path relative to filesystem root\n\nReturns:\n    Dict with success and either the structured PDF extraction\n    (pages, total_pages, extraction_method, warnings) or error.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "execution": null
+    }
+  ],
+  "resourceTemplates": [
+    {
+      "name": "get_repo_resource",
+      "title": null,
+      "uriTemplate": "github://repo/{owner}/{repo}",
+      "description": "Get information about a GitHub repository.\n\nURI: github://repo/{owner}/{repo}",
+      "mimeType": "text/plain",
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      }
+    },
+    {
+      "name": "list_repos_resource",
+      "title": null,
+      "uriTemplate": "github://repos{?type}",
+      "description": "List repositories for the authenticated user.\n\nURI: github://repos{?type}\nOptional query param: type - \"all\", \"owner\", \"member\", \"public\", \"private\" (default: \"all\")",
+      "mimeType": "text/plain",
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      }
+    },
+    {
+      "name": "list_repos_by_owner_resource",
+      "title": null,
+      "uriTemplate": "github://repos/{owner}",
+      "description": "List repositories for a specific user or organization.\n\nURI: github://repos/{owner}",
+      "mimeType": "text/plain",
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      }
+    },
+    {
+      "name": "list_calendars_resource",
+      "title": null,
+      "uriTemplate": "google://calendars{?view}",
+      "description": "List all calendars accessible by the user.\n\n\u26a0\ufe0f NOT WORKING: Requires additional OAuth scopes (insufficient permissions).\n\nURI: google://calendars{?view}\nOptional query param: view - reserved for future use (e.g. filter)",
+      "mimeType": "text/plain",
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      }
+    },
+    {
+      "name": "get_calendar_resource",
+      "title": null,
+      "uriTemplate": "google://calendar/{calendar_id}",
+      "description": "Get information about a specific calendar.\n\n\u26a0\ufe0f NOT WORKING: Requires additional OAuth scopes (insufficient permissions).\n\nURI: google://calendar/{calendar_id}",
+      "mimeType": "text/plain",
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      }
+    },
+    {
+      "name": "list_events_resource",
+      "title": null,
+      "uriTemplate": "google://calendar/{calendar_id}/events",
+      "description": "List events in a calendar.\n\nURI: google://calendar/{calendar_id}/events\nOptional query params: time_min, time_max (RFC3339 format)",
+      "mimeType": "text/plain",
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      }
+    },
+    {
+      "name": "get_event_resource",
+      "title": null,
+      "uriTemplate": "google://calendar/{calendar_id}/event/{event_id}",
+      "description": "Get information about a specific event.\n\nURI: google://calendar/{calendar_id}/event/{event_id}",
+      "mimeType": "text/plain",
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      }
+    },
+    {
+      "name": "list_messages_resource",
+      "title": null,
+      "uriTemplate": "gmail://messages{?query,max_results,label_ids}",
+      "description": "List messages from Gmail.\n\nURI: gmail://messages{?query,max_results,label_ids}\nOptional query params:\n- query: Gmail search query (e.g., \"from:example@gmail.com\", \"subject:test\")\n- max_results: Maximum number of messages (1-500, default: 10)\n- label_ids: Comma-separated label IDs (e.g., \"INBOX,UNREAD\")",
+      "mimeType": "text/plain",
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      }
+    },
+    {
+      "name": "get_message_resource",
+      "title": null,
+      "uriTemplate": "gmail://message/{message_id}",
+      "description": "Get full details of a specific message.\n\nURI: gmail://message/{message_id}",
+      "mimeType": "text/plain",
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      }
+    },
+    {
+      "name": "search_files_resource",
+      "title": null,
+      "uriTemplate": "gdrive://search/{query}{?max_results,page_token}",
+      "description": "Search for files in Google Drive.\n\nURI: gdrive://search/{query}{?max_results,page_token}\nPath param: query - Search query (e.g., \"name contains 'test'\")\nOptional query params: max_results (1-100, default 50), page_token (pagination)",
+      "mimeType": "text/plain",
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      }
+    },
+    {
+      "name": "list_folder_resource",
+      "title": null,
+      "uriTemplate": "gdrive://folder/{folder_id}",
+      "description": "List contents of a folder.\n\nURI: gdrive://folder/{folder_id}\nUse 'root' as folder_id for root folder.\nOptional query params:\n- max_results: Maximum results (1-100, default: 50)\n- page_token: Token for pagination",
+      "mimeType": "text/plain",
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      }
+    },
+    {
+      "name": "get_file_resource",
+      "title": null,
+      "uriTemplate": "gdrive://file/{file_id}",
+      "description": "Get file metadata.\n\nURI: gdrive://file/{file_id}",
+      "mimeType": "text/plain",
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      }
+    },
+    {
+      "name": "get_file_content_resource",
+      "title": null,
+      "uriTemplate": "gdrive://file/{file_id}/content",
+      "description": "Get file content as text.\n\nURI: gdrive://file/{file_id}/content\nFor Google Docs/Sheets/Slides, exports as text/markdown/CSV.",
+      "mimeType": "text/plain",
+      "icons": null,
+      "annotations": null,
+      "meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      }
+    }
+  ]
+}

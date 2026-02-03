@@ -40,7 +40,6 @@ __pycache__/
 *.pyc
 *.pyo
 
-
 *.md 
 *.MD 
 
@@ -50,3 +49,7 @@ __pycache__/
 
 
 *.pid 
+
+
+covalent_mcp/toolclasses/github/github_token.json
+covalent_mcp/toolclasses/google/oauth_secrets.json

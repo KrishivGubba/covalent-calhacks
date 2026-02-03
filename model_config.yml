@@ -1,0 +1,47 @@
+# Model Configuration for Covalent Context Engine
+# This file defines which models to use for different tasks
+
+models:
+  # Model for generating embeddings/vectors
+  embedding:
+    provider: "google"  # Options: google, openai, anthropic
+    model_name: "text-embedding-004"
+    api_key_env: "GOOGLE_API_KEY"
+    
+  # Model for action creation and learning decisions
+  action_creation:
+    provider: "anthropic"  # Options: google, openai, anthropic, qwen
+    model_name: "claude-sonnet-4-5-20250929"
+    api_key_env: "ANTHROPIC_API_KEY"
+    max_tokens: 2048
+    
+  # Model for data condensation/cleanup
+  data_condensation:
+    provider: "anthropic"  # Options: google, openai, anthropic, qwen
+    model_name: "claude-sonnet-4-5-20250929"
+    api_key_env: "ANTHROPIC_API_KEY"
+    max_tokens: 2048
+    
+  # Model for node traversal and validation
+  traversal:
+    provider: "google"  # Options: google, openai, anthropic, qwen
+    model_name: "gemini-2.5-flash"
+    api_key_env: "GOOGLE_API_KEY"
+    max_tokens: 1024
+
+# Provider-specific settings
+provider_settings:
+  google:
+    timeout: 30
+    
+  anthropic:
+    timeout: 30
+    
+  openai:
+    timeout: 30
+    organization: null  # Optional: set your org ID
+    
+  qwen:
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"  # Qwen API endpoint
+    api_key_env: "QWEN_API_KEY"
+    timeout: 30
