@@ -673,6 +673,39 @@ pub fn run() {
                             let _ = wm.hide_all();
                         });
                     });
+
+                    // Set up enhanced dismiss callback for retry predictions
+                    let trigger_for_dismiss = trigger.clone();
+                    let window_manager_dismiss_enhanced = window_manager.clone();
+                    let app_handle_for_dismiss_enhanced = app.handle().clone();
+                    hotkey_handler.set_dismiss_with_info_callback(move |dismiss_info| {
+                        println!("🔄 Dismiss with info - triggering retry prediction");
+                        println!("   Dismissed: {}...", &dismiss_info.dismissed_text[..dismiss_info.dismissed_text.len().min(30)]);
+                        println!("   Chars typed after: '{}'", dismiss_info.chars_typed_after);
+                        println!("   Time shown: {}ms", dismiss_info.time_shown_ms);
+
+                        // Hide windows first
+                        let wm = window_manager_dismiss_enhanced.clone();
+                        let _ = app_handle_for_dismiss_enhanced.run_on_main_thread(move || {
+                            let _ = wm.hide_all();
+                        });
+
+                        // Trigger retry prediction with decline context
+                        trigger_for_dismiss.handle_decline(
+                            dismiss_info.dismissed_text,
+                            dismiss_info.time_shown_ms,
+                            dismiss_info.chars_typed_after,
+                        );
+                    });
+
+                    // Set up actions getter for enriched predictions
+                    let actions_store_for_trigger = actions_store.clone();
+                    trigger.set_actions_getter(move || {
+                        let actions = actions_store_for_trigger.get_actions();
+                        actions.into_iter().map(|a| {
+                            tab_completion::ActionSummary::new(a.title, a.description)
+                        }).collect()
+                    });
                     
                     // Start hotkey listener
                     if let Err(e) = hotkey_handler.clone().start_listening() {

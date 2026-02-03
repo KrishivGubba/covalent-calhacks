@@ -10,6 +10,7 @@ pub mod terminal_display;
 pub mod hotkey;
 pub mod cursor_position;
 pub mod window_manager;
+pub mod decline;
 
 #[cfg(target_os = "macos")]
 pub mod macos_keyboard;
@@ -23,11 +24,12 @@ pub use trigger::{CompletionTrigger, CompletionSuggestion};
 pub use adapters::{ContextExtractor, BrowserAdapter, TerminalAdapter, NativeTextAdapter, CodeAdapter};
 pub use injector::inject_completion_text;
 pub use prompt_builder::build_prompt;
-pub use api_client::{TabCompletionApiClient, PredictionRequest, PredictionResponse};
+pub use api_client::{TabCompletionApiClient, PredictionRequest, PredictionResponse, DeclineFeedbackRequest};
 pub use graph_db::{GraphDatabase, NodeData, DataEntry};
-pub use hotkey::HotkeyHandler;
+pub use hotkey::{HotkeyHandler, DismissInfo};
 pub use cursor_position::{CursorPosition, get_cursor_position_with_fallback};
 pub use window_manager::CompletionWindowManager;
+pub use decline::{DeclineContext, ActionSummary, EnrichedPredictionContext};
 
 use std::sync::Arc;
 use anyhow::Result;

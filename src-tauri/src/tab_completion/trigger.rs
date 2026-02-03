@@ -11,7 +11,9 @@ use tokio::runtime::Runtime;
 
 use super::cache::{CacheResult, MultiTierCache, CachedContext, AppContext, current_timestamp};
 use super::model::MODEL;
-use super::api_client::{TabCompletionApiClient, PredictionRequest, ContextUpdateRequest};
+use super::api_client::{TabCompletionApiClient, PredictionRequest, ContextUpdateRequest, DeclineFeedbackRequest};
+use super::decline::{DeclineContext, ActionSummary, EnrichedPredictionContext};
+use super::prompt_builder::build_enriched_prompt;
 #[cfg(target_os = "macos")]
 use crate::screen_context::macos_app_detector::MacOSAppDetector;
 
@@ -25,6 +27,10 @@ pub struct CompletionTrigger {
     last_prediction_time: Arc<Mutex<Instant>>,
     prediction_debounce: Duration,
     prediction_counter: Arc<Mutex<usize>>, // Counter to throttle Flask learning updates
+    /// Current decline context for retry predictions
+    decline_context: Arc<Mutex<Option<DeclineContext>>>,
+    /// Callback to get current recommended actions
+    actions_getter: Arc<Mutex<Option<Box<dyn Fn() -> Vec<ActionSummary> + Send + Sync>>>>,
     #[cfg(target_os = "macos")]
     keyboard_listener: Arc<Mutex<Option<MacOSKeyboardListener>>>,
 }
@@ -112,7 +118,7 @@ impl CompletionTrigger {
     pub fn new(cache: Arc<MultiTierCache>) -> Result<Self> {
         let runtime = Runtime::new()
             .expect("Failed to create tokio runtime for tab completion");
-        
+
         Ok(Self {
             text_buffer: Arc::new(Mutex::new(TextBuffer::new())),
             cache,
@@ -123,6 +129,8 @@ impl CompletionTrigger {
             last_prediction_time: Arc::new(Mutex::new(Instant::now())),
             prediction_debounce: Duration::from_millis(150), // 150ms debounce
             prediction_counter: Arc::new(Mutex::new(0)),
+            decline_context: Arc::new(Mutex::new(None)),
+            actions_getter: Arc::new(Mutex::new(None)),
             #[cfg(target_os = "macos")]
             keyboard_listener: Arc::new(Mutex::new(None)),
         })
@@ -134,6 +142,110 @@ impl CompletionTrigger {
         F: Fn(CompletionSuggestion) + Send + Sync + 'static,
     {
         *self.suggestion_callback.lock() = Some(Box::new(callback));
+    }
+
+    /// Set callback to get current recommended actions for enhanced predictions
+    pub fn set_actions_getter<F>(&self, getter: F)
+    where
+        F: Fn() -> Vec<ActionSummary> + Send + Sync + 'static,
+    {
+        *self.actions_getter.lock() = Some(Box::new(getter));
+    }
+
+    /// Get the full text buffer content
+    pub fn get_full_buffer(&self) -> String {
+        self.text_buffer.lock().get_full_buffer()
+    }
+
+    /// Handle a declined prediction and trigger retry with enhanced context
+    pub fn handle_decline(&self, dismissed_text: String, time_shown_ms: u64, chars_typed_after: String) {
+        let typed_text = self.get_full_buffer();
+
+        // Create decline context
+        let decline = DeclineContext::new(
+            dismissed_text.clone(),
+            typed_text.clone(),
+            chars_typed_after.clone(),
+            time_shown_ms,
+        );
+
+        // Check if we should retry
+        if decline.should_stop_retrying() {
+            println!("⚠️  Max retries reached - not retrying prediction");
+            *self.decline_context.lock() = None;
+            return;
+        }
+
+        // Store decline context for the next prediction
+        *self.decline_context.lock() = Some(decline.clone());
+
+        // Send decline feedback to Flask (fire-and-forget)
+        let api_client = self.api_client.clone();
+        let runtime = self.runtime.clone();
+        let app = self.current_app.lock().clone();
+        let activity_id = Self::generate_activity_id(&app);
+
+        runtime.spawn(async move {
+            let request = DeclineFeedbackRequest {
+                app_name: app,
+                activity_id,
+                declined_prediction: dismissed_text,
+                typed_text,
+                chars_after: chars_typed_after,
+                time_to_decline_ms: time_shown_ms,
+                signal: "negative".to_string(),
+            };
+
+            match api_client.send_decline_feedback(request).await {
+                Ok(_) => println!("📤 Decline feedback sent to Flask"),
+                Err(e) => eprintln!("⚠️  Failed to send decline feedback: {}", e),
+            }
+        });
+
+        // Trigger retry prediction with decline context
+        self.trigger_completion_with_decline();
+    }
+
+    /// Trigger completion with decline context (for retry after decline)
+    fn trigger_completion_with_decline(&self) {
+        let text = self.text_buffer.lock().get_last_n(100);
+        let app = self.current_app.lock().clone();
+        let cache = self.cache.clone();
+        let api_client = self.api_client.clone();
+        let runtime = self.runtime.clone();
+        let prediction_counter = self.prediction_counter.clone();
+        let decline_context = self.decline_context.lock().clone();
+        let callback_ref = self.suggestion_callback.clone();
+        let has_callback = self.suggestion_callback.lock().is_some();
+
+        // Get recommended actions if getter is set
+        let actions: Vec<ActionSummary> = if let Some(ref getter) = *self.actions_getter.lock() {
+            getter()
+        } else {
+            Vec::new()
+        };
+
+        if text.trim().is_empty() {
+            return;
+        }
+
+        println!("🔄 Triggering retry prediction with decline context");
+
+        // Spawn thread to avoid blocking
+        std::thread::spawn(move || {
+            Self::get_and_show_prediction_with_decline(
+                cache,
+                &app,
+                &text,
+                callback_ref,
+                has_callback,
+                api_client,
+                runtime,
+                prediction_counter,
+                decline_context,
+                actions,
+            );
+        });
     }
     
     pub fn start_listening(self: Arc<Self>) {
@@ -575,7 +687,155 @@ impl CompletionTrigger {
             });
         }
     }
-    
+
+    /// Enhanced prediction with decline context and recommended actions
+    /// Used for retry predictions after user declines initial suggestion
+    fn get_and_show_prediction_with_decline(
+        cache: Arc<MultiTierCache>,
+        app: &str,
+        text: &str,
+        callback_ref: Arc<Mutex<Option<Box<dyn Fn(CompletionSuggestion) + Send + Sync>>>>,
+        has_callback: bool,
+        api_client: Arc<TabCompletionApiClient>,
+        runtime: Arc<Runtime>,
+        prediction_counter: Arc<Mutex<usize>>,
+        decline_context: Option<DeclineContext>,
+        actions: Vec<ActionSummary>,
+    ) {
+        let start = Instant::now();
+        let activity_id = Self::generate_activity_id(app);
+
+        // Build enriched context
+        let mut enriched = EnrichedPredictionContext::new(app.to_string())
+            .with_actions(actions);
+
+        if let Some(decline) = decline_context.clone() {
+            enriched = enriched.with_decline(decline);
+        }
+
+        // Lower confidence threshold for retries (we're being more speculative)
+        let retry_confidence_threshold = 0.35;
+
+        // Skip L0 cache on retry (exact match already failed/was rejected)
+        // Go straight to L1/L2/L3 with enriched prompt
+
+        // Try to get context from cache
+        match cache.get_prediction_or_context(app, text, &activity_id) {
+            CacheResult::ExactHit(_) if decline_context.is_some() => {
+                // Skip exact hits on retry - user already rejected this
+                println!("⏭️  Skipping L0 cache hit on retry (was declined)");
+            }
+            CacheResult::ExactHit(prediction) => {
+                let latency = start.elapsed().as_millis();
+                Self::emit_suggestion(&prediction, "L0-exact", latency, "cached", 1.0, &callback_ref, has_callback);
+                return;
+            }
+            CacheResult::ContextHit(context) | CacheResult::GraphHit(context) => {
+                // Use enriched prompt for retry
+                if let Some((pred, confidence)) = Self::infer_with_enriched_context(&context, text, &enriched) {
+                    let latency = start.elapsed().as_millis();
+
+                    // Check against declined prediction
+                    let is_same_as_declined = decline_context
+                        .as_ref()
+                        .map(|d| d.declined_prediction.trim() == pred.trim())
+                        .unwrap_or(false);
+
+                    if is_same_as_declined {
+                        println!("⏭️  Skipping prediction (same as declined): {}", &pred[..pred.len().min(30)]);
+                        // Don't emit, try fallback
+                    } else if confidence >= retry_confidence_threshold {
+                        let cache_level = if enriched.is_retry() { "L1-retry" } else { "L1-llm" };
+                        cache.cache_prediction(app, text, &pred);
+                        let context_type = format!("{:?}", context.activity_type);
+                        Self::emit_suggestion(&pred, cache_level, latency, &context_type, confidence, &callback_ref, has_callback);
+                        return;
+                    }
+                }
+            }
+            CacheResult::NeedExtraction => {
+                // L3: Full extraction with enriched context
+                let context = Self::extract_full_context(app);
+                if let Some((pred, confidence)) = Self::infer_with_enriched_context(&context, text, &enriched) {
+                    let latency = start.elapsed().as_millis();
+
+                    // Check against declined prediction
+                    let is_same_as_declined = decline_context
+                        .as_ref()
+                        .map(|d| d.declined_prediction.trim() == pred.trim())
+                        .unwrap_or(false);
+
+                    if !is_same_as_declined && confidence >= retry_confidence_threshold {
+                        cache.cache_prediction(app, text, &pred);
+                        Self::emit_suggestion(
+                            &pred,
+                            "L3-retry",
+                            latency,
+                            "enriched_extraction",
+                            confidence,
+                            &callback_ref,
+                            has_callback,
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+
+        println!("⚠️  No retry prediction generated (all methods failed or same as declined)");
+    }
+
+    /// Infer with enriched context (includes decline info and recommended actions)
+    fn infer_with_enriched_context(
+        context: &CachedContext,
+        text: &str,
+        enriched: &EnrichedPredictionContext,
+    ) -> Option<(String, f32)> {
+        let prompt = build_enriched_prompt(context, text, enriched);
+
+        // Debug: Show enriched prompt
+        if cfg!(debug_assertions) && std::env::var("DEBUG_PROMPTS").is_ok() {
+            println!("🔍 Enriched Prompt: {}", &prompt[..prompt.len().min(400)]);
+        }
+
+        // Use slightly more tokens for enriched predictions (context is richer)
+        match MODEL.predict_with_fallback(&prompt, 40) {
+            Ok(prediction) => {
+                let prediction = prediction.trim().to_string();
+
+                // Skip empty or invalid predictions
+                if prediction.is_empty() || prediction.len() > 200 {
+                    return None;
+                }
+
+                // Calculate confidence with boost for matching user's typed chars
+                let mut confidence = Self::calculate_prediction_confidence(&prediction, text, context);
+
+                // Boost confidence if prediction matches chars typed after decline
+                if let Some(ref decline) = enriched.decline_context {
+                    if !decline.chars_after_prediction.is_empty() {
+                        let chars_lower = decline.chars_after_prediction.to_lowercase();
+                        let pred_lower = prediction.to_lowercase();
+
+                        // If prediction starts with or contains the chars user typed, boost confidence
+                        if pred_lower.starts_with(&chars_lower) {
+                            confidence += 0.15;
+                            println!("📈 Confidence boosted: prediction matches user's typed chars");
+                        } else if pred_lower.contains(&chars_lower) {
+                            confidence += 0.1;
+                        }
+                    }
+                }
+
+                Some((prediction, confidence.min(1.0)))
+            }
+            Err(e) => {
+                eprintln!("❌ Enriched model inference failed: {}", e);
+                None
+            }
+        }
+    }
+
     /// Generate a session-based activity ID that remains stable for a few minutes
     /// This allows context caching while still being responsive to app/context switches
     fn generate_activity_id(app: &str) -> String {
