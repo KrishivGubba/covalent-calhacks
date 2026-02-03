@@ -485,6 +485,9 @@ pub fn run() {
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // Start Flask server
             let app_dir = if cfg!(dev) {
@@ -638,16 +641,22 @@ pub fn run() {
                         let trigger = trigger_for_accept.clone();
 
                         std::thread::spawn(move || {
+                            println!("🧵 Accept thread started");
+
                             // Inject the text with backspace for overlap + grace period chars
+                            println!("🧵 Injecting text...");
                             if let Err(e) = tab_completion::injector::inject_with_backspace(text.clone(), total_erase) {
                                 eprintln!("⚠️  Failed to inject text: {}", e);
                             }
+                            println!("🧵 Text injection complete");
 
                             // Hide completion windows BEFORE triggering new prediction
                             // This prevents race condition where hide_all interferes with new show_suggestion
+                            println!("🧵 Hiding windows...");
                             let wm_clone = wm.clone();
                             let app_handle_clone = app_handle.clone();
                             let _ = app_handle_clone.run_on_main_thread(move || {
+                                println!("🧵 [main thread] Hiding all windows");
                                 let _ = wm_clone.hide_all();
                             });
 
@@ -656,7 +665,9 @@ pub fn run() {
 
                             // Update the trigger's buffer with the accepted text and re-trigger prediction
                             // NOTE: This spawns a thread with 300ms delay, then shows popup if prediction found
+                            println!("🧵 Calling append_to_buffer...");
                             trigger.append_to_buffer(text.clone());
+                            println!("🧵 Accept thread complete");
                         });
                     });
 
@@ -669,6 +680,39 @@ pub fn run() {
                         let _ = app_handle_for_dismiss.run_on_main_thread(move || {
                             let _ = wm.hide_all();
                         });
+                    });
+
+                    // Set up enhanced dismiss callback for retry predictions
+                    let trigger_for_dismiss = trigger.clone();
+                    let window_manager_dismiss_enhanced = window_manager.clone();
+                    let app_handle_for_dismiss_enhanced = app.handle().clone();
+                    hotkey_handler.set_dismiss_with_info_callback(move |dismiss_info| {
+                        println!("🔄 Dismiss with info - triggering retry prediction");
+                        println!("   Dismissed: {}...", &dismiss_info.dismissed_text[..dismiss_info.dismissed_text.len().min(30)]);
+                        println!("   Chars typed after: '{}'", dismiss_info.chars_typed_after);
+                        println!("   Time shown: {}ms", dismiss_info.time_shown_ms);
+
+                        // Hide windows first
+                        let wm = window_manager_dismiss_enhanced.clone();
+                        let _ = app_handle_for_dismiss_enhanced.run_on_main_thread(move || {
+                            let _ = wm.hide_all();
+                        });
+
+                        // Trigger retry prediction with decline context
+                        trigger_for_dismiss.handle_decline(
+                            dismiss_info.dismissed_text,
+                            dismiss_info.time_shown_ms,
+                            dismiss_info.chars_typed_after,
+                        );
+                    });
+
+                    // Set up actions getter for enriched predictions
+                    let actions_store_for_trigger = actions_store.clone();
+                    trigger.set_actions_getter(move || {
+                        let actions = actions_store_for_trigger.get_actions();
+                        actions.into_iter().map(|a| {
+                            tab_completion::ActionSummary::new(a.title, a.description)
+                        }).collect()
                     });
                     
                     // Start hotkey listener

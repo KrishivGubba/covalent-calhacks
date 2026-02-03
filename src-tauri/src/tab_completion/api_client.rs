@@ -35,6 +35,26 @@ pub struct ContextUpdateResponse {
     pub node_id: Option<String>,
 }
 
+/// Request for sending decline feedback (negative signal for learning)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeclineFeedbackRequest {
+    pub app_name: String,
+    pub activity_id: String,
+    pub declined_prediction: String,
+    pub typed_text: String,
+    pub chars_after: String,
+    pub time_to_decline_ms: u64,
+    pub signal: String, // "negative" for declines
+}
+
+/// Response from decline feedback endpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeclineFeedbackResponse {
+    pub message: String,
+    #[serde(default)]
+    pub acknowledged: bool,
+}
+
 /// HTTP client for tab completion predictions and context updates
 pub struct TabCompletionApiClient {
     client: reqwest::Client,
@@ -104,7 +124,7 @@ impl TabCompletionApiClient {
     /// Update context in graph.db (background operation)
     pub async fn update_context(&self, request: ContextUpdateRequest) -> Result<ContextUpdateResponse> {
         let url = format!("{}/tab_context", self.base_url);
-        
+
         let response = self.client
             .post(&url)
             .json(&request)
@@ -117,7 +137,7 @@ impl TabCompletionApiClient {
                 .json()
                 .await
                 .context("Failed to parse context update response from Flask API")?;
-            
+
             Ok(context_response)
         } else {
             let status = response.status();
@@ -127,6 +147,38 @@ impl TabCompletionApiClient {
                 status,
                 error_text
             ))
+        }
+    }
+
+    /// Send decline feedback for learning (negative signal)
+    /// This is fire-and-forget - we don't wait for or require a successful response
+    pub async fn send_decline_feedback(&self, request: DeclineFeedbackRequest) -> Result<DeclineFeedbackResponse> {
+        let url = format!("{}/tab_feedback", self.base_url);
+
+        let response = self.client
+            .post(&url)
+            .json(&request)
+            .timeout(std::time::Duration::from_secs(5)) // Short timeout for feedback
+            .send()
+            .await
+            .context("Failed to send decline feedback to Flask API")?;
+
+        if response.status().is_success() {
+            let feedback_response: DeclineFeedbackResponse = response
+                .json()
+                .await
+                .unwrap_or(DeclineFeedbackResponse {
+                    message: "Feedback acknowledged".to_string(),
+                    acknowledged: true,
+                });
+
+            Ok(feedback_response)
+        } else {
+            // Don't fail on error - feedback is best-effort
+            Ok(DeclineFeedbackResponse {
+                message: "Feedback sent (response not parsed)".to_string(),
+                acknowledged: false,
+            })
         }
     }
 }

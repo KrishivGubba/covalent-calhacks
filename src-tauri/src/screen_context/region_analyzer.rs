@@ -282,12 +282,19 @@ impl RegionAnalyzer {
     
     /// Check if two regions overlap significantly
     fn regions_overlap(&self, region1: &ScreenRegion, region2: &ScreenRegion, threshold: f32) -> bool {
-        let x_overlap = std::cmp::max(0, std::cmp::min(region1.x + region1.width, region2.x + region2.width) - std::cmp::max(region1.x, region2.x));
-        let y_overlap = std::cmp::max(0, std::cmp::min(region1.y + region1.height, region2.y + region2.height) - std::cmp::max(region1.y, region2.y));
-        
+        // Use saturating_sub to avoid overflow when regions don't overlap
+        let x_overlap = std::cmp::min(region1.x + region1.width, region2.x + region2.width)
+            .saturating_sub(std::cmp::max(region1.x, region2.x));
+        let y_overlap = std::cmp::min(region1.y + region1.height, region2.y + region2.height)
+            .saturating_sub(std::cmp::max(region1.y, region2.y));
+
         let overlap_area = x_overlap * y_overlap;
         let total_area = std::cmp::min(region1.width * region1.height, region2.width * region2.height);
-        
+
+        if total_area == 0 {
+            return false;
+        }
+
         (overlap_area as f32 / total_area as f32) > threshold
     }
     

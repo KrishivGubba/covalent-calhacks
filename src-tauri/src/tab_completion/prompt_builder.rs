@@ -1,4 +1,5 @@
 use super::cache::{CachedContext, ActivityType};
+use super::decline::{DeclineContext, ActionSummary, EnrichedPredictionContext};
 
 /// Build a completion prompt optimized for code/command completion models.
 ///
@@ -265,5 +266,198 @@ mod tests {
         assert!(prompt.contains("fn main()"));
         assert!(prompt.contains("Vec::new"));
     }
+
+    #[test]
+    fn test_enriched_prompt_with_decline() {
+        let context = CachedContext {
+            app_context: AppContext {
+                name: "Terminal".to_string(),
+                bundle_id: "com.apple.Terminal".to_string(),
+                window_title: None,
+            },
+            activity_type: ActivityType::Terminal {
+                shell: "zsh".to_string(),
+                cwd: "/home/user".to_string(),
+            },
+            learned_patterns: vec![],
+            recent_actions: vec![],
+            screen_context: None,
+            timestamp: current_timestamp(),
+            ttl: 300,
+            context_chain: None,
+        };
+
+        let decline = DeclineContext::new(
+            "status".to_string(),
+            "git st".to_string(),
+            "ash".to_string(),
+            200,
+        );
+
+        let actions = vec![
+            ActionSummary::new("Push changes".to_string(), "Push commits to remote".to_string()),
+        ];
+
+        let enriched = EnrichedPredictionContext::new("Terminal".to_string())
+            .with_actions(actions)
+            .with_decline(decline);
+
+        let prompt = build_enriched_prompt(&context, "git stash", &enriched);
+
+        // Should contain decline context
+        assert!(prompt.contains("DECLINED"));
+        assert!(prompt.contains("status"));
+
+        // Should contain user intent
+        assert!(prompt.contains("ash"));
+
+        // Should contain recommended actions
+        assert!(prompt.contains("Push changes"));
+    }
+}
+
+// ============================================================================
+// ENHANCED PROMPT BUILDING WITH DECLINE CONTEXT AND RECOMMENDED ACTIONS
+// ============================================================================
+
+/// Build an enriched prompt that includes decline context and recommended actions.
+/// This is used for retry predictions after a user declines the initial suggestion.
+pub fn build_enriched_prompt(
+    context: &CachedContext,
+    text: &str,
+    enriched: &EnrichedPredictionContext,
+) -> String {
+    let mut prompt = String::new();
+
+    // Add base instruction based on activity type
+    match &context.activity_type {
+        ActivityType::Terminal { shell, cwd } => {
+            prompt.push_str("You are a terminal autocomplete. Complete the partial command.\n");
+            prompt.push_str("Rules: Output ONLY the missing characters. No explanations. No quotes.\n\n");
+
+            if !cwd.is_empty() {
+                prompt.push_str(&format!("Working directory: {}\n", cwd));
+            }
+            if !shell.is_empty() {
+                prompt.push_str(&format!("Shell: {}\n", shell));
+            }
+        }
+        ActivityType::Code { language, .. } => {
+            prompt.push_str(&format!("Complete this {} code. Output ONLY the completion.\n\n", language));
+        }
+        ActivityType::Browser { domain, .. } => {
+            prompt.push_str(&format!("Complete this text for {}. Output ONLY the completion.\n\n", domain));
+        }
+        ActivityType::NativeText { app_name } => {
+            prompt.push_str(&format!("Complete this text in {}. Output ONLY the completion.\n\n", app_name));
+        }
+        ActivityType::Unknown => {
+            prompt.push_str("Complete this text naturally. Output ONLY the completion.\n\n");
+        }
+    }
+
+    // Add recommended actions context (user's likely intent)
+    if !enriched.recommended_actions.is_empty() {
+        prompt.push_str("USER'S LIKELY INTENT (from recommended actions):\n");
+        for action in enriched.recommended_actions.iter().take(3) {
+            prompt.push_str(&format!("- {}: {}\n", action.action_name, action.action_plan));
+        }
+        prompt.push_str("\n");
+    }
+
+    // Add decline context (what NOT to predict)
+    if let Some(ref decline) = enriched.decline_context {
+        prompt.push_str("CORRECTION NEEDED:\n");
+        prompt.push_str(&format!(
+            "Previous prediction '{}' was DECLINED.\n",
+            decline.declined_prediction
+        ));
+
+        if !decline.chars_after_prediction.is_empty() {
+            prompt.push_str(&format!(
+                "User continued typing: '{}'\n",
+                decline.chars_after_prediction
+            ));
+            prompt.push_str("Generate a DIFFERENT completion that matches what user is typing.\n");
+        } else {
+            prompt.push_str("Generate a DIFFERENT, more relevant completion.\n");
+        }
+        prompt.push_str("\n");
+    }
+
+    // Add screen context if available
+    if let Some(ref screen_text) = context.screen_context {
+        if !screen_text.is_empty() {
+            let ctx = if screen_text.len() > 300 {
+                &screen_text[screen_text.len() - 300..]
+            } else {
+                screen_text
+            };
+            prompt.push_str("CONTEXT:\n");
+            prompt.push_str(ctx);
+            prompt.push_str("\n\n");
+        }
+    }
+
+    // Add the actual text to complete
+    match &context.activity_type {
+        ActivityType::Terminal { .. } => {
+            // Use arrow format for terminal
+            prompt.push_str(&format!("{} ->", text.trim()));
+        }
+        _ => {
+            prompt.push_str("COMPLETE:\n");
+            prompt.push_str(text);
+        }
+    }
+
+    prompt
+}
+
+/// Add decline context section to an existing prompt
+pub fn append_decline_context(prompt: &mut String, decline: &DeclineContext) {
+    prompt.push_str("\nCORRECTION NEEDED:\n");
+    prompt.push_str(&format!(
+        "Previous prediction '{}' was DECLINED.\n",
+        decline.declined_prediction
+    ));
+
+    if !decline.chars_after_prediction.is_empty() {
+        prompt.push_str(&format!(
+            "User continued typing: '{}'\n",
+            decline.chars_after_prediction
+        ));
+        prompt.push_str("Generate a DIFFERENT completion that follows user's typing.\n");
+    }
+}
+
+/// Add recommended actions section to an existing prompt
+pub fn append_recommended_actions(prompt: &mut String, actions: &[ActionSummary]) {
+    if actions.is_empty() {
+        return;
+    }
+
+    prompt.push_str("\nUSER'S LIKELY INTENT:\n");
+    for action in actions.iter().take(3) {
+        prompt.push_str(&format!("- {}: {}\n", action.action_name, action.action_plan));
+    }
+}
+
+/// Add typed text context section to an existing prompt
+pub fn append_typed_text_context(prompt: &mut String, typed_text: &str) {
+    if typed_text.len() < 10 {
+        return;
+    }
+
+    // Take last 100 characters
+    let context = if typed_text.len() > 100 {
+        &typed_text[typed_text.len() - 100..]
+    } else {
+        typed_text
+    };
+
+    prompt.push_str("\nRECENT TYPING:\n");
+    prompt.push_str(context);
+    prompt.push_str("\n");
 }
 

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import Sidebar, { PageType } from './components/Sidebar';
+import UpdateButton from './components/UpdateButton';
 import AuthPage from './pages/AuthPage';
 import SettingsPage from './pages/SettingsPage';
 import MCPPage from './pages/MCPPage';
@@ -28,6 +29,7 @@ const Dashboard: React.FC = () => {
 
   return (
     <div style={styles.dashboard}>
+      <UpdateButton checkInterval={30 * 60 * 1000} />
       <Sidebar currentPage={currentPage} onPageChange={setCurrentPage} />
       <main style={styles.main}>
         {renderPage()}
