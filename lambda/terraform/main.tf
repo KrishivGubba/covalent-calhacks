@@ -109,6 +109,16 @@ resource "aws_iam_role_policy" "bedrock_policy" {
           "arn:aws:bedrock:*::foundation-model/amazon.*",
           "arn:aws:bedrock:*:*:inference-profile/us.anthropic.*"
         ]
+      },
+      {
+        Sid    = "MarketplaceSubscriptions"
+        Effect = "Allow"
+        Action = [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe",
+          "aws-marketplace:Unsubscribe"
+        ]
+        Resource = "*"
       }
     ]
   })
