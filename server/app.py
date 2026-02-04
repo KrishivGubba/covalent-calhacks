@@ -113,6 +113,22 @@ def health():
     return jsonify({"status": "healthy", "service": "covalent-context-engine"}), 200
 
 
+@app.route("/callback", methods=["GET", "POST"])
+def auth_callback():
+    """
+    Auth callback endpoint (e.g. for Auth0 login redirect).
+    Stub: returns success; implement code exchange and token handling later.
+    """
+    # TODO: Handle ?code=... and ?state=... from Auth0, exchange for tokens
+    code = request.args.get("code")
+    state = request.args.get("state")
+    return jsonify({
+        "status": "ok",
+        "message": "Callback received (stub)",
+        "code_present": code is not None,
+        "state_present": state is not None,
+    }), 200
+
 
 @app.route("/trigger_action", methods=["POST"])
 def trigger_action():
@@ -365,4 +381,5 @@ def generate_tab_prediction(text_buffer, context_data):
 
 
 if __name__ == "__main__":
+    print("Registered routes:", [r.rule for r in app.url_map.iter_rules()])
     app.run(host="127.0.0.1", port=5001, debug=False)

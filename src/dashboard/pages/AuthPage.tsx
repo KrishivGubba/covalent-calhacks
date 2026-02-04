@@ -1,10 +1,60 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
 interface AuthStatus {
   authenticated: boolean;
   user: string | null;
   message: string;
+}
+
+// Auth0 PKCE config (for opening login in browser)
+const AUTH0_DOMAIN = 'dev-sb3sx3jnljwod4ab.us.auth0.com';
+const AUTH0_AUDIENCE = 'https://dev-sb3sx3jnljwod4ab.us.auth0.com/api/v2/';
+const REDIRECT_URI = 'http://localhost:5001/callback';
+const SCOPE = 'openid profile email';
+const AUTH0_CLIENT_ID = import.meta.env.VITE_AUTH0_CLIENT_ID ?? '';
+
+function randomString(length: number): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+  const array = new Uint8Array(length);
+  crypto.getRandomValues(array);
+  return Array.from(array, (b) => chars[b % chars.length]).join('');
+}
+
+function base64UrlEncode(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function sha256(plain: string): Promise<ArrayBuffer> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(plain);
+  return await crypto.subtle.digest('SHA-256', data);
+}
+
+async function buildAuth0AuthorizeUrl(): Promise<string> {
+  const state = randomString(32);
+  const codeVerifier = randomString(64);
+  const codeChallenge = base64UrlEncode(await sha256(codeVerifier));
+
+  sessionStorage.setItem('auth0_state', state);
+  sessionStorage.setItem('auth0_code_verifier', codeVerifier);
+
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: AUTH0_CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    scope: SCOPE,
+    audience: AUTH0_AUDIENCE,
+    state,
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
+  });
+
+  return `https://${AUTH0_DOMAIN}/authorize?${params.toString()}`;
 }
 
 const AuthPage: React.FC = () => {
@@ -26,9 +76,18 @@ const AuthPage: React.FC = () => {
     }
   };
 
-  const handleLogin = () => {
-    console.log('Login clicked');
-    alert('Authentication under construction');
+  const handleLogin = async () => {
+    if (!AUTH0_CLIENT_ID) {
+      alert('Auth0 is not configured. Set VITE_AUTH0_CLIENT_ID in .env.');
+      return;
+    }
+    try {
+      const url = await buildAuth0AuthorizeUrl();
+      await openUrl(url);
+    } catch (error) {
+      console.error('Failed to open auth URL:', error);
+      alert('Could not open login page. Check the console.');
+    }
   };
 
   const handleLogout = () => {
