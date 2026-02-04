@@ -1,0 +1,3 @@
+# AWS Lambda dependencies for ai-gateway
+boto3>=1.34.0
+botocore>=1.34.0

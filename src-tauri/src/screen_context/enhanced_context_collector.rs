@@ -8,6 +8,7 @@ use crate::screen_context::activity_monitor::ActivityMonitor;
 use crate::screen_context::context_data::{
     FileContext, RawContext, SystemState,
 };
+use crate::screen_context::context_memory::{ContextMemory, ContextChainResult, ContextMemoryStats};
 use crate::screen_context::context_type::ContextType;
 use crate::screen_context::macos_app_detector::MacOSAppDetector;
 use crate::screen_context::smart_collector::SmartCollector;
@@ -19,6 +20,8 @@ pub struct EnhancedContextCollector {
     app_detector: Arc<Mutex<MacOSAppDetector>>,
     previous_state: Arc<Mutex<Option<SystemState>>>,
     collection_history: Arc<Mutex<Vec<CollectionHistoryEntry>>>,
+    /// Context memory for tracking recent contexts and chains
+    context_memory: Arc<ContextMemory>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,13 +39,15 @@ impl EnhancedContextCollector {
         let smart_collector = Arc::new(SmartCollector::new()?);
         let activity_monitor = Arc::new(ActivityMonitor::new()?);
         let app_detector = Arc::new(Mutex::new(MacOSAppDetector::new()?));
-        
+        let context_memory = Arc::new(ContextMemory::new());
+
         Ok(Self {
             smart_collector,
             activity_monitor,
             app_detector,
             previous_state: Arc::new(Mutex::new(None)),
             collection_history: Arc::new(Mutex::new(Vec::new())),
+            context_memory,
         })
     }
     
@@ -118,13 +123,18 @@ impl EnhancedContextCollector {
                 collection_duration: start_time.elapsed(),
                 success: true,
             });
-            
+
             // Keep history manageable
             if history.len() > 100 {
                 history.remove(0);
             }
         }
-        
+
+        // Add to context memory for chain tracking
+        if let Err(e) = self.context_memory.add_context(&context).await {
+            eprintln!("Warning: Failed to add context to memory: {}", e);
+        }
+
         Ok(context)
     }
     
@@ -141,6 +151,44 @@ impl EnhancedContextCollector {
     /// Get context switching patterns
     pub async fn get_context_patterns(&self) -> HashMap<String, u32> {
         self.activity_monitor.get_context_patterns().await
+    }
+
+    /// Get relevant context chain for tab completion
+    /// Returns the most relevant contexts sorted by combined relevancy + recency score
+    pub async fn get_context_chain(&self, limit: usize) -> Result<ContextChainResult> {
+        // Collect current context first
+        let current_context = self.smart_collector.collect_context().await?;
+        self.context_memory
+            .get_relevant_contexts(&current_context, limit)
+            .await
+    }
+
+    /// Get the current context chain (contexts with same chain ID)
+    pub async fn get_current_chain(&self) -> Result<Vec<crate::screen_context::context_memory::ContextSummary>> {
+        self.context_memory.get_current_chain().await
+    }
+
+    /// Get context memory statistics
+    pub async fn get_context_memory_stats(&self) -> ContextMemoryStats {
+        self.context_memory.get_stats().await
+    }
+
+    /// Get formatted context chain string for prompt inclusion
+    pub async fn get_context_chain_for_prompt(&self, max_chars: usize) -> String {
+        match self.get_context_chain(5).await {
+            Ok(chain) => self.context_memory.format_for_prompt(&chain, max_chars),
+            Err(_) => String::new(),
+        }
+    }
+
+    /// Get reference to context memory for direct access
+    pub fn get_context_memory(&self) -> Arc<ContextMemory> {
+        Arc::clone(&self.context_memory)
+    }
+
+    /// Force start a new context chain
+    pub async fn start_new_chain(&self) -> String {
+        self.context_memory.start_new_chain().await
     }
     
     /// Get collection statistics
@@ -202,12 +250,15 @@ impl EnhancedContextCollector {
     /// Clear all caches
     pub async fn clear_caches(&self) {
         self.smart_collector.clear_cache().await;
-        
+
         // Clear collection history
         {
             let mut history = self.collection_history.lock().await;
             history.clear();
         }
+
+        // Clear context memory
+        self.context_memory.clear().await;
     }
     
     // Private helper methods

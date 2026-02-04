@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import FloatingAssistant from './components/FloatingAssistant';
+import CompletionPopup from './components/CompletionPopup';
 import type { Action } from './components/SuggestedActions';
 import { enableContextCollection, disableContextCollection, getContextCollectionStatus } from './utils/contextControl';
 import './styles.css';
@@ -30,7 +31,7 @@ async function handleStart(): Promise<void> {
 }
 
 async function handleStop(): Promise<void> {
-  console.log('Stop Learning button pressed');
+  console.log('Pause Covalent button pressed');
   try {
     // Disable context collection when learning stops
     await disableContextCollection();
@@ -43,7 +44,6 @@ async function handleStop(): Promise<void> {
 function App() {
   const [actions, setActions] = useState<Action[]>([]);
   const [isRunning, setIsRunning] = useState(true);
-  const [loading, setLoading] = useState(true);
 
   // Fetch actions and sync context collection status on component mount
   useEffect(() => {
@@ -59,8 +59,6 @@ function App() {
         console.log(`📊 Initial context collection status: ${contextStatus ? 'Running' : 'Stopped'}`);
       } catch (error) {
         console.error('Failed to initialize:', error);
-      } finally {
-        setLoading(false);
       }
     };
 
@@ -106,6 +104,9 @@ function App() {
         onStart={onStart}
         onStop={onStop}
       />
+      
+      {/* Tab Completion Popup */}
+      <CompletionPopup />
     </div>
   );
 }

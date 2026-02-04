@@ -1,5 +1,8 @@
-use core_foundation::base::{CFRelease, CFTypeRef};
-use core_foundation::data;
+use core_foundation::array::CFArray;
+use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
+use core_foundation::dictionary::CFDictionary;
+use core_foundation::number::CFNumber;
+use core_foundation::string::CFString;
 use core_graphics::display::{
     CGDisplayBounds, CGDisplayCreateImage, CGDisplayCreateImageForRect, CGDisplayPixelsHigh,
     CGDisplayPixelsWide, CGGetActiveDisplayList, CGMainDisplayID, CGRect, CGSize,
@@ -7,9 +10,9 @@ use core_graphics::display::{
 use core_graphics::geometry::{CGPoint, CGRect as CoreCGRect};
 use core_graphics::image::CGImage;
 use core_graphics::window::{
-    CGWindowID, CGWindowListCreateDescriptionFromArray,
+    kCGWindowListExcludeDesktopElements, CGWindowID, CGWindowListCopyWindowInfo,
     CGWindowListCreateImage, kCGNullWindowID, kCGWindowImageDefault,
-    kCGWindowListOptionOnScreenOnly,
+    kCGWindowListOptionIncludingWindow, kCGWindowListOptionOnScreenOnly,
 };
 use foreign_types::ForeignType;
 use image::{DynamicImage, ImageBuffer, Rgb};
@@ -149,42 +152,58 @@ impl ScreenCapture {
     }
     
     /// Capture full screen from the main display
+    /// First tries to capture the frontmost window (works for fullscreen apps),
+    /// then falls back to the screenshots crate if that fails.
     pub fn capture_full_screen(&self) -> Result<DynamicImage> {
+        // First, try to capture the frontmost window directly
+        // This works for fullscreen apps which exist in their own Space
+        if let Ok(window_id) = self.get_frontmost_window_id() {
+            if let Ok(image) = self.capture_window(window_id) {
+                return Ok(image);
+            }
+        }
+
+        // Fall back to the screenshots crate for regular screen capture
+        self.capture_full_screen_fallback()
+    }
+
+    /// Fallback screen capture using the screenshots crate
+    fn capture_full_screen_fallback(&self) -> Result<DynamicImage> {
         use screenshots::Screen;
-        
+
         // Get all screens
         let screens = Screen::all().map_err(|e| {
             anyhow::anyhow!("Failed to get screens: {}", e)
         })?;
-        
+
         // Get the primary screen
         let primary_screen = screens.into_iter()
             .next()
             .ok_or_else(|| anyhow::anyhow!("No screens found"))?;
-        
+
         // Capture the screen
         let screenshot = primary_screen.capture().map_err(|e| {
             anyhow::anyhow!("Failed to capture screen: {}", e)
         })?;
-        
+
         // Convert to DynamicImage
         let width = screenshot.width();
         let height = screenshot.height();
-        
-        // Get pixel data - the screenshots crate returns RGBA data  
+
+        // Get pixel data - the screenshots crate returns RGBA data
         let rgba_data = screenshot.rgba();
-        
+
         // Convert RGBA to RGB
         let mut rgb_data = Vec::with_capacity((width * height * 3) as usize);
         for rgba_chunk in rgba_data.chunks(4) {
             if rgba_chunk.len() >= 3 {
                 rgb_data.push(rgba_chunk[0]); // R
-                rgb_data.push(rgba_chunk[1]); // G  
+                rgb_data.push(rgba_chunk[1]); // G
                 rgb_data.push(rgba_chunk[2]); // B
                 // Skip alpha channel
             }
         }
-        
+
         let image_buffer = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(
             width, height, rgb_data
         ).ok_or_else(|| ScreenCaptureError::ImageConversionError(
@@ -192,7 +211,7 @@ impl ScreenCapture {
                 image::error::ParameterErrorKind::DimensionMismatch
             ))
         ))?;
-        
+
         Ok(DynamicImage::ImageRgb8(image_buffer))
     }
     
@@ -224,8 +243,8 @@ impl ScreenCapture {
             }
             
             let cg_image = CGImage::from_ptr(image_ref);
-            let result = self.cg_image_to_dynamic_image(cg_image);
-            
+            let result = self.cg_image_to_dynamic(&cg_image);
+
             // Cache the result
             if let Ok(ref img) = result {
                 let hash = self.compute_perceptual_hash(img);
@@ -237,24 +256,26 @@ impl ScreenCapture {
     }
     
     /// Capture a specific window by its ID
+    /// Uses kCGWindowListOptionIncludingWindow to capture windows even in fullscreen mode
     pub fn capture_window(&self, window_id: u32) -> Result<DynamicImage> {
         unsafe {
             let cg_window_id = window_id as CGWindowID;
-            let window_list = vec![cg_window_id];
-            
+
+            // Use kCGWindowListOptionIncludingWindow to capture the window even if it's
+            // in fullscreen mode (which puts it in its own Space)
             let image_ref = CGWindowListCreateImage(
                 CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(0.0, 0.0)),
-                kCGWindowListOptionOnScreenOnly,
+                kCGWindowListOptionIncludingWindow,
                 cg_window_id,
                 kCGWindowImageDefault,
             );
-            
+
             if image_ref.is_null() {
                 return Err(ScreenCaptureError::WindowNotFound(window_id).into());
             }
-            
+
             let cg_image = CGImage::from_ptr(image_ref);
-            self.cg_image_to_dynamic_image(cg_image)
+            self.cg_image_to_dynamic(&cg_image)
         }
     }
 
@@ -408,16 +429,69 @@ impl ScreenCapture {
             }
             
             let cg_image = CGImage::from_ptr(image_ref);
-            let result = self.cg_image_to_dynamic_image(cg_image);
-            
-            result
+            self.cg_image_to_dynamic(&cg_image)
         }
     }
-    
-    fn cg_image_to_dynamic_image(&self, _cg_image: CGImage) -> Result<DynamicImage> {
-        // This method is no longer used since we switched to the screenshots crate
-        // for better cross-platform screenshot support
-        Err(anyhow::anyhow!("CG Image conversion deprecated - use capture_full_screen instead"))
+
+    /// Convert a CGImage to a DynamicImage
+    fn cg_image_to_dynamic(&self, cg_image: &CGImage) -> Result<DynamicImage> {
+        use core_graphics::color_space::CGColorSpace;
+        use core_graphics::context::CGContext;
+
+        let width = cg_image.width();
+        let height = cg_image.height();
+
+        if width == 0 || height == 0 {
+            return Err(ScreenCaptureError::CoreGraphicsError(
+                "Invalid image dimensions".to_string()
+            ).into());
+        }
+
+        // Create a buffer to hold the pixel data
+        let bytes_per_row = width * 4;
+        let mut pixel_data = vec![0u8; height * bytes_per_row];
+
+        // Create a bitmap context to draw the CGImage into
+        let color_space = CGColorSpace::create_device_rgb();
+        let context = CGContext::create_bitmap_context(
+            Some(pixel_data.as_mut_ptr() as *mut _),
+            width,
+            height,
+            8,
+            bytes_per_row,
+            &color_space,
+            core_graphics::base::kCGImageAlphaPremultipliedLast
+                | core_graphics::base::kCGBitmapByteOrder32Big,
+        );
+
+        // Draw the image into the context
+        let rect = core_graphics::geometry::CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(width as f64, height as f64),
+        );
+        context.draw_image(rect, cg_image);
+
+        // Convert RGBA to RGB
+        let mut rgb_data = Vec::with_capacity(width * height * 3);
+        for chunk in pixel_data.chunks(4) {
+            if chunk.len() >= 3 {
+                rgb_data.push(chunk[0]); // R
+                rgb_data.push(chunk[1]); // G
+                rgb_data.push(chunk[2]); // B
+            }
+        }
+
+        let image_buffer = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(
+            width as u32,
+            height as u32,
+            rgb_data,
+        ).ok_or_else(|| ScreenCaptureError::ImageConversionError(
+            image::ImageError::Parameter(image::error::ParameterError::from_kind(
+                image::error::ParameterErrorKind::DimensionMismatch,
+            ))
+        ))?;
+
+        Ok(DynamicImage::ImageRgb8(image_buffer))
     }
     
     fn get_display_list(&self) -> Result<Vec<u32>> {
@@ -443,23 +517,53 @@ impl ScreenCapture {
         }
     }
     
-    fn get_active_window_id(&self) -> Result<u32> {
-        // This is a simplified implementation
-        // In a real app, you'd use more sophisticated window detection
+    /// Get the window ID of the frontmost window
+    /// Uses CGWindowListCopyWindowInfo to find the frontmost on-screen window
+    fn get_frontmost_window_id(&self) -> Result<u32> {
         unsafe {
-            let window_list = CGWindowListCreateDescriptionFromArray(kCGNullWindowID as *mut _);
-            
-            if window_list.is_null() {
+            // Get list of on-screen windows, excluding desktop elements
+            let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+
+            let window_list_ref = CGWindowListCopyWindowInfo(options, kCGNullWindowID);
+
+            if window_list_ref.is_null() {
                 return Err(ScreenCaptureError::CoreGraphicsError(
                     "Failed to get window list".to_string()
                 ).into());
             }
-            
-            // For now, return the first valid window ID
-            // In practice, you'd filter for the frontmost window
-            let window_id = 1; // Placeholder
-            
-            Ok(window_id)
+
+            let window_list: CFArray<CFDictionary<CFString, CFTypeRef>> =
+                CFArray::wrap_under_create_rule(window_list_ref as *const _);
+
+            // Iterate through windows to find the frontmost one (layer 0, on screen)
+            for i in 0..window_list.len() {
+                if let Some(window_dict) = window_list.get(i) {
+                    // Get the window layer - layer 0 is the normal window layer
+                    let layer_key = CFString::new("kCGWindowLayer");
+                    if let Some(layer_ref) = window_dict.find(&layer_key) {
+                        let layer: CFNumber = CFNumber::wrap_under_get_rule(*layer_ref as *const _);
+                        if let Some(layer_val) = layer.to_i32() {
+                            // Skip windows not in the normal layer (0)
+                            if layer_val != 0 {
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Get the window ID
+                    let id_key = CFString::new("kCGWindowNumber");
+                    if let Some(id_ref) = window_dict.find(&id_key) {
+                        let window_id: CFNumber = CFNumber::wrap_under_get_rule(*id_ref as *const _);
+                        if let Some(id_val) = window_id.to_i64() {
+                            return Ok(id_val as u32);
+                        }
+                    }
+                }
+            }
+
+            Err(ScreenCaptureError::CoreGraphicsError(
+                "No frontmost window found".to_string()
+            ).into())
         }
     }
     

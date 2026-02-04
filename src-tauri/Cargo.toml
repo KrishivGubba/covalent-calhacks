@@ -21,6 +21,9 @@ tauri-build = { version = "2.5.0", features = [] }
 [dependencies]
 tauri = { version = "2.5.0", features = ["macos-private-api"] }
 tauri-plugin-opener = "2.5.0"
+tauri-plugin-updater = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusty-tesseract = "1.1.10"
@@ -42,7 +45,7 @@ accessibility-sys = "0.1"
 cocoa = "0.25"
 objc-foundation = "0.1"
 osascript = "0.3"
-reqwest = { version = "0.11", features = ["json", "multipart"] }
+reqwest = { version = "0.11", features = ["json", "multipart", "blocking"] }
 websocket = "0.26"
 tokio-tungstenite = "0.21"
 url = "2.4"
@@ -56,3 +59,7 @@ colored = "2.0"
 base64 = "0.21"
 screenshots = "0.7"
 dotenvy = "0.15"
+arboard = "3.4"
+rusqlite = { version = "0.31", features = ["bundled"] }
+lazy_static = "1.4"
+rdev = "0.5"
