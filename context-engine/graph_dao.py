@@ -1024,9 +1024,8 @@ class TestGraphDAO:
         '''Retrieve an action by UUID.'''
         for action in self.actions_data:
             if action[0] == action_uuid:
-                # Return tuple: (UUID, Action_name, Action_prompt, Node_UUID)
-                # Note: Different format than storage to match GraphDAO.get_action_by_id
-                return (action[0], action[1], action[3], action[4])
+                # Return tuple: (UUID, Action_name, Action_plan, Action_prompt, Node_UUID)
+                return (action[0], action[1], action[2], action[3], action[4])
         return None
 
     def get_actions_for_node(self, node_uuid, order_by_last_selected=True):

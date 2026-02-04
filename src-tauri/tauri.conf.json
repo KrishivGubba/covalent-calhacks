@@ -7,7 +7,7 @@
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../build"
+    "frontendDist": "../dist"
   },
   "app": {
     "macOSPrivateApi": true,
@@ -29,6 +29,60 @@
         "focus": false,
         "acceptFirstMouse": true,
         "titleBarStyle": "Transparent"
+      },
+      {
+        "label": "ghost-text",
+        "title": "Ghost Text",
+        "url": "ghost-text.html",
+        "width": 400,
+        "height": 50,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false,
+        "visibleOnAllWorkspaces": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "alwaysOnTop": true,
+        "center": false,
+        "contentProtected": false,
+        "focus": false,
+        "acceptFirstMouse": false,
+        "titleBarStyle": "Transparent"
+      },
+      {
+        "label": "completion-popup",
+        "title": "Completion",
+        "url": "completion-popup.html",
+        "width": 500,
+        "height": 200,
+        "x": 200,
+        "y": 200,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false,
+        "visibleOnAllWorkspaces": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "alwaysOnTop": true,
+        "center": false,
+        "contentProtected": false,
+        "focus": false,
+        "acceptFirstMouse": true,
+        "titleBarStyle": "Transparent",
+        "parent": null
+      },
+      {
+        "label": "dashboard",
+        "title": "Covalent Dashboard",
+        "url": "dashboard.html",
+        "width": 1000,
+        "height": 700,
+        "decorations": true,
+        "transparent": false,
+        "resizable": true,
+        "visible": false,
+        "center": true,
+        "contentProtected": false
       }
     ],
     "security": {
@@ -44,6 +98,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "YOUR_PUBLIC_KEY_HERE",
+      "endpoints": [
+        "https://your-cloudfront-url.cloudfront.net/updates/{{target}}/{{arch}}/{{current_version}}"
+      ]
+    }
   }
 }

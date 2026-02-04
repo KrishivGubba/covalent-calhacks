@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ghost Text</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      
+      body {
+        background: transparent;
+        overflow: hidden;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      }
+      
+      #ghost-text {
+        color: rgba(150, 150, 150, 0.85);
+        font-size: 13px;
+        white-space: pre;
+        text-shadow: 0 0 1px rgba(0, 0, 0, 0.3);
+        letter-spacing: 0.01em;
+        padding: 2px 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ghost-text"></div>
+    
+    <script type="module">
+      import { listen } from '@tauri-apps/api/event';
+      
+      const ghostTextEl = document.getElementById('ghost-text');
+      
+      // Listen for ghost text updates
+      await listen('update-ghost-text', (event) => {
+        if (ghostTextEl) {
+          ghostTextEl.textContent = event.payload.text || '';
+        }
+      });
+      
+      // Listen for hide events
+      await listen('hide-ghost-text', () => {
+        if (ghostTextEl) {
+          ghostTextEl.textContent = '';
+        }
+      });
+    </script>
+  </body>
+</html>
+
+

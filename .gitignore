@@ -40,9 +40,15 @@ __pycache__/
 *.pyc
 *.pyo
 
-
 *.md 
 *.MD 
+
+
+*.cursorrules
+*.cursor/*
+
+
+*.pid 
 
 
 covalent_mcp/toolclasses/github/github_token.json

@@ -15,7 +15,7 @@ from graph_config import GraphConfig
 # Add parent directory to path to import LLMGraph
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-load_dotenv() 
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 class Node:
     def __init__(self, node_uuid=None, metadata=None, actions=None,
@@ -156,7 +156,7 @@ class Tree:
         string = """this query is part of a traversal algorithm. You will be given the current node's metadata
         and the metadata of its children. You will also be given a user query. Your task is to determine the following:"""
 
-    def trigger_action(self, action_uuid):
+    def trigger_action(self, action_uuid, action_override=None):
         """
         Trigger an action by its UUID, gathering all relevant context data from the node 
         and its ancestors into a single concatenated string.
@@ -173,17 +173,31 @@ class Tree:
             print(f"Error: Action with UUID {action_uuid} not found")
             return None, None
         
-        action_uuid_db, action_name, action_prompt, node_uuid = action_data
+        action_uuid_db, action_name, action_plan, action_prompt, node_uuid = action_data
+
+        effective_action_name = action_name
+        effective_action_plan = action_plan
+        effective_action_prompt = action_prompt
+
+        if action_override:
+            if action_override.get("action_name"):
+                effective_action_name = action_override["action_name"]
+            if action_override.get("action_plan"):
+                effective_action_plan = action_override["action_plan"]
+            if action_override.get("action_prompt"):
+                effective_action_prompt = action_override["action_prompt"]
         
         # Use action_prompt if available, otherwise fall back to action_name
-        action_text = action_prompt if action_prompt else action_name
+        action_text = effective_action_prompt if effective_action_prompt else effective_action_name
         
-        print(f"Found action: {action_name}")
+        print(f"Found action: {effective_action_name}")
         print(f"Action prompt: {action_text[:200]}..." if len(action_text) > 200 else f"Action prompt: {action_text}")
         print(f"Associated with node UUID: {node_uuid}")
         
         # Collect all data into a list to be concatenated later
         data_parts = []
+        if action_override:
+            data_parts.append("USER_EDITED_ACTION: true\n")
         data_parts.append(f"ACTION TO EXECUTE: {action_text}\n")
         data_parts.append("="*60 + "\n")
         

@@ -47,7 +47,7 @@ const ControlButtons: React.FC<ControlButtonsProps> = ({ onStart, onStop, isRunn
             e.currentTarget.style.transform = 'translateY(0)';
           }}
         >
-          {isRunning ? 'Stop Learning' : 'Restart Learning'}
+          {isRunning ? 'Pause Covalent' : 'Resume Covalent'}
         </button>
       </div>
     </div>
