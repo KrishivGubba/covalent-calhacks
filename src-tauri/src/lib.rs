@@ -78,6 +78,17 @@ impl ActionsStore {
             println!("🗑️  Cleared all actions from store");
         }
     }
+
+    pub fn update_action(&self, action_uuid: &str, title: String, description: String, action_prompt: String) {
+        if let Ok(mut actions) = self.actions.lock() {
+            if let Some(action) = actions.iter_mut().find(|a| a.uuid == action_uuid) {
+                action.title = title;
+                action.description = description;
+                action.action_prompt = action_prompt;
+                println!("✏️  Updated action in store: {}", action_uuid);
+            }
+        }
+    }
 }
 
 impl ContextState {
@@ -319,6 +330,71 @@ async fn trigger_action(action_uuid: String, action_prompt: String, state: tauri
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     state.enable();
     
+    result
+}
+
+// Edit action command (optional persistence)
+#[tauri::command]
+async fn edit_action(
+    action_uuid: String,
+    action_name: String,
+    action_plan: String,
+    action_prompt: String,
+    persist: bool,
+    store: tauri::State<'_, ActionsStore>
+) -> Result<serde_json::Value, String> {
+    use screen_context::ContextApiClient;
+
+    println!("✏️  Editing action: {} (persist: {})", action_uuid, persist);
+
+    let api_client = ContextApiClient::new();
+    let result = api_client
+        .edit_action(action_uuid.clone(), action_name.clone(), action_plan.clone(), action_prompt.clone(), persist)
+        .await
+        .map_err(|e| format!("Failed to edit action: {}", e));
+
+    if persist {
+        store.update_action(&action_uuid, action_name, action_plan, action_prompt);
+    }
+
+    result
+}
+
+// Trigger action with override command
+#[tauri::command]
+async fn trigger_action_with_override(
+    action_uuid: String,
+    action_name: String,
+    action_plan: String,
+    action_prompt: String,
+    state: tauri::State<'_, ContextState>
+) -> Result<serde_json::Value, String> {
+    use screen_context::ContextApiClient;
+
+    println!("🎬 Triggering action with override: {} ({})", action_name, action_uuid);
+
+    // Disable context collection during action execution to prevent feedback loops
+    state.disable();
+
+    let api_client = ContextApiClient::new();
+    let result = api_client
+        .trigger_action_with_override(action_uuid, action_name, action_plan, action_prompt)
+        .await
+        .map_err(|e| format!("Failed to trigger action: {}", e));
+
+    match &result {
+        Ok(response) => {
+            println!("✅ Action execution response:");
+            println!("{}", serde_json::to_string_pretty(response).unwrap_or_else(|_| format!("{:?}", response)));
+        }
+        Err(e) => {
+            println!("❌ Action execution failed: {}", e);
+        }
+    }
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    state.enable();
+
     result
 }
 
@@ -793,6 +869,8 @@ pub fn run() {
             disable_context_collection,
             get_context_collection_status,
             trigger_action,
+            edit_action,
+            trigger_action_with_override,
             get_suggested_actions,
             clear_suggested_actions,
             tab_completion::injector::inject_completion_text,

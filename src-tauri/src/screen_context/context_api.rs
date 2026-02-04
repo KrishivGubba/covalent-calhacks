@@ -143,6 +143,96 @@ impl ContextApiClient {
             ))
         }
     }
+
+    /// Edit an action via Flask API (optionally persist)
+    pub async fn edit_action(
+        &self,
+        action_uuid: String,
+        action_name: String,
+        action_plan: String,
+        action_prompt: String,
+        persist: bool
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/edit_action", self.base_url);
+
+        let payload = serde_json::json!({
+            "action_uuid": action_uuid,
+            "action_override": {
+                "action_name": action_name,
+                "action_plan": action_plan,
+                "action_prompt": action_prompt
+            },
+            "persist": persist
+        });
+
+        let response = self.client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .context("Failed to send edit_action request to Flask API")?;
+
+        if response.status().is_success() {
+            let json_response: serde_json::Value = response
+                .json()
+                .await
+                .context("Failed to parse edit_action response from Flask API")?;
+
+            Ok(json_response)
+        } else {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            Err(anyhow::anyhow!(
+                "Flask API edit_action returned error status {}: {}",
+                status,
+                error_text
+            ))
+        }
+    }
+
+    /// Trigger an action by UUID with optional override via Flask API
+    pub async fn trigger_action_with_override(
+        &self,
+        action_uuid: String,
+        action_name: String,
+        action_plan: String,
+        action_prompt: String
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/trigger_action", self.base_url);
+
+        let payload = serde_json::json!({
+            "action_uuid": action_uuid,
+            "action_override": {
+                "action_name": action_name,
+                "action_plan": action_plan,
+                "action_prompt": action_prompt
+            }
+        });
+
+        let response = self.client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .context("Failed to send trigger_action request to Flask API")?;
+
+        if response.status().is_success() {
+            let json_response: serde_json::Value = response
+                .json()
+                .await
+                .context("Failed to parse trigger_action response from Flask API")?;
+
+            Ok(json_response)
+        } else {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            Err(anyhow::anyhow!(
+                "Flask API trigger_action returned error status {}: {}",
+                status,
+                error_text
+            ))
+        }
+    }
 }
 
 impl Default for ContextApiClient {
@@ -163,4 +253,3 @@ mod tests {
     }
 
 }
-

@@ -116,8 +116,22 @@ def trigger_action():
         body = request.get_json()
         action_uuid = body.get("action_uuid", "")
         action = body.get("action", "")
+        action_override = body.get("action_override")
         
-        result = tree.trigger_action(action_uuid)
+        effective_action = None
+        if action_override:
+            action_data = tree.dao.get_action_by_id(action_uuid)
+            if action_data:
+                _, action_name, action_plan, action_prompt, _ = action_data
+                effective_action = {
+                    "action_name": action_override.get("action_name") or action_name,
+                    "action_plan": action_override.get("action_plan") or action_plan,
+                    "action_prompt": action_override.get("action_prompt") or action_prompt
+                }
+            else:
+                effective_action = action_override
+
+        result = tree.trigger_action(action_uuid, action_override=action_override)
         
         # result is a tuple: (action_text, collected_data_string, graph_output)
         if result and len(result) >= 3:
@@ -144,10 +158,56 @@ def trigger_action():
             return jsonify({
                 "message": "Action triggered successfully",
                 "action_text": action_text,
-                "graph_output": serializable_output
+                "graph_output": serializable_output,
+                "effective_action": effective_action
             }), 200
         else:
             return jsonify({"message": "Action triggered but no result returned"}), 200
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/edit_action", methods=["POST"])
+def edit_action():
+    try:
+        body = request.get_json()
+        action_uuid = body.get("action_uuid", "")
+        action_override = body.get("action_override") or {}
+        persist = bool(body.get("persist", False))
+
+        if not action_uuid:
+            return jsonify({"error": "action_uuid is required"}), 400
+
+        if "action_prompt" in action_override and not action_override.get("action_prompt"):
+            return jsonify({"error": "action_prompt cannot be empty"}), 400
+
+        action_data = tree.dao.get_action_by_id(action_uuid)
+        if not action_data:
+            return jsonify({"error": "action not found"}), 404
+
+        _, action_name, action_plan, action_prompt, _ = action_data
+
+        effective_action = {
+            "action_name": action_override.get("action_name") or action_name,
+            "action_plan": action_override.get("action_plan") or action_plan,
+            "action_prompt": action_override.get("action_prompt") or action_prompt
+        }
+
+        if persist:
+            tree.dao.update_action(
+                action_uuid,
+                effective_action["action_name"],
+                effective_action["action_plan"],
+                effective_action["action_prompt"]
+            )
+
+        return jsonify({
+            "message": "Action edit processed",
+            "persisted": persist,
+            "effective_action": effective_action
+        }), 200
     except Exception as e:
         import traceback
         traceback.print_exc()

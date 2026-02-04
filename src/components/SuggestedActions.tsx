@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { disableContextCollection, enableContextCollection } from '../utils/contextControl';
 
 export interface Action {
   id: string;
@@ -19,6 +20,12 @@ type ActionStatus = 'idle' | 'playing' | 'done' | 'error';
 
 const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
   const [actionStatuses, setActionStatuses] = useState<Record<string, ActionStatus>>({});
+  const [editingAction, setEditingAction] = useState<Action | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editPlan, setEditPlan] = useState('');
+  const [editPrompt, setEditPrompt] = useState('');
+  const [editPersist, setEditPersist] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   const handleActionClick = async (action: Action) => {
     const currentStatus = actionStatuses[action.id] || 'idle';
@@ -56,23 +63,81 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
     }
   };
 
+  const openEditModal = async (action: Action) => {
+    setEditingAction(action);
+    setEditTitle(action.title);
+    setEditPlan(action.description);
+    setEditPrompt(action.action_prompt);
+    setEditPersist(false);
+    setEditError(null);
+    await disableContextCollection();
+  };
+
+  const closeEditModal = async (shouldResume: boolean) => {
+    setEditingAction(null);
+    setEditError(null);
+    if (shouldResume) {
+      await enableContextCollection();
+    }
+  };
+
+  const handleRunEditedAction = async () => {
+    if (!editingAction) {
+      return;
+    }
+    if (!editPrompt.trim()) {
+      setEditError('Prompt is required.');
+      return;
+    }
+
+    try {
+      await invoke('edit_action', {
+        actionUuid: editingAction.uuid,
+        actionName: editTitle,
+        actionPlan: editPlan,
+        actionPrompt: editPrompt,
+        persist: editPersist,
+      });
+
+      await invoke('trigger_action_with_override', {
+        actionUuid: editingAction.uuid,
+        actionName: editTitle,
+        actionPlan: editPlan,
+        actionPrompt: editPrompt,
+      });
+
+      await closeEditModal(false);
+    } catch (error) {
+      console.error('Failed to run edited action:', error);
+      setEditError('Failed to run edited action. Please try again.');
+    }
+  };
+
   const renderActionButton = (action: Action) => {
     const status = actionStatuses[action.id] || 'idle';
     
     if (status === 'idle') {
       return (
-        <button 
-          style={styles.playButton}
-          onClick={() => handleActionClick(action)}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(255, 255, 255, 0.35)';
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(255, 255, 255, 0.25)';
-          }}
-        >
-          ▶
-        </button>
+        <div style={styles.actionButtons}>
+          <button 
+            style={styles.editButton}
+            onClick={() => openEditModal(action)}
+          >
+            Edit
+          </button>
+          <button 
+            style={styles.playButton}
+            onClick={() => handleActionClick(action)}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(255, 255, 255, 0.35)';
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(255, 255, 255, 0.25)';
+            }}
+          >
+            ▶
+          </button>
+        </div>
       );
     } else if (status === 'playing') {
       return (
@@ -140,6 +205,64 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
           ))
         )}
       </div>
+
+      {editingAction && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modal}>
+            <div style={styles.modalHeader}>
+              <h3 style={styles.modalTitle}>Edit Action</h3>
+              <button style={styles.modalClose} onClick={() => closeEditModal(true)}>
+                ✕
+              </button>
+            </div>
+            <div style={styles.modalBody}>
+              <label style={styles.modalLabel}>
+                Title
+                <input
+                  style={styles.modalInput}
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                />
+              </label>
+              <label style={styles.modalLabel}>
+                Plan / Description
+                <textarea
+                  style={styles.modalTextarea}
+                  value={editPlan}
+                  onChange={(e) => setEditPlan(e.target.value)}
+                  rows={3}
+                />
+              </label>
+              <label style={styles.modalLabel}>
+                Prompt
+                <textarea
+                  style={styles.modalTextarea}
+                  value={editPrompt}
+                  onChange={(e) => setEditPrompt(e.target.value)}
+                  rows={5}
+                />
+              </label>
+              <label style={styles.modalCheckboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={editPersist}
+                  onChange={(e) => setEditPersist(e.target.checked)}
+                />
+                Save changes to future recommendations
+              </label>
+              {editError && <div style={styles.modalError}>{editError}</div>}
+            </div>
+            <div style={styles.modalActions}>
+              <button style={styles.modalCancel} onClick={() => closeEditModal(true)}>
+                Cancel
+              </button>
+              <button style={styles.modalRun} onClick={handleRunEditedAction}>
+                Run now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -205,6 +328,20 @@ const styles = {
     lineHeight: '1.6',
     margin: 0,
     textShadow: '0 1px 2px rgba(255, 255, 255, 0.2)',
+  },
+  actionButtons: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+  },
+  editButton: {
+    padding: '0.4rem 0.75rem',
+    borderRadius: '999px',
+    border: '1px solid rgba(100, 100, 100, 0.4)',
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    color: '#000000',
+    fontSize: '0.8rem',
+    cursor: 'pointer',
   },
   playButton: {
     width: '40px',
@@ -296,6 +433,118 @@ const styles = {
     fontSize: '1rem',
     padding: '3rem',
     textShadow: '0 1px 2px rgba(255, 255, 255, 0.2)',
+  },
+  modalOverlay: {
+    position: 'fixed' as const,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(15, 23, 42, 0.35)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+    padding: '1.5rem',
+  },
+  modal: {
+    width: '640px',
+    maxWidth: '94vw',
+    maxHeight: '85vh',
+    backgroundColor: 'rgba(255, 255, 255, 0.75)',
+    borderRadius: '24px',
+    padding: '1.25rem 1.25rem 1rem',
+    boxShadow: '0 30px 80px rgba(15, 23, 42, 0.35)',
+    border: '1px solid rgba(255, 255, 255, 0.6)',
+    backdropFilter: 'blur(28px) saturate(160%)',
+    WebkitBackdropFilter: 'blur(28px) saturate(160%)',
+    display: 'flex',
+    flexDirection: 'column' as const,
+  },
+  modalHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: '0.75rem',
+  },
+  modalTitle: {
+    margin: 0,
+    fontSize: '1.35rem',
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  modalClose: {
+    border: 'none',
+    backgroundColor: 'rgba(15, 23, 42, 0.08)',
+    color: '#0f172a',
+    width: '32px',
+    height: '32px',
+    borderRadius: '12px',
+    cursor: 'pointer',
+    fontSize: '0.9rem',
+  },
+  modalBody: {
+    overflowY: 'auto' as const,
+    paddingRight: '0.25rem',
+  },
+  modalLabel: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '0.4rem',
+    marginBottom: '0.8rem',
+    fontSize: '0.85rem',
+    color: '#0f172a',
+  },
+  modalInput: {
+    padding: '0.5rem 0.6rem',
+    borderRadius: '12px',
+    border: '1px solid rgba(148, 163, 184, 0.5)',
+    fontSize: '0.9rem',
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+  },
+  modalTextarea: {
+    padding: '0.5rem 0.6rem',
+    borderRadius: '12px',
+    border: '1px solid rgba(148, 163, 184, 0.5)',
+    fontSize: '0.9rem',
+    resize: 'vertical' as const,
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    minHeight: '90px',
+  },
+  modalCheckboxLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    fontSize: '0.85rem',
+    color: '#0f172a',
+    marginBottom: '0.8rem',
+  },
+  modalActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: '0.75rem',
+    marginTop: '0.8rem',
+    paddingTop: '0.5rem',
+    borderTop: '1px solid rgba(148, 163, 184, 0.25)',
+  },
+  modalCancel: {
+    padding: '0.5rem 0.9rem',
+    borderRadius: '999px',
+    border: '1px solid rgba(148, 163, 184, 0.6)',
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    cursor: 'pointer',
+  },
+  modalRun: {
+    padding: '0.5rem 0.9rem',
+    borderRadius: '999px',
+    border: '1px solid rgba(15, 23, 42, 0.25)',
+    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+    color: '#f8fafc',
+    cursor: 'pointer',
+  },
+  modalError: {
+    color: '#b91c1c',
+    fontSize: '0.85rem',
   },
 };
 
