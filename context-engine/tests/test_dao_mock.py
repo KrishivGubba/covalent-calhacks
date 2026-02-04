@@ -4,6 +4,10 @@ Comprehensive tests for TestGraphDAO in-memory mock.
 This module tests all TestGraphDAO methods independently and their interactions.
 """
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
 from graph_dao import TestGraphDAO
 from datetime import datetime, timedelta
 

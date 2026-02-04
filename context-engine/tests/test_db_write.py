@@ -5,13 +5,13 @@ Quick test to verify database write permissions
 import sys
 import os
 
-# Add the current directory to path
-sys.path.insert(0, os.path.dirname(__file__))
+# Add the parent directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from graph_dao import GraphDAO
 import uuid
 
-db_path = os.path.join(os.path.dirname(__file__), 'graph.db')
+db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'graph.db')
 
 print(f"Testing database write permissions for: {db_path}")
 print(f"File exists: {os.path.exists(db_path)}")

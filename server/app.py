@@ -65,10 +65,14 @@ def screen():
         import json
         data_str = json.dumps(body)
         
-        # Call learn function - returns list of recent actions
-        print(f"\n📍 DEBUG: Calling tree.learn()...")
-        recent_actions = tree.learn(enhanced_description, data_str)
-        print(f"📍 DEBUG: tree.learn() returned {len(recent_actions)} recent actions")
+        # Call learn function - returns dict with structure info and actions
+        print(f"\n📍 DEBUG: Calling tree.learn_with_structure()...")
+        result = tree.learn_with_structure(enhanced_description, data_str)
+        print(f"📍 DEBUG: Operation: {result['operation']}, Confidence: {result['confidence']}")
+        
+        # Extract recent actions from the result
+        recent_actions = result.get("actions", [])
+        print(f"📍 DEBUG: Got {len(recent_actions)} recent actions")
 
         # Format actions for frontend
         actions_list = []
