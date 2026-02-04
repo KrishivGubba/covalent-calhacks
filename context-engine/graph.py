@@ -118,7 +118,40 @@ class Tree:
         The nodes's children represent sub-tasks or related tasks/projects.
         Each node contains metadata, data and actions. Metadata is a brief description of the data contained in the node.
 
-        internal nodes represent broader categories or projects, while leaf nodes represent specific tasks or pieces of information.    
+        internal nodes represent broader categories or projects, while leaf nodes represent specific tasks or pieces of information.
+        
+        SAMPLE GRAPH STRUCTURE (showing proper parent-child relationships):
+        
+        Root Node
+        ├── Recruiting
+        │   ├── Intern
+        │   │   ├── Summer 2026
+        │   │   │   ├── Ritesh (individual applicant)
+        │   │   │   ├── Siddharth (individual applicant)
+        │   │   │   ├── Hemant (individual applicant)
+        │   │   │   └── Krishiv (individual applicant)
+        │   │   └── Fall 2026
+        │   └── New Grad
+        │       ├── 2025
+        │       ├── 2026
+        │       └── Events
+        │           ├── Online Webinar
+        │           ├── Career Fair
+        │           └── Career Conference
+        └── Employee Management
+            ├── Onboarding
+            ├── Issues
+            └── Questions/Requests
+                ├── Answer Questions
+                ├── Approve Timesheets
+                └── Approve Leave Requests
+        
+        KEY PRINCIPLES FROM THIS EXAMPLE:
+        - When you have a task with subtasks (e.g., "Summer 2026" interns → individual applicants like Ritesh), CREATE CHILD NODES
+        - When you have parallel tasks of the same type (e.g., "Summer 2026" and "Fall 2026"), CREATE SIBLING NODES
+        - When you have a category that contains multiple specific items (e.g., "Events" → "Online Webinar", "Career Fair"), use PARENT-CHILD relationships
+        - Leaf nodes represent the most specific tasks (e.g., "Ritesh", "Schedule Interview", "Send Email")
+        - Internal nodes represent categories or groupings (e.g., "Recruiting", "Employee Management", "Events")
         '''
         string = """this query is part of a traversal algorithm. You will be given the current node's metadata
         and the metadata of its children. You will also be given a user query. Your task is to determine the following:"""
@@ -650,11 +683,17 @@ DECISION CRITERIA:
 1. Is this new information a natural sub-topic of what "{node.metadata}" represents?
 2. Would someone looking for this information expect to find it in "{node.metadata}"?
 3. Is there a better fit among the alternative nodes listed above?
+4. IMPORTANT FOR SUBTASKS: If the new information is about a SPECIFIC INSTANCE or SUBTASK, it may need its own child node
+   - Example: If "{node.metadata}" is "Summer 2026 Interns" and new info is about a specific intern named "Ritesh", 
+     it should NOT fit here - it should trigger creation of a child node for "Ritesh"
+   - Example: If "{node.metadata}" is "Events" and new info is about organizing a specific "Career Fair",
+     it should NOT fit here - it should trigger creation of a child node for "Career Fair"
+   - Think: Does this represent a new specific instance that deserves its own node?
 
 INSTRUCTIONS:
-- If the information fits well in "{node.metadata}", set "fits" to true
-- If another node would be significantly better, set "fits" to false
-- Provide a brief reasoning (1-2 sentences)
+- If the information fits well in "{node.metadata}" AND is not about a specific subtask/instance, set "fits" to true
+- If another node would be significantly better, OR if this is a specific subtask that needs its own child node, set "fits" to false
+- Provide a brief reasoning (1-2 sentences) - if it's a subtask, mention that explicitly
 - If it fits, suggest an appropriate category name (use existing category if applicable, or suggest a new one)
 
 OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
@@ -766,9 +805,10 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
             print(f"Error getting siblings for node {node.node_uuid}: {e}")
             return []
 
-    def _llm_decide_structure(self, node: 'Node', summary: str, top_scores: List[Tuple['Node', float]]) -> dict:
+    def _llm_decide_structure(self, node: 'Node', summary: str, top_scores: List[Tuple['Node', float]]) -> list:
         """
-        Ask LLM to decide what graph structural change is needed.
+        Ask LLM to decide what graph structural changes are needed.
+        Can return MULTIPLE operations to be executed in sequence.
 
         Args:
             node: The current best-match node
@@ -776,29 +816,33 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
             top_scores: Top 5 nodes with scores for context
 
         Returns:
-            dict: {
-                "type": "create_child" | "create_sibling" | "split" | "insert_anyway",
-                "reasoning": str,
-                "new_node_metadata": str | None,
-                "split_plan": {...} | None
-            }
+            list: List of operation dicts, each with:
+                {
+                    "type": "create_child" | "create_sibling" | "split" | "insert_anyway",
+                    "reasoning": str,
+                    "new_node_metadata": str | None,
+                    "split_plan": {...} | None,
+                    "target_ref": str | None  # References which previously created node to operate on
+                }
         """
-        default_response = {
+        default_response = [{
             "type": "insert_anyway",
             "reasoning": "Error during structure decision - defaulting to insert",
             "new_node_metadata": None,
-            "split_plan": None
-        }
+            "split_plan": None,
+            "target_ref": None
+        }]
 
         # Check if graph operations model is available
         if not self.graph_operations_model:
             print("⚠️ _llm_decide_structure: Graph operations model not available, defaulting to insert")
-            return {
+            return [{
                 "type": "insert_anyway",
                 "reasoning": "No LLM available - defaulting to insert",
                 "new_node_metadata": None,
-                "split_plan": None
-            }
+                "split_plan": None,
+                "target_ref": None
+            }]
 
         try:
             # Gather context
@@ -877,13 +921,22 @@ ALTERNATIVE NODES (with similarity scores):
 AVAILABLE OPERATIONS:
 
 1. **CREATE_CHILD** - Create a new child node under "{node.metadata}"
-   - Use when: New info is a specialization/subset of the current node
-   - Example: Node is "Recruiting", new info is specifically about "Engineering Recruiting"
+   - Use when: New info is a specialization/subset/subtask of the current node
+   - IMPORTANT: When you have a specific task that is part of a broader task, create a CHILD node
+   - Examples from sample graph:
+     * "Summer 2026" (parent) → "Ritesh" (child - specific applicant)
+     * "Events" (parent) → "Online Webinar" (child - specific event type)
+     * "Questions/Requests" (parent) → "Answer Questions" (child - specific request type)
+   - Use for: Individual items within a category, specific tasks within a project, subtasks
    - NOT allowed if current depth >= max_depth
 
 2. **CREATE_SIBLING** - Create a new sibling node (same parent as "{node.metadata}")
    - Use when: New info is parallel to current node (same parent, different category)
-   - Example: Node is "Summer 2026 Interns", new info is about "Fall 2026 Interns"
+   - Examples from sample graph:
+     * "Summer 2026" and "Fall 2026" are siblings (both under "Intern")
+     * "Recruiting" and "Employee Management" are siblings (both under "Root")
+     * "Answer Questions", "Approve Timesheets", and "Approve Leave Requests" are siblings (all under "Questions/Requests")
+   - Use for: Similar level tasks that belong to the same parent category
 
 3. **SPLIT** - Divide "{node.metadata}" into multiple child nodes
    - Use when: Current node has become too broad with mixed categories that should be separated
@@ -895,21 +948,66 @@ AVAILABLE OPERATIONS:
    - Use when: After review, the data actually does belong here
    - Or when none of the other options make sense
 
+CRITICAL GUIDANCE FOR SUBTASKS:
+- If the new information is about a SUBTASK or SPECIFIC INSTANCE of what the current node represents, CREATE_CHILD is usually correct
+- Example: If current node is "Summer 2026 Interns" and new info is about scheduling an interview with one intern, that should be a CHILD node for that specific intern
+
+MULTIPLE OPERATIONS:
+You can return MULTIPLE operations if the new information requires a sequence of structural changes.
+For example:
+1. First create a child node for a category
+2. Then create another child under that new node for a specific item
+3. Then insert the data into the final node
+
+Operations will be executed IN THE ORDER you specify them. Each operation can reference previously created nodes using target_ref.
+
+TARGET REFERENCES:
+- "current": The node passed in (current best match)
+- "op1", "op2", "op3", etc.: Nodes created by previous operations in this sequence
+- Only operations that CREATE nodes (create_child, create_sibling, split) can be referenced
+
 OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
 {{
-    "type": "create_child" | "create_sibling" | "split" | "insert_anyway",
-    "reasoning": "Explanation of why this structural change is appropriate",
-    "new_node_metadata": "Name for the new node (required for create_child/create_sibling, null otherwise)",
-    "split_plan": {{
-        "new_children": [
-            {{"metadata": "Child1 Name", "inherits_categories": ["category1", "category2"]}},
-            {{"metadata": "Child2 Name", "inherits_categories": ["category3"]}}
-        ],
-        "new_data_goes_to": "Child1 Name"
-    }}
+    "operations": [
+        {{
+            "type": "create_child" | "create_sibling" | "split" | "insert_anyway",
+            "target_ref": "current" | "op1" | "op2" | null,
+            "reasoning": "Explanation of why this operation is needed",
+            "new_node_metadata": "Name for the new node (required for create_child/create_sibling, null otherwise)",
+            "split_plan": {{
+                "new_children": [
+                    {{"metadata": "Child1 Name", "inherits_categories": ["category1", "category2"]}},
+                    {{"metadata": "Child2 Name", "inherits_categories": ["category3"]}}
+                ],
+                "new_data_goes_to": "Child1 Name"
+            }}
+        }}
+    ]
 }}
 
-Note: split_plan is ONLY required when type is "split", otherwise set to null.
+EXAMPLES:
+
+Single operation:
+{{
+    "operations": [
+        {{"type": "create_child", "target_ref": "current", "reasoning": "...", "new_node_metadata": "New Node", "split_plan": null}}
+    ]
+}}
+
+Multiple operations (create parent, then child, then insert):
+{{
+    "operations": [
+        {{"type": "create_child", "target_ref": "current", "reasoning": "First create category", "new_node_metadata": "Events", "split_plan": null}},
+        {{"type": "create_child", "target_ref": "op1", "reasoning": "Then create specific event", "new_node_metadata": "Career Fair", "split_plan": null}},
+        {{"type": "insert_anyway", "target_ref": "op2", "reasoning": "Insert data into Career Fair", "new_node_metadata": null, "split_plan": null}}
+    ]
+}}
+
+IMPORTANT:
+- split_plan is ONLY required when type is "split", otherwise set to null
+- target_ref defaults to "current" if not specified
+- For most cases, a single operation is sufficient
+- Only use multiple operations when you need to create a hierarchy (e.g., category → subcategory → specific item)
 """
 
             # Call the LLM
@@ -925,9 +1023,10 @@ Note: split_plan is ONLY required when type is "split", otherwise set to null.
             traceback.print_exc()
             return default_response
 
-    def _parse_structure_decision_response(self, response_text: str, current_depth: int, max_depth: int) -> dict:
+    def _parse_structure_decision_response(self, response_text: str, current_depth: int, max_depth: int) -> list:
         """
         Parse and validate the JSON response from the LLM structure decision.
+        Can handle both single operation (legacy) and multiple operations (new format).
 
         Args:
             response_text: Raw response from LLM
@@ -935,16 +1034,17 @@ Note: split_plan is ONLY required when type is "split", otherwise set to null.
             max_depth: Maximum allowed depth from config
 
         Returns:
-            dict: Validated response with type, reasoning, new_node_metadata, split_plan
+            list: List of validated operations, each with type, reasoning, new_node_metadata, split_plan, target_ref
         """
         import re
 
-        default_response = {
+        default_response = [{
             "type": "insert_anyway",
             "reasoning": "Parse error - defaulting to insert",
             "new_node_metadata": None,
-            "split_plan": None
-        }
+            "split_plan": None,
+            "target_ref": "current"
+        }]
 
         valid_types = ["create_child", "create_sibling", "split", "insert_anyway"]
 
@@ -979,67 +1079,109 @@ Note: split_plan is ONLY required when type is "split", otherwise set to null.
 
             parsed = json.loads(json_str)
 
-            # Validate type field
-            operation_type = parsed.get("type", "").lower()
-            if operation_type not in valid_types:
-                print(f"⚠️ _parse_structure_decision_response: Invalid type '{operation_type}'")
+            # Check if we have the new format with "operations" key
+            operations_list = []
+            
+            if "operations" in parsed:
+                # New format: multiple operations
+                operations_list = parsed["operations"]
+                if not isinstance(operations_list, list) or len(operations_list) == 0:
+                    print(f"⚠️ _parse_structure_decision_response: Invalid operations list")
+                    return default_response
+            elif "type" in parsed:
+                # Legacy format: single operation
+                operations_list = [parsed]
+            else:
+                print(f"⚠️ _parse_structure_decision_response: Response has neither 'operations' nor 'type'")
                 return default_response
 
-            # Enforce max_depth constraint
-            if operation_type == "create_child" and current_depth >= max_depth:
-                print(f"⚠️ _parse_structure_decision_response: CREATE_CHILD not allowed at max depth, switching to INSERT_ANYWAY")
-                return {
-                    "type": "insert_anyway",
-                    "reasoning": f"CREATE_CHILD requested but node is at max depth ({current_depth}/{max_depth}). Inserting anyway.",
-                    "new_node_metadata": None,
-                    "split_plan": None
-                }
+            # Validate and process each operation
+            validated_operations = []
+            
+            for idx, operation in enumerate(operations_list):
+                operation_type = operation.get("type", "").lower()
+                
+                # Validate type
+                if operation_type not in valid_types:
+                    print(f"⚠️ _parse_structure_decision_response: Invalid type '{operation_type}' in operation {idx}")
+                    continue
 
-            # Validate new_node_metadata for create operations
-            new_node_metadata = parsed.get("new_node_metadata")
-            if operation_type in ["create_child", "create_sibling"]:
-                if not new_node_metadata or not isinstance(new_node_metadata, str):
-                    print(f"⚠️ _parse_structure_decision_response: Missing new_node_metadata for {operation_type}")
-                    return default_response
+                # Get target_ref (defaults to "current")
+                target_ref = operation.get("target_ref", "current")
+                if target_ref is None:
+                    target_ref = "current"
 
-            # Validate split_plan for split operations
-            split_plan = parsed.get("split_plan")
-            if operation_type == "split":
-                if not split_plan or not isinstance(split_plan, dict):
-                    print("⚠️ _parse_structure_decision_response: Missing split_plan for split operation")
-                    return default_response
+                # Enforce max_depth constraint for CREATE_CHILD
+                # Note: Only check depth for operations targeting "current" node
+                if operation_type == "create_child" and target_ref == "current" and current_depth >= max_depth:
+                    print(f"⚠️ Operation {idx}: CREATE_CHILD not allowed at max depth, converting to INSERT_ANYWAY")
+                    validated_operations.append({
+                        "type": "insert_anyway",
+                        "reasoning": f"CREATE_CHILD requested but node is at max depth ({current_depth}/{max_depth}). Inserting anyway.",
+                        "new_node_metadata": None,
+                        "split_plan": None,
+                        "target_ref": target_ref
+                    })
+                    continue
 
-                new_children = split_plan.get("new_children", [])
-                if not new_children or len(new_children) < 2:
-                    print("⚠️ _parse_structure_decision_response: split_plan must have at least 2 children")
-                    return default_response
+                # Validate new_node_metadata for create operations
+                new_node_metadata = operation.get("new_node_metadata")
+                if operation_type in ["create_child", "create_sibling"]:
+                    if not new_node_metadata or not isinstance(new_node_metadata, str):
+                        print(f"⚠️ Operation {idx}: Missing new_node_metadata for {operation_type}")
+                        continue
 
-                new_data_goes_to = split_plan.get("new_data_goes_to")
-                if not new_data_goes_to:
-                    print("⚠️ _parse_structure_decision_response: split_plan missing new_data_goes_to")
-                    return default_response
+                # Validate split_plan for split operations
+                split_plan = operation.get("split_plan")
+                if operation_type == "split":
+                    if not split_plan or not isinstance(split_plan, dict):
+                        print(f"⚠️ Operation {idx}: Missing split_plan for split operation")
+                        continue
 
-                # Validate each child in the plan
-                for child in new_children:
-                    if not isinstance(child, dict) or "metadata" not in child:
-                        print("⚠️ _parse_structure_decision_response: Invalid child in split_plan")
-                        return default_response
+                    new_children = split_plan.get("new_children", [])
+                    if not new_children or len(new_children) < 2:
+                        print(f"⚠️ Operation {idx}: split_plan must have at least 2 children")
+                        continue
 
-            result = {
-                "type": operation_type,
-                "reasoning": str(parsed.get("reasoning", "No reasoning provided")),
-                "new_node_metadata": new_node_metadata if operation_type in ["create_child", "create_sibling"] else None,
-                "split_plan": split_plan if operation_type == "split" else None
-            }
+                    new_data_goes_to = split_plan.get("new_data_goes_to")
+                    if not new_data_goes_to:
+                        print(f"⚠️ Operation {idx}: split_plan missing new_data_goes_to")
+                        continue
 
-            print(f"✅ _llm_decide_structure result: type={result['type']}")
-            if result['new_node_metadata']:
-                print(f"   New node: {result['new_node_metadata']}")
-            if result['split_plan']:
-                print(f"   Split into {len(result['split_plan']['new_children'])} children")
-            print(f"   Reasoning: {result['reasoning'][:100]}...")
+                    # Validate each child in the plan
+                    valid_children = True
+                    for child in new_children:
+                        if not isinstance(child, dict) or "metadata" not in child:
+                            print(f"⚠️ Operation {idx}: Invalid child in split_plan")
+                            valid_children = False
+                            break
+                    
+                    if not valid_children:
+                        continue
 
-            return result
+                # Operation is valid, add to results
+                validated_operations.append({
+                    "type": operation_type,
+                    "reasoning": str(operation.get("reasoning", "No reasoning provided")),
+                    "new_node_metadata": new_node_metadata if operation_type in ["create_child", "create_sibling"] else None,
+                    "split_plan": split_plan if operation_type == "split" else None,
+                    "target_ref": target_ref
+                })
+
+            # If no valid operations, return default
+            if not validated_operations:
+                print(f"⚠️ _parse_structure_decision_response: No valid operations found")
+                return default_response
+
+            # Print summary
+            print(f"✅ _llm_decide_structure parsed {len(validated_operations)} operation(s):")
+            for idx, op in enumerate(validated_operations):
+                print(f"   Op {idx + 1}: {op['type']} (target: {op['target_ref']})")
+                if op['new_node_metadata']:
+                    print(f"         New node: {op['new_node_metadata']}")
+                print(f"         Reasoning: {op['reasoning'][:80]}...")
+
+            return validated_operations
 
         except json.JSONDecodeError as e:
             print(f"⚠️ _parse_structure_decision_response: JSON decode error: {e}")
@@ -1844,141 +1986,152 @@ Return ONLY a JSON object:
             print(f"\n🏗️ LOW CONFIDENCE or validation failed")
             print("   → Asking LLM for structural decision...")
 
-            decision = self._llm_decide_structure(best_node, summary, top_scores)
-            operation_type = decision["type"]
-            reasoning = decision.get("reasoning", "No reasoning provided")
-
-            print(f"   LLM decision: {operation_type}")
-            print(f"   Reasoning: {reasoning[:100]}...")
-
-            # ---------------------------------------------------------
-            # 5a. INSERT ANYWAY
-            # ---------------------------------------------------------
-            if operation_type == "insert_anyway":
-                print("\n📥 INSERT ANYWAY")
-                recent_actions = self.learn(summary, data)
-                return {
-                    "operation": "insert",
-                    "target_node": best_node,
-                    "confidence": confidence,
-                    "new_nodes": [],
-                    "actions": recent_actions,
-                    "reasoning": f"LLM decided to insert anyway: {reasoning}"
-                }
-
-            # ---------------------------------------------------------
-            # 5b. CREATE CHILD
-            # ---------------------------------------------------------
-            elif operation_type == "create_child":
-                new_metadata = decision.get("new_node_metadata", "New Category")
-                print(f"\n🌱 CREATE CHILD: '{new_metadata}'")
-
-                new_node = self._create_child_node(
-                    parent=best_node,
-                    metadata=new_metadata,
-                    summary=summary,
-                    data=data
-                )
-                recent_actions = self.dao.get_recent_actions_for_node(new_node.node_uuid, limit=4)
-                return {
-                    "operation": "create_child",
-                    "target_node": new_node,
-                    "confidence": confidence,
-                    "new_nodes": [new_node],
-                    "actions": recent_actions,
-                    "reasoning": f"Created child node '{new_metadata}': {reasoning}"
-                }
-
-            # ---------------------------------------------------------
-            # 5c. CREATE SIBLING
-            # ---------------------------------------------------------
-            elif operation_type == "create_sibling":
-                new_metadata = decision.get("new_node_metadata", "New Category")
-                print(f"\n🌿 CREATE SIBLING: '{new_metadata}'")
-
-                new_node = self._create_sibling_node(
-                    sibling_of=best_node,
-                    metadata=new_metadata,
-                    summary=summary,
-                    data=data
-                )
-                recent_actions = self.dao.get_recent_actions_for_node(new_node.node_uuid, limit=4)
-                return {
-                    "operation": "create_sibling",
-                    "target_node": new_node,
-                    "confidence": confidence,
-                    "new_nodes": [new_node],
-                    "actions": recent_actions,
-                    "reasoning": f"Created sibling node '{new_metadata}': {reasoning}"
-                }
-
-            # ---------------------------------------------------------
-            # 5d. SPLIT
-            # ---------------------------------------------------------
-            elif operation_type == "split":
-                split_plan = decision.get("split_plan")
-                if not split_plan:
-                    print("⚠️ Split decision but no split_plan - falling back to insert")
-                    recent_actions = self.learn(summary, data)
-                    return {
-                        "operation": "insert",
-                        "target_node": best_node,
-                        "confidence": confidence,
-                        "new_nodes": [],
-                        "actions": recent_actions,
-                        "reasoning": "Split requested but no valid plan - inserted anyway"
-                    }
-
-                print(f"\n✂️ SPLIT into {len(split_plan.get('new_children', []))} children")
-
-                new_nodes = self._split_node(
-                    node=best_node,
-                    split_plan=split_plan,
-                    new_summary=summary,
-                    new_data=data
-                )
-
-                # Find the target node where new data was inserted
-                new_data_goes_to = split_plan.get("new_data_goes_to")
-                target_node = None
-
-                if new_data_goes_to:
-                    for node in new_nodes:
-                        if node.metadata == new_data_goes_to:
-                            target_node = node
-                            break
-
-                if target_node is None and new_nodes:
-                    target_node = new_nodes[0]  # Default to first child
-
-                recent_actions = self.dao.get_recent_actions_for_node(
-                    target_node.node_uuid if target_node else best_node.node_uuid,
-                    limit=4
-                )
-
-                return {
-                    "operation": "split",
-                    "target_node": target_node if target_node else best_node,
-                    "confidence": confidence,
-                    "new_nodes": new_nodes,
-                    "actions": recent_actions,
-                    "reasoning": f"Split node into {len(new_nodes)} children: {reasoning}"
-                }
-
-            # ---------------------------------------------------------
-            # 5e. UNKNOWN OPERATION - FALLBACK
-            # ---------------------------------------------------------
-            else:
-                print(f"⚠️ Unknown operation type: {operation_type} - falling back to insert")
-                recent_actions = self.learn(summary, data)
-                return {
-                    "operation": "insert",
-                    "target_node": best_node,
-                    "confidence": confidence,
-                    "new_nodes": [],
-                    "actions": recent_actions,
-                    "reasoning": f"Unknown operation '{operation_type}' - inserted anyway"
-                }
+            operations = self._llm_decide_structure(best_node, summary, top_scores)
+            
+            # Execute operations sequentially
+            print(f"\n🔄 Executing {len(operations)} operation(s) in sequence...")
+            
+            # Track created nodes by operation reference (op1, op2, etc.)
+            node_refs = {"current": best_node}
+            all_new_nodes = []
+            final_target_node = best_node
+            all_reasoning = []
+            
+            for idx, decision in enumerate(operations):
+                operation_type = decision["type"]
+                reasoning = decision.get("reasoning", "No reasoning provided")
+                target_ref = decision.get("target_ref", "current")
+                
+                all_reasoning.append(f"Op{idx + 1}: {reasoning}")
+                
+                print(f"\n   [{idx + 1}/{len(operations)}] {operation_type.upper()} (target: {target_ref})")
+                print(f"   Reasoning: {reasoning[:100]}...")
+                
+                # Resolve target node
+                target_node = node_refs.get(target_ref, best_node)
+                if target_node is None:
+                    print(f"   ⚠️ Invalid target_ref '{target_ref}', using 'current' instead")
+                    target_node = best_node
+                
+                # Determine if this is the last operation (where we insert data)
+                is_last_operation = (idx == len(operations) - 1)
+                
+                # Only pass summary/data to the last operation
+                op_summary = summary if is_last_operation else None
+                op_data = data if is_last_operation else None
+                
+                # ---------------------------------------------------------
+                # Execute operation based on type
+                # ---------------------------------------------------------
+                
+                if operation_type == "insert_anyway":
+                    print("   📥 INSERT ANYWAY")
+                    if is_last_operation:
+                        self._learn_into_node(target_node, summary, data)
+                    final_target_node = target_node
+                
+                # ---------------------------------------------------------
+                # CREATE CHILD
+                # ---------------------------------------------------------
+                elif operation_type == "create_child":
+                    new_metadata = decision.get("new_node_metadata", "New Category")
+                    print(f"   🌱 CREATE CHILD: '{new_metadata}' under '{target_node.metadata}'")
+                    
+                    new_node = self._create_child_node(
+                        parent=target_node,
+                        metadata=new_metadata,
+                        summary=op_summary,
+                        data=op_data
+                    )
+                    
+                    # Store reference for subsequent operations
+                    node_refs[f"op{idx + 1}"] = new_node
+                    all_new_nodes.append(new_node)
+                    final_target_node = new_node
+                    print(f"   ✅ Created child node, stored as 'op{idx + 1}'")
+                
+                # ---------------------------------------------------------
+                # CREATE SIBLING
+                # ---------------------------------------------------------
+                elif operation_type == "create_sibling":
+                    new_metadata = decision.get("new_node_metadata", "New Category")
+                    print(f"   🌿 CREATE SIBLING: '{new_metadata}' next to '{target_node.metadata}'")
+                    
+                    new_node = self._create_sibling_node(
+                        sibling_of=target_node,
+                        metadata=new_metadata,
+                        summary=op_summary,
+                        data=op_data
+                    )
+                    
+                    # Store reference for subsequent operations
+                    node_refs[f"op{idx + 1}"] = new_node
+                    all_new_nodes.append(new_node)
+                    final_target_node = new_node
+                    print(f"   ✅ Created sibling node, stored as 'op{idx + 1}'")
+                
+                # ---------------------------------------------------------
+                # SPLIT
+                # ---------------------------------------------------------
+                elif operation_type == "split":
+                    split_plan = decision.get("split_plan")
+                    if not split_plan:
+                        print("   ⚠️ Split decision but no split_plan - skipping")
+                        continue
+                    
+                    print(f"   ✂️ SPLIT '{target_node.metadata}' into {len(split_plan.get('new_children', []))} children")
+                    
+                    new_nodes = self._split_node(
+                        node=target_node,
+                        split_plan=split_plan,
+                        new_summary=op_summary,
+                        new_data=op_data
+                    )
+                    
+                    # Find the target node where new data was inserted
+                    new_data_goes_to = split_plan.get("new_data_goes_to")
+                    target_for_data = None
+                    
+                    if new_data_goes_to:
+                        for node in new_nodes:
+                            if node.metadata == new_data_goes_to:
+                                target_for_data = node
+                                break
+                    
+                    if target_for_data is None and new_nodes:
+                        target_for_data = new_nodes[0]  # Default to first child
+                    
+                    # Store the primary result node as reference
+                    node_refs[f"op{idx + 1}"] = target_for_data
+                    all_new_nodes.extend(new_nodes)
+                    final_target_node = target_for_data
+                    print(f"   ✅ Split completed, primary node stored as 'op{idx + 1}'")
+                
+                # ---------------------------------------------------------
+                # UNKNOWN OPERATION
+                # ---------------------------------------------------------
+                else:
+                    print(f"   ⚠️ Unknown operation type: {operation_type} - skipping")
+                    continue
+            
+            # After all operations complete, return result
+            recent_actions = self.dao.get_recent_actions_for_node(
+                final_target_node.node_uuid if final_target_node else best_node.node_uuid,
+                limit=4
+            )
+            
+            # Determine primary operation for result
+            primary_operation = operations[-1]["type"] if operations else "insert"
+            combined_reasoning = " → ".join(all_reasoning)
+            
+            return {
+                "operation": primary_operation,
+                "target_node": final_target_node,
+                "confidence": confidence,
+                "new_nodes": all_new_nodes,
+                "actions": recent_actions,
+                "reasoning": combined_reasoning
+            }
 
         except Exception as e:
             # ============================================================
