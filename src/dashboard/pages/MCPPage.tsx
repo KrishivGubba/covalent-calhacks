@@ -6,7 +6,7 @@ const BACKEND_URL = 'http://localhost:5001';
 // Google OAuth config (must match backend)
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const GOOGLE_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/google/callback';
-const GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email';
+const GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email';
 
 // PKCE utilities
 function generateRandomString(length: number): string {
@@ -87,13 +87,36 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   };
 
   const handleConnectGoogle = async () => {
+    console.log('handleConnectGoogle called');
     setConnectingId('google');
     
     try {
       // Get Auth0 access token (required for Lambda call)
-      const authToken = sessionStorage.getItem('access_token');
+      let authToken = sessionStorage.getItem('access_token');
+      console.log('Auth token in sessionStorage:', !!authToken);
+      
+      // If not in sessionStorage, try to get from backend session
       if (!authToken) {
-        alert('Please log in first to connect Google');
+        const userId = localStorage.getItem('covalent_user_id');
+        if (userId) {
+          console.log('Fetching token from backend session...');
+          try {
+            const sessionResponse = await fetch(`${BACKEND_URL}/auth/session?user_id=${encodeURIComponent(userId)}`);
+            const sessionData = await sessionResponse.json();
+            if (sessionData.session?.access_token) {
+              authToken = sessionData.session.access_token;
+              // Restore to sessionStorage for future use
+              sessionStorage.setItem('access_token', authToken);
+              console.log('Token restored from backend session');
+            }
+          } catch (err) {
+            console.error('Failed to fetch session:', err);
+          }
+        }
+      }
+      
+      if (!authToken) {
+        alert('Please log in again to connect Google (session expired)');
         setConnectingId(null);
         return;
       }
@@ -112,8 +135,11 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
       
       if (!startResponse.ok) {
         const errorData = await startResponse.json().catch(() => ({}));
+        console.error('Start response error:', errorData);
         throw new Error(errorData.error || 'Failed to start Google auth');
       }
+      
+      console.log('Google auth start successful, building OAuth URL');
       
       // Build Google OAuth URL
       const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
@@ -128,7 +154,15 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
       authUrl.searchParams.set('prompt', 'consent'); // Force consent to get refresh token
       
       // Open in default browser
-      await openUrl(authUrl.toString());
+      console.log('Opening Google OAuth URL:', authUrl.toString());
+      try {
+        await openUrl(authUrl.toString());
+        console.log('openUrl completed successfully');
+      } catch (openError) {
+        console.error('openUrl failed:', openError);
+        // Fallback to window.open
+        window.open(authUrl.toString(), '_blank');
+      }
       
       // Poll for completion
       pollIntervalRef.current = window.setInterval(async () => {
@@ -172,6 +206,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   };
 
   const handleConnect = async (id: string) => {
+    console.log(`handleConnect called with id: ${id}, isAuthenticated: ${isAuthenticated}`);
     if (id === 'google') {
       await handleConnectGoogle();
     } else {

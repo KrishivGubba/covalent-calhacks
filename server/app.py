@@ -50,10 +50,10 @@ AUTH0_REDIRECT_URI = 'http://localhost:5001/callback'
 # Google OAuth config (token exchange happens via Lambda to keep secret secure)
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 GOOGLE_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/google/callback'
-GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email'
+GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email'
 
 # Lambda Gateway URL for secure token exchange
-LAMBDA_GATEWAY_URL = os.environ.get('LAMBDA_GATEWAY_URL', 'https://tnsr65016k.execute-api.us-east-1.amazonaws.com')
+LAMBDA_GATEWAY_URL = os.environ.get('LAMBDA_GATEWAY_URL', 'https://gtfrn4otol.execute-api.us-east-1.amazonaws.com')
 
 # In-memory storage for pending Google OAuth (state -> {code_verifier, result, ...})
 # Short-lived, cleared after auth completes
