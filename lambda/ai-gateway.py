@@ -7,7 +7,7 @@ Bedrock models without exposing credentials on the client side.
 Endpoints:
     POST /invoke - Invoke a Bedrock model (Claude, etc.)
     POST /converse - Use Bedrock's Converse API for chat
-    GET /health - Health check
+    GET /health - Health check (no auth required)
 
 Expected request body for /invoke:
 {
@@ -18,16 +18,21 @@ Expected request body for /invoke:
     "temperature": 0.7  # optional
 }
 
-TODO: Add JWT authentication layer
+Authentication:
+    All endpoints except /health require a valid Auth0 JWT in the Authorization header.
+    Set AUTH0_DOMAIN and AUTH0_AUDIENCE environment variables.
 """
 
 import json
 import logging
 import os
 from typing import Any, Dict, Optional
+from functools import lru_cache
 
 import boto3
 from botocore.config import Config
+import jwt
+from jwt import PyJWKClient
 
 # Configure logging
 logger = logging.getLogger()
@@ -38,6 +43,94 @@ BEDROCK_REGION = os.environ.get("BEDROCK_REGION", "us-east-1")
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "us.anthropic.claude-sonnet-4-20250514-v1:0")
 DEFAULT_MAX_TOKENS = int(os.environ.get("DEFAULT_MAX_TOKENS", "4096"))
 DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", "0.7"))
+
+# Auth0 JWT verification configuration
+AUTH0_DOMAIN = os.environ.get("AUTH0_DOMAIN", "")  # e.g., "dev-abc123.us.auth0.com"
+AUTH0_AUDIENCE = os.environ.get("AUTH0_AUDIENCE", "")  # e.g., "https://dev-abc123.us.auth0.com/api/v2/"
+AUTH0_ALGORITHMS = ["RS256"]
+
+# Cache the JWKS client (reused across invocations)
+_jwks_client = None
+
+
+def get_jwks_client() -> PyJWKClient:
+    """Get or create the JWKS client for Auth0."""
+    global _jwks_client
+    if _jwks_client is None and AUTH0_DOMAIN:
+        jwks_url = f"https://{AUTH0_DOMAIN}/.well-known/jwks.json"
+        _jwks_client = PyJWKClient(jwks_url, cache_keys=True)
+    return _jwks_client
+
+
+def verify_jwt(token: str) -> Dict[str, Any]:
+    """
+    Verify an Auth0 JWT and return the decoded payload.
+    
+    Raises:
+        jwt.exceptions.InvalidTokenError: If token is invalid
+    """
+    if not AUTH0_DOMAIN or not AUTH0_AUDIENCE:
+        raise ValueError("AUTH0_DOMAIN and AUTH0_AUDIENCE must be configured")
+    
+    jwks_client = get_jwks_client()
+    signing_key = jwks_client.get_signing_key_from_jwt(token)
+    
+    payload = jwt.decode(
+        token,
+        signing_key.key,
+        algorithms=AUTH0_ALGORITHMS,
+        audience=AUTH0_AUDIENCE,
+        issuer=f"https://{AUTH0_DOMAIN}/",
+    )
+    
+    return payload
+
+
+def extract_token(event: Dict[str, Any]) -> Optional[str]:
+    """Extract the Bearer token from the Authorization header."""
+    headers = event.get("headers", {}) or {}
+    
+    # Headers might be lowercase (API Gateway v2) or mixed case (v1)
+    auth_header = headers.get("Authorization") or headers.get("authorization", "")
+    
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:]  # Remove "Bearer " prefix
+    
+    return None
+
+
+def authenticate_request(event: Dict[str, Any]) -> tuple[Optional[Dict], Optional[Dict]]:
+    """
+    Authenticate the request and return (user_payload, error_response).
+    
+    If authentication succeeds, returns (payload, None).
+    If authentication fails, returns (None, error_response).
+    """
+    # Check if auth is configured
+    if not AUTH0_DOMAIN or not AUTH0_AUDIENCE:
+        logger.warning("Auth0 not configured - allowing unauthenticated access")
+        return ({"sub": "anonymous"}, None)
+    
+    token = extract_token(event)
+    if not token:
+        return (None, create_response(401, {"error": "Missing Authorization header"}))
+    
+    try:
+        payload = verify_jwt(token)
+        logger.info(f"Authenticated user: {payload.get('sub', 'unknown')}")
+        return (payload, None)
+    except jwt.ExpiredSignatureError:
+        return (None, create_response(401, {"error": "Token has expired"}))
+    except jwt.InvalidAudienceError:
+        return (None, create_response(401, {"error": "Invalid token audience"}))
+    except jwt.InvalidIssuerError:
+        return (None, create_response(401, {"error": "Invalid token issuer"}))
+    except jwt.InvalidTokenError as e:
+        logger.error(f"JWT validation failed: {e}")
+        return (None, create_response(401, {"error": "Invalid token"}))
+    except Exception as e:
+        logger.error(f"Auth error: {e}")
+        return (None, create_response(500, {"error": "Authentication error"}))
 
 # Allowed models (security: only allow specific models)
 # Use inference profile format (us. prefix) for newer models
@@ -295,6 +388,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     Main Lambda handler.
     
     Routes requests based on HTTP method and path.
+    Authentication is required for all endpoints except /health and OPTIONS.
     """
     logger.info(f"Received event: {json.dumps(event)}")
     
@@ -302,13 +396,21 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     http_method = event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method", "")
     path = event.get("path") or event.get("rawPath", "")
     
-    # Handle CORS preflight
+    # Handle CORS preflight (no auth required)
     if http_method == "OPTIONS":
         return handle_options()
     
-    # Route based on path
+    # Health check (no auth required)
     if path == "/health" or path.endswith("/health"):
         return handle_health()
+    
+    # --- All other endpoints require authentication ---
+    user_payload, auth_error = authenticate_request(event)
+    if auth_error:
+        return auth_error
+    
+    # User is authenticated - user_payload contains JWT claims (sub, email, etc.)
+    logger.info(f"Request authenticated for user: {user_payload.get('sub', 'unknown')}")
     
     if path == "/invoke" or path.endswith("/invoke"):
         if http_method != "POST":

@@ -87,9 +87,10 @@ class GatewayClient:
     
     Configuration:
         Set GATEWAY_URL environment variable, or pass url to constructor.
+        Authentication requires an access_token (Auth0 JWT).
         
     Example:
-        client = GatewayClient()
+        client = GatewayClient(access_token="eyJ...")
         response = client.generate("Hello!")
         print(response.content)
     """
@@ -102,6 +103,7 @@ class GatewayClient:
     def __init__(
         self,
         url: Optional[str] = None,
+        access_token: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
         default_model: Optional[str] = None,
         default_max_tokens: Optional[int] = None,
@@ -112,6 +114,7 @@ class GatewayClient:
         
         Args:
             url: Gateway URL. Defaults to GATEWAY_URL env var.
+            access_token: Auth0 JWT access token for authentication.
             timeout: Request timeout in seconds. Default 60.
             default_model: Default model to use. Can use alias from MODELS dict.
             default_max_tokens: Default max tokens.
@@ -129,6 +132,7 @@ class GatewayClient:
         # Remove trailing slash
         self.url = self.url.rstrip("/")
         
+        self.access_token = access_token
         self.timeout = timeout
         self.default_model = self._resolve_model(default_model) if default_model else self.DEFAULT_MODEL
         self.default_max_tokens = default_max_tokens or self.DEFAULT_MAX_TOKENS
@@ -137,6 +141,17 @@ class GatewayClient:
         # Session for connection pooling
         self._session = requests.Session()
     
+    def set_access_token(self, access_token: str) -> None:
+        """Update the access token (e.g., after refresh)."""
+        self.access_token = access_token
+    
+    def _get_headers(self) -> Dict[str, str]:
+        """Get headers for requests, including auth if available."""
+        headers = {"Content-Type": "application/json"}
+        if self.access_token:
+            headers["Authorization"] = f"Bearer {self.access_token}"
+        return headers
+    
     def _resolve_model(self, model: str) -> str:
         """Resolve model alias to full model ID."""
         return MODELS.get(model, model)
@@ -144,21 +159,25 @@ class GatewayClient:
     def _make_request(self, endpoint: str, method: str = "GET", json_data: Dict = None) -> Dict[str, Any]:
         """Make a request to the gateway."""
         url = f"{self.url}/{endpoint.lstrip('/')}"
+        headers = self._get_headers()
         
         try:
             if method == "GET":
-                response = self._session.get(url, timeout=self.timeout)
+                response = self._session.get(url, headers=headers, timeout=self.timeout)
             elif method == "POST":
                 response = self._session.post(
                     url,
                     json=json_data,
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                     timeout=self.timeout,
                 )
             else:
                 raise ValueError(f"Unsupported method: {method}")
             
             data = response.json()
+            
+            if response.status_code == 401:
+                raise GatewayError("Unauthorized - invalid or missing access token", 401)
             
             if response.status_code != 200:
                 error_msg = data.get("error", f"HTTP {response.status_code}")
