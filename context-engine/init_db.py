@@ -117,6 +117,33 @@ def create_schema(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # Integration tokens - OAuth tokens for third-party services (Google, GitHub, Notion)
+    # Single-user desktop app, so provider is the primary key (one token per provider)
+    # To check if integration is connected: SELECT 1 FROM integration_tokens WHERE provider=?
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS integration_tokens (
+            provider TEXT PRIMARY KEY,
+            access_token TEXT NOT NULL,
+            refresh_token TEXT,
+            expires_at TEXT,
+            scopes TEXT,
+            provider_metadata TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        """
+    )
+
+    # Seed built-in integrations that don't require OAuth (always "connected")
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO integration_tokens (provider, access_token, scopes, provider_metadata)
+        VALUES ('filesystem', 'built-in', 'local', '{"type": "local_filesystem"}'),
+               ('perplexity', 'api-key-based', 'search', '{"type": "api_key"}');
+        """
+    )
+
     conn.commit()
 
 

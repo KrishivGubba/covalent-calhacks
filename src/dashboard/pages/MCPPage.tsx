@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+
+const BACKEND_URL = 'http://localhost:5001';
 
 interface MCPIntegration {
   id: string;
   name: string;
   connected: boolean;
   description: string;
+  icon?: string;
+  included?: boolean;
 }
 
 interface MCPPageProps {
@@ -21,11 +24,24 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   }, []);
 
   const loadIntegrations = async () => {
+    setLoading(true);
     try {
-      const data = await invoke<MCPIntegration[]>('get_mcp_integrations');
-      setIntegrations(data);
+      const response = await fetch(`${BACKEND_URL}/integrations/status`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      setIntegrations(data.integrations || []);
     } catch (error) {
       console.error('Failed to load MCP integrations:', error);
+      // Fallback to default list on error
+      setIntegrations([
+        { id: 'filesystem', name: 'Filesystem', description: 'Access local files and directories', connected: false, icon: '📁' },
+        { id: 'github', name: 'GitHub', description: 'Access repositories, issues, and pull requests', connected: false, icon: '🐙' },
+        { id: 'perplexity', name: 'Perplexity Search', description: 'AI-powered web search', connected: true, icon: '🔍', included: true },
+        { id: 'notion', name: 'Notion', description: 'Access Notion workspaces and pages', connected: false, icon: '📝' },
+        { id: 'google', name: 'Google Workspace', description: 'Calendar, Drive, Mail', connected: false, icon: '🔷' },
+      ]);
     } finally {
       setLoading(false);
     }
@@ -69,7 +85,10 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
           <div key={integration.id} style={styles.card}>
             <div style={styles.cardHeader}>
               <div style={styles.cardTitleRow}>
-                <h3 style={styles.cardTitle}>{integration.name}</h3>
+                <h3 style={styles.cardTitle}>
+                  {integration.icon && <span style={styles.icon}>{integration.icon}</span>}
+                  {integration.name}
+                </h3>
                 <div
                   style={{
                     ...styles.statusBadge,
@@ -89,7 +108,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
             </div>
 
             <div style={styles.cardActions}>
-              {integration.id === 'perplexity' ? (
+              {integration.included ? (
                 <div style={styles.includedBadge}>
                   Included
                 </div>
@@ -180,6 +199,12 @@ const styles = {
     fontWeight: '600',
     color: '#ffffff',
     margin: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  icon: {
+    fontSize: '1.2rem',
   },
   statusBadge: {
     display: 'flex',

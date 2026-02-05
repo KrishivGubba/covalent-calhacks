@@ -75,7 +75,8 @@ def test_with_valid_token():
             print(f"  Status: {health.get('status')}")
             print(f"  Region: {health.get('region')}")
         except GatewayError as e:
-            print(f"  Health check failed: {e}")
+            print(f"  Health check failed: {e.message}")
+            print(f"  Status code: {e.status_code}")
         
         # Try an actual invoke (auth required)
         print("\n--- Invoke (auth required) ---")
@@ -88,9 +89,12 @@ def test_with_valid_token():
             print(f"  Tokens: {response.input_tokens} in, {response.output_tokens} out")
             print("\n✅ SUCCESS: Authenticated request worked!")
         except GatewayError as e:
-            print(f"  ❌ FAILED: {e}")
+            print(f"  ❌ FAILED: {e.message}")
+            print(f"  Status code: {e.status_code}")
             if e.status_code == 401:
                 print("  Token was rejected - may be expired or invalid")
+            elif e.status_code == 500:
+                print("  Server error - Lambda may be misconfigured or missing dependencies")
             
     except ValueError as e:
         print(f"\n⚠️  Cannot run test: {e}")
@@ -123,7 +127,8 @@ def test_with_invalid_token():
                 print(f"  ✅ EXPECTED: Got 401 Unauthorized")
                 print(f"  Error message: {e.message}")
             else:
-                print(f"  ❌ UNEXPECTED ERROR: {e}")
+                print(f"  ❌ UNEXPECTED ERROR (status {e.status_code}):")
+                print(f"  {e.message}")
                 
     except Exception as e:
         print(f"\n❌ Unexpected error: {e}")
@@ -145,7 +150,7 @@ def test_with_no_token():
             health = client.health()
             print(f"  ✅ Status: {health.get('status')}")
         except GatewayError as e:
-            print(f"  Result: {e}")
+            print(f"  Status {e.status_code}: {e.message}")
         
         # Invoke should fail
         print("\n--- Invoke (should fail) ---")
@@ -158,7 +163,7 @@ def test_with_no_token():
                 print(f"  ✅ EXPECTED: Got 401 Unauthorized")
                 print(f"  Error message: {e.message}")
             else:
-                print(f"  Result: {e}")
+                print(f"  Status {e.status_code}: {e.message}")
                 
     except ValueError as e:
         # This happens if GATEWAY_URL is not set

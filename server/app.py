@@ -15,6 +15,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'context-engine'))
 from graph import Tree
 from auth_dao import AuthDAO
+from integration_dao import IntegrationDAO
 
 
 
@@ -85,10 +86,13 @@ def _ensure_auth_table_schema():
         conn.close()
 
 
-# Run migration on startup, then instantiate AuthDAO
+# Run migration on startup, then instantiate DAOs
 _ensure_auth_table_schema()
 auth_dao = AuthDAO(db_path)
 auth_dao.ensure_sessions_table()  # Create user_sessions table if needed
+
+integration_dao = IntegrationDAO(db_path)
+integration_dao.ensure_table()  # Create integration_tokens table if needed
 
 
 @app.route("/screen", methods=["POST"])
@@ -425,6 +429,64 @@ def logout():
     deleted = auth_dao.delete_session(user_id)
     print(f"🔐 Logged out user={user_id} (deleted={deleted})")
     return jsonify({"ok": True, "deleted": deleted > 0}), 200
+
+
+# ========================
+# Integrations Endpoints
+# ========================
+
+@app.route("/integrations/status", methods=["GET"])
+def integrations_status():
+    """
+    Get status of all integrations.
+    Returns: { "integrations": [ { "id": "google", "name": "...", "connected": true/false }, ... ] }
+    """
+    # Get connection status from DB (single-user desktop app, no user_id needed)
+    statuses = integration_dao.get_all_statuses()
+    
+    # Build the full integrations list with metadata
+    # "included" means it's built-in and always connected (no OAuth needed)
+    integrations = [
+        {
+            "id": "filesystem",
+            "name": "Filesystem",
+            "description": "Access local files and directories",
+            "icon": "📁",
+            "connected": True,  # Always connected - uses local filesystem
+            "included": True,
+        },
+        {
+            "id": "github",
+            "name": "GitHub",
+            "description": "Access repositories, issues, and pull requests",
+            "icon": "🐙",
+            "connected": statuses.get("github", False),
+        },
+        {
+            "id": "perplexity",
+            "name": "Perplexity Search",
+            "description": "AI-powered web search",
+            "icon": "🔍",
+            "connected": True,  # Always connected - uses API key
+            "included": True,
+        },
+        {
+            "id": "notion",
+            "name": "Notion",
+            "description": "Access Notion workspaces and pages",
+            "icon": "📝",
+            "connected": statuses.get("notion", False),
+        },
+        {
+            "id": "google",
+            "name": "Google Workspace",
+            "description": "Calendar, Drive, Mail",
+            "icon": "🔷",
+            "connected": statuses.get("google", False),
+        },
+    ]
+    
+    return jsonify({"integrations": integrations}), 200
 
 
 @app.route("/trigger_action", methods=["POST"])

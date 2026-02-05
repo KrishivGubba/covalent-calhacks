@@ -174,13 +174,23 @@ class GatewayClient:
             else:
                 raise ValueError(f"Unsupported method: {method}")
             
-            data = response.json()
+            # Try to parse JSON, but capture raw text for error reporting
+            raw_text = response.text
+            try:
+                data = response.json()
+            except json.JSONDecodeError:
+                # If not JSON, include raw response in error
+                raise GatewayError(f"Invalid JSON response: {raw_text[:500]}", response.status_code)
             
             if response.status_code == 401:
-                raise GatewayError("Unauthorized - invalid or missing access token", 401)
+                error_msg = data.get("error", "Unauthorized - invalid or missing access token")
+                raise GatewayError(error_msg, 401)
             
             if response.status_code != 200:
-                error_msg = data.get("error", f"HTTP {response.status_code}")
+                error_msg = data.get("error", raw_text[:500] if raw_text else f"HTTP {response.status_code}")
+                error_detail = data.get("message", data.get("errorMessage", ""))
+                if error_detail:
+                    error_msg = f"{error_msg}: {error_detail}"
                 raise GatewayError(error_msg, response.status_code)
             
             return data
@@ -189,8 +199,6 @@ class GatewayClient:
             raise GatewayError("Request timed out", 504)
         except requests.exceptions.ConnectionError as e:
             raise GatewayError(f"Connection failed: {e}", 503)
-        except json.JSONDecodeError:
-            raise GatewayError("Invalid JSON response from gateway", 500)
     
     def health(self) -> Dict[str, Any]:
         """
