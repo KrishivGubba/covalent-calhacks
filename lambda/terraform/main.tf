@@ -77,6 +77,19 @@ variable "auth0_audience" {
   default     = "https://dev-sb3sx3jnljwod4ab.us.auth0.com/api/v2/"
 }
 
+variable "google_client_id" {
+  description = "Google OAuth Client ID"
+  type        = string
+  default     = ""
+}
+
+variable "google_client_secret" {
+  description = "Google OAuth Client Secret (sensitive)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 # Data sources
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
@@ -163,6 +176,9 @@ resource "aws_lambda_function" "ai_gateway" {
       # Auth0 JWT verification
       AUTH0_DOMAIN   = var.auth0_domain
       AUTH0_AUDIENCE = var.auth0_audience
+      # Google OAuth (for secure token exchange)
+      GOOGLE_CLIENT_ID     = var.google_client_id
+      GOOGLE_CLIENT_SECRET = var.google_client_secret
     }
   }
   
@@ -255,6 +271,18 @@ resource "aws_apigatewayv2_route" "invoke" {
 resource "aws_apigatewayv2_route" "health" {
   api_id    = aws_apigatewayv2_api.ai_gateway.id
   route_key = "GET /health"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+}
+
+resource "aws_apigatewayv2_route" "google_exchange" {
+  api_id    = aws_apigatewayv2_api.ai_gateway.id
+  route_key = "POST /integrations/google/exchange"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+}
+
+resource "aws_apigatewayv2_route" "google_refresh" {
+  api_id    = aws_apigatewayv2_api.ai_gateway.id
+  route_key = "POST /integrations/google/refresh"
   target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
 }
 
