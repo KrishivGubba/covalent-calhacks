@@ -59,7 +59,7 @@ GITHUB_SCOPES = 'repo read:user'  # repo = full repo access (repos, issues, PRs)
 
 # Notion OAuth config (token exchange via Lambda to keep client_secret secure)
 NOTION_CLIENT_ID = os.environ.get('NOTION_CLIENT_ID', '')
-NOTION_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/notion/callback'
+NOTION_REDIRECT_URI = 'http://localhost:5001/integrations/notion/callback'
 
 # Lambda Gateway URL for secure token exchange
 LAMBDA_GATEWAY_URL = os.environ.get('LAMBDA_GATEWAY_URL', 'https://gtfrn4otol.execute-api.us-east-1.amazonaws.com')
@@ -1064,17 +1064,18 @@ def notion_auth_callback():
             return render_error(err_desc), 200
         
         access_token = token_data.get("access_token")
+        refresh_token = token_data.get("refresh_token")  # Notion provides refresh tokens
         workspace_name = token_data.get("workspace_name")
         workspace_id = token_data.get("workspace_id")
         bot_id = token_data.get("bot_id")
         
         # Save to integration_tokens table
-        # Notion tokens don't expire
+        # Note: Notion access tokens have an expiry; use refresh_token to renew
         integration_dao.save_token(
             provider="notion",
             access_token=access_token,
-            refresh_token=None,  # Notion doesn't use refresh tokens
-            expires_at=None,     # Notion tokens don't expire
+            refresh_token=refresh_token,  # Store refresh token for renewal
+            expires_at=None,     # Notion doesn't return expires_in directly
             scopes=None,         # Notion doesn't use scopes in the same way
             provider_metadata={
                 "workspace_name": workspace_name,

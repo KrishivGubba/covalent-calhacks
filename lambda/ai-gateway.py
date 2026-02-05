@@ -625,7 +625,7 @@ def handle_notion_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
     
     Body: {
         "code": "auth_code_from_notion",
-        "redirect_uri": "http://127.0.0.1:5001/integrations/notion/callback"
+        "redirect_uri": "http://localhost:5001/integrations/notion/callback"
     }
     
     Note: Notion uses Basic Auth (base64 of client_id:client_secret) for token exchange.
@@ -674,6 +674,7 @@ def handle_notion_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("Notion token exchange successful")
         return create_response(200, {
             "access_token": result.get("access_token"),
+            "refresh_token": result.get("refresh_token"),  # Notion provides refresh tokens
             "token_type": result.get("token_type"),
             "bot_id": result.get("bot_id"),
             "workspace_id": result.get("workspace_id"),

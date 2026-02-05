@@ -15,7 +15,7 @@ const GITHUB_SCOPES = 'repo read:user'; // repo = full repo access, read:user = 
 
 // Notion OAuth config (must match backend)
 const NOTION_CLIENT_ID = import.meta.env.VITE_NOTION_CLIENT_ID || '';
-const NOTION_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/notion/callback';
+const NOTION_REDIRECT_URI = 'http://localhost:5001/integrations/notion/callback';
 
 // PKCE utilities
 function generateRandomString(length: number): string {
