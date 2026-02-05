@@ -65,6 +65,18 @@ variable "lambda_timeout" {
   default     = 60
 }
 
+variable "auth0_domain" {
+  description = "Auth0 domain for JWT verification (e.g., dev-abc123.us.auth0.com)"
+  type        = string
+  default     = "dev-sb3sx3jnljwod4ab.us.auth0.com"
+}
+
+variable "auth0_audience" {
+  description = "Auth0 audience for JWT verification"
+  type        = string
+  default     = "https://dev-sb3sx3jnljwod4ab.us.auth0.com/api/v2/"
+}
+
 # Data sources
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
@@ -148,6 +160,9 @@ resource "aws_lambda_function" "ai_gateway" {
       DEFAULT_MODEL       = "us.anthropic.claude-sonnet-4-20250514-v1:0"
       DEFAULT_MAX_TOKENS  = "4096"
       DEFAULT_TEMPERATURE = "0.7"
+      # Auth0 JWT verification
+      AUTH0_DOMAIN   = var.auth0_domain
+      AUTH0_AUDIENCE = var.auth0_audience
     }
   }
   

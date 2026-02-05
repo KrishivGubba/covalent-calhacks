@@ -527,22 +527,34 @@ fn get_mcp_integrations() -> Result<Vec<serde_json::Value>, String> {
     println!("🔌 Fetching MCP integrations");
     Ok(vec![
         serde_json::json!({
+            "id": "filesystem",
+            "name": "Filesystem",
+            "connected": false,
+            "description": "Access and manage local files and folders"
+        }),
+        serde_json::json!({
             "id": "github",
             "name": "GitHub",
             "connected": false,
-            "description": "Manage repositories and issues"
+            "description": "Manage repositories, issues, and pull requests"
         }),
         serde_json::json!({
-            "id": "slack",
-            "name": "Slack",
-            "connected": false,
-            "description": "Send messages and manage channels"
+            "id": "perplexity",
+            "name": "Perplexity Search",
+            "connected": true,
+            "description": "AI-powered web search — included by default"
         }),
         serde_json::json!({
-            "id": "gmail",
-            "name": "Gmail",
+            "id": "notion",
+            "name": "Notion",
             "connected": false,
-            "description": "Read and send emails"
+            "description": "Access and manage Notion pages and databases"
+        }),
+        serde_json::json!({
+            "id": "gsuite",
+            "name": "Google Workspace",
+            "connected": false,
+            "description": "Calendar, Drive, and Gmail integration"
         }),
     ])
 }
