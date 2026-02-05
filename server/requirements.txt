@@ -5,7 +5,7 @@ requests>=2.31.0
 python-dotenv>=1.0.0
 anthropic>=0.71.0
 scikit-learn
-PyYAMLs
+PyYAML
 
 # Database
 # sqlite3 is part of Python's standard library (no pip install needed)

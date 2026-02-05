@@ -36,12 +36,12 @@ impl ActivityMonitor {
             CGEventTapPlacement::HeadInsertEventTap,
             CGEventTapOptions::Default,
             EventMask::ALL,
-            |_proxy, event_type, event| {
+            |_proxy, _event_type, event| {
                 autoreleasepool(|| {
-                    match event_type {
+                    match _event_type {
                         CGEventType::KeyDown | CGEventType::KeyUp => {
                             // Handle keyboard events
-                            if event_type == CGEventType::KeyDown {
+                            if _event_type == CGEventType::KeyDown {
                                 // You can get the key code if needed
                                 // let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
                                 let event = ActivityEvent {

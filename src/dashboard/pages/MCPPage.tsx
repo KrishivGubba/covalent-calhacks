@@ -8,7 +8,11 @@ interface MCPIntegration {
   description: string;
 }
 
-const MCPPage: React.FC = () => {
+interface MCPPageProps {
+  isAuthenticated: boolean;
+}
+
+const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   const [integrations, setIntegrations] = useState<MCPIntegration[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -54,6 +58,12 @@ const MCPPage: React.FC = () => {
         </p>
       </div>
 
+      {!isAuthenticated && (
+        <div style={styles.loginPrompt}>
+          Please log in on the Profile page to manage integrations.
+        </div>
+      )}
+
       <div style={styles.grid}>
         {integrations.map((integration) => (
           <div key={integration.id} style={styles.card}>
@@ -79,17 +89,31 @@ const MCPPage: React.FC = () => {
             </div>
 
             <div style={styles.cardActions}>
-              {!integration.connected ? (
+              {integration.id === 'perplexity' ? (
+                <div style={styles.includedBadge}>
+                  Included
+                </div>
+              ) : !integration.connected ? (
                 <button
-                  style={styles.connectButton}
+                  style={{
+                    ...styles.connectButton,
+                    ...(isAuthenticated ? {} : styles.buttonDisabled),
+                  }}
                   onClick={() => handleConnect(integration.id)}
+                  disabled={!isAuthenticated}
+                  title={isAuthenticated ? undefined : 'Please log in first'}
                 >
                   Connect
                 </button>
               ) : (
                 <button
-                  style={styles.disconnectButton}
+                  style={{
+                    ...styles.disconnectButton,
+                    ...(isAuthenticated ? {} : styles.buttonDisabled),
+                  }}
                   onClick={() => handleDisconnect(integration.id)}
+                  disabled={!isAuthenticated}
+                  title={isAuthenticated ? undefined : 'Please log in first'}
                 >
                   Disconnect
                 </button>
@@ -215,6 +239,21 @@ const styles = {
     cursor: 'pointer',
     transition: 'all 0.2s ease',
   },
+  buttonDisabled: {
+    opacity: 0.5,
+    cursor: 'not-allowed',
+  },
+  includedBadge: {
+    flex: 1,
+    padding: '10px 18px',
+    backgroundColor: 'rgba(197, 244, 103, 0.1)',
+    border: '1px solid rgba(197, 244, 103, 0.3)',
+    borderRadius: '8px',
+    color: '#C5F467',
+    fontSize: '0.85rem',
+    fontWeight: '500',
+    textAlign: 'center' as const,
+  },
   loadingText: {
     color: '#a1a1aa',
     fontSize: '0.95rem',
@@ -226,6 +265,16 @@ const styles = {
     padding: '12px 16px',
     color: '#a1a1aa',
     fontSize: '0.85rem',
+    textAlign: 'center' as const,
+  },
+  loginPrompt: {
+    backgroundColor: 'rgba(251, 191, 36, 0.1)',
+    border: '1px solid rgba(251, 191, 36, 0.3)',
+    borderRadius: '8px',
+    padding: '12px 16px',
+    color: '#fbbf24',
+    fontSize: '0.9rem',
+    marginBottom: '24px',
     textAlign: 'center' as const,
   },
 };

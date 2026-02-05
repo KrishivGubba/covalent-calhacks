@@ -77,7 +77,7 @@ impl MacOSKeyboardListener {
             CGEventTapPlacement::HeadInsertEventTap,
             CGEventTapOptions::ListenOnly, // Don't modify events
             vec![CGEventType::KeyDown].into(), // Only key presses
-            move |_proxy, event_type, event| {
+            move |_proxy, _event_type, event| {
                 autoreleasepool(|| {
                     // Extract keyboard event data (only process KeyDown)
                     if let Some(keyboard_event) = Self::extract_keyboard_event(event) {

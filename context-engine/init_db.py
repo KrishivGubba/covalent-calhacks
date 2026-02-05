@@ -83,6 +83,40 @@ def create_schema(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # OAuth callback polling: state -> code_verifier, tokens, etc. for frontend to pick up
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_pending (
+            state TEXT PRIMARY KEY,
+            code_verifier TEXT,
+            code TEXT,
+            access_token TEXT,
+            id_token TEXT,
+            refresh_token TEXT,
+            user_info TEXT,
+            error TEXT,
+            error_description TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        """
+    )
+
+    # Persistent user sessions - survives app restarts
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            user_id TEXT PRIMARY KEY,
+            access_token TEXT NOT NULL,
+            refresh_token TEXT,
+            id_token TEXT,
+            expires_at TEXT,
+            user_info TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        """
+    )
+
     conn.commit()
 
 

@@ -28,3 +28,14 @@ else
     echo "Cleanup complete"
 fi
 
+# Ensure nothing is still bound to port 5001 (e.g. old server without correct PID file)
+if command -v lsof >/dev/null 2>&1; then
+    PIDS_ON_5001=$(lsof -ti:5001 2>/dev/null)
+    if [ -n "$PIDS_ON_5001" ]; then
+        echo "Killing process(es) on port 5001: $PIDS_ON_5001"
+        echo "$PIDS_ON_5001" | xargs kill -9 2>/dev/null || true
+        sleep 1
+        echo "Port 5001 cleared"
+    fi
+fi
+
