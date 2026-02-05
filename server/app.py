@@ -442,6 +442,7 @@ def refresh_session():
 def logout():
     """
     Delete a user session (logout).
+    Also deletes OAuth integration tokens (Google, GitHub, Notion).
     Body: { "user_id": "..." }
     """
     body = request.get_json() or {}
@@ -449,9 +450,18 @@ def logout():
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
     
-    deleted = auth_dao.delete_session(user_id)
-    print(f"🔐 Logged out user={user_id} (deleted={deleted})")
-    return jsonify({"ok": True, "deleted": deleted > 0}), 200
+    # Delete user session
+    session_deleted = auth_dao.delete_session(user_id)
+    
+    # Delete OAuth integration tokens individually (not "included" ones like filesystem)
+    google_deleted = integration_dao.delete_token("google")
+    github_deleted = integration_dao.delete_token("github")
+    notion_deleted = integration_dao.delete_token("notion")
+    
+    tokens_deleted = google_deleted + github_deleted + notion_deleted
+    
+    print(f"🔐 Logged out user={user_id} (session={session_deleted}, google={google_deleted}, github={github_deleted}, notion={notion_deleted})")
+    return jsonify({"ok": True, "deleted": session_deleted > 0, "integrations_deleted": tokens_deleted}), 200
 
 
 # ========================
