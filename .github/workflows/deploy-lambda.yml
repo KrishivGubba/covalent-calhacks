@@ -47,7 +47,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r lambda/requirements.txt -t lambda/package/
+          # Install with manylinux wheels for Amazon Linux 2 compatibility
+          pip install -r lambda/requirements.txt -t lambda/package/ \
+            --platform manylinux2014_x86_64 \
+            --implementation cp \
+            --python-version 3.11 \
+            --only-binary=:all: \
+            --upgrade
       
       - name: Package Lambda
         run: |
