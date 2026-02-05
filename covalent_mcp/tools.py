@@ -24,6 +24,7 @@ from covalent_mcp.toolclasses import (
     drive_module,
     filesystem_module,
     perplexity_search_module,
+    notion_module,
 )
 
 TOOL_MODULES: list[MCPToolModule] = [
@@ -33,6 +34,7 @@ TOOL_MODULES: list[MCPToolModule] = [
     drive_module,
     filesystem_module,
     perplexity_search_module,
+    notion_module,
 ]
 
 
