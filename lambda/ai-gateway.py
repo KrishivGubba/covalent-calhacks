@@ -15,6 +15,9 @@ Endpoints:
     
     GitHub OAuth (protected by Auth0 JWT):
     POST /integrations/github/exchange - Exchange auth code for tokens
+    
+    Notion OAuth (protected by Auth0 JWT):
+    POST /integrations/notion/exchange - Exchange auth code for tokens
 
 Expected request body for /invoke:
 {
@@ -30,6 +33,7 @@ Authentication:
     Set AUTH0_DOMAIN and AUTH0_AUDIENCE environment variables.
 """
 
+import base64
 import json
 import logging
 import os
@@ -66,6 +70,10 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 # GitHub OAuth configuration (for token exchange - using Lambda for consistency with Google)
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
+
+# Notion OAuth configuration (for token exchange - uses Basic Auth with client_id:client_secret)
+NOTION_CLIENT_ID = os.environ.get("NOTION_CLIENT_ID", "")
+NOTION_CLIENT_SECRET = os.environ.get("NOTION_CLIENT_SECRET", "")
 
 # Cache the JWKS client (reused across invocations)
 _jwks_client = None
@@ -534,7 +542,7 @@ def handle_google_refresh(body: Dict[str, Any]) -> Dict[str, Any]:
 
 def handle_github_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Exchange GitHub auth code for access token (with PKCE).
+    Exchange GitHub auth code for access token.
     
     Body: {
         "code": "auth_code_from_github",
@@ -542,11 +550,10 @@ def handle_github_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
         "redirect_uri": "http://127.0.0.1:5001/integrations/github/callback"
     }
     
-    Note: GitHub with PKCE technically doesn't require client_secret,
-    but we use it here for added security since it's available.
+    Note: GitHub OAuth Apps require both client_id and client_secret for token exchange.
     """
-    if not GITHUB_CLIENT_ID:
-        return create_response(500, {"error": "GitHub OAuth not configured on server"})
+    if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
+        return create_response(500, {"error": "GitHub OAuth not configured on server (missing client_id or client_secret)"})
     
     code = body.get("code")
     code_verifier = body.get("code_verifier")
@@ -557,16 +564,14 @@ def handle_github_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
     
     # Exchange code for tokens
     # GitHub's token endpoint accepts form-encoded data
+    # Note: GitHub OAuth Apps require client_secret for token exchange
     token_data = {
         "client_id": GITHUB_CLIENT_ID,
+        "client_secret": GITHUB_CLIENT_SECRET,
         "code": code,
         "code_verifier": code_verifier,
         "redirect_uri": redirect_uri,
     }
-    
-    # Include client_secret if available (adds extra security)
-    if GITHUB_CLIENT_SECRET:
-        token_data["client_secret"] = GITHUB_CLIENT_SECRET
     
     try:
         encoded_data = urllib.parse.urlencode(token_data).encode("utf-8")
@@ -611,6 +616,86 @@ def handle_github_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
             return create_response(400, {"error": "token_exchange_failed", "error_description": error_body})
     except Exception as e:
         logger.error(f"GitHub token exchange error: {e}")
+        return create_response(500, {"error": "internal_error", "error_description": str(e)})
+
+
+def handle_notion_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Exchange Notion auth code for access token.
+    
+    Body: {
+        "code": "auth_code_from_notion",
+        "redirect_uri": "http://127.0.0.1:5001/integrations/notion/callback"
+    }
+    
+    Note: Notion uses Basic Auth (base64 of client_id:client_secret) for token exchange.
+    """
+    if not NOTION_CLIENT_ID or not NOTION_CLIENT_SECRET:
+        return create_response(500, {"error": "Notion OAuth not configured on server (missing client_id or client_secret)"})
+    
+    code = body.get("code")
+    redirect_uri = body.get("redirect_uri")
+    
+    if not code or not redirect_uri:
+        return create_response(400, {"error": "code and redirect_uri are required"})
+    
+    # Exchange code for token
+    # Notion requires Basic Auth: base64(client_id:client_secret)
+    token_data = json.dumps({
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }).encode("utf-8")
+    
+    credentials = base64.b64encode(f"{NOTION_CLIENT_ID}:{NOTION_CLIENT_SECRET}".encode()).decode()
+    
+    try:
+        req = urllib.request.Request(
+            "https://api.notion.com/v1/oauth/token",
+            data=token_data,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Basic {credentials}",
+            },
+            method="POST",
+        )
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        
+        # Check for error in response
+        if "error" in result:
+            logger.error(f"Notion token exchange error: {result}")
+            return create_response(400, {
+                "error": result.get("error"),
+                "error_description": result.get("error", "Token exchange failed"),
+            })
+        
+        logger.info("Notion token exchange successful")
+        return create_response(200, {
+            "access_token": result.get("access_token"),
+            "token_type": result.get("token_type"),
+            "bot_id": result.get("bot_id"),
+            "workspace_id": result.get("workspace_id"),
+            "workspace_name": result.get("workspace_name"),
+            "workspace_icon": result.get("workspace_icon"),
+            "duplicated_template_id": result.get("duplicated_template_id"),
+            "owner": result.get("owner"),
+        })
+        
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        logger.error(f"Notion token exchange failed: {e.code} - {error_body}")
+        try:
+            error_json = json.loads(error_body)
+            return create_response(400, {
+                "error": error_json.get("error", "token_exchange_failed"),
+                "error_description": error_json.get("message", "Token exchange failed"),
+            })
+        except json.JSONDecodeError:
+            return create_response(400, {"error": "token_exchange_failed", "error_description": error_body})
+    except Exception as e:
+        logger.error(f"Notion token exchange error: {e}")
         return create_response(500, {"error": "internal_error", "error_description": str(e)})
 
 
@@ -698,6 +783,20 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 return create_response(400, {"error": "Invalid JSON in request body"})
         
         return handle_github_exchange(body)
+    
+    # Notion OAuth token exchange
+    if path == "/integrations/notion/exchange" or path.endswith("/integrations/notion/exchange"):
+        if http_method != "POST":
+            return create_response(405, {"error": "Method not allowed. Use POST."})
+        
+        body = event.get("body", "{}")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except json.JSONDecodeError:
+                return create_response(400, {"error": "Invalid JSON in request body"})
+        
+        return handle_notion_exchange(body)
     
     # Default: treat as invoke for backward compatibility
     if http_method == "POST":

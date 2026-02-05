@@ -52,10 +52,14 @@ GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 GOOGLE_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/google/callback'
 GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email'
 
-# GitHub OAuth config (token exchange via Lambda for consistency, even though PKCE doesn't require secret)
+# GitHub OAuth config (token exchange via Lambda to keep client_secret secure)
 GITHUB_CLIENT_ID = os.environ.get('GITHUB_CLIENT_ID', '')
 GITHUB_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/github/callback'
 GITHUB_SCOPES = 'repo read:user'  # repo = full repo access (repos, issues, PRs), read:user = user profile
+
+# Notion OAuth config (token exchange via Lambda to keep client_secret secure)
+NOTION_CLIENT_ID = os.environ.get('NOTION_CLIENT_ID', '')
+NOTION_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/notion/callback'
 
 # Lambda Gateway URL for secure token exchange
 LAMBDA_GATEWAY_URL = os.environ.get('LAMBDA_GATEWAY_URL', 'https://gtfrn4otol.execute-api.us-east-1.amazonaws.com')
@@ -64,6 +68,7 @@ LAMBDA_GATEWAY_URL = os.environ.get('LAMBDA_GATEWAY_URL', 'https://gtfrn4otol.ex
 # Short-lived, cleared after auth completes
 google_auth_pending = {}
 github_auth_pending = {}
+notion_auth_pending = {}
 
 # HTML templates directory
 HTML_TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'htmlstuff')
@@ -955,6 +960,181 @@ def github_disconnect():
     """
     deleted = integration_dao.delete_token("github")
     print(f"🔷 GitHub disconnected (deleted={deleted})")
+    return jsonify({"ok": True, "deleted": deleted > 0}), 200
+
+
+# ============================================================================
+# Notion OAuth Integration (token exchange via Lambda)
+# ============================================================================
+
+@app.route("/integrations/notion/start", methods=["POST"])
+def notion_auth_start():
+    """
+    Called by frontend before opening Notion OAuth.
+    Stores the state and auth token so backend can do token exchange later via Lambda.
+    Body: { "state": "...", "auth_token": "..." }
+    
+    Note: Notion OAuth does NOT use PKCE, so no code_verifier needed.
+    """
+    body = request.get_json() or {}
+    state = body.get("state")
+    auth_token = body.get("auth_token")  # Auth0 access token for Lambda call
+    
+    if not state:
+        return jsonify({"error": "state is required"}), 400
+    
+    if not auth_token:
+        return jsonify({"error": "auth_token is required (user must be logged in)"}), 400
+    
+    notion_auth_pending[state] = {
+        "auth_token": auth_token,
+        "status": "pending",
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    print(f"🔷 Notion auth start: stored state={state[:8]}...")
+    return jsonify({"ok": True}), 200
+
+
+@app.route("/integrations/notion/callback", methods=["GET"])
+def notion_auth_callback():
+    """
+    Notion OAuth redirect target. Exchanges code for tokens via Lambda.
+    
+    Notion sends: ?code=...&state=...
+    """
+    code = request.args.get("code")
+    state = request.args.get("state")
+    error = request.args.get("error")
+    
+    def render_error(message):
+        return load_html_template('auth_error.html', {'{{ERROR_MESSAGE}}': f"Notion: {message}"})
+    
+    if not state:
+        return render_error("Missing state parameter"), 400
+    
+    if state not in notion_auth_pending:
+        return render_error("Invalid or expired state. Please try again."), 400
+    
+    # If Notion returned an error
+    if error:
+        notion_auth_pending[state]["status"] = "error"
+        notion_auth_pending[state]["error"] = error
+        notion_auth_pending[state]["error_description"] = request.args.get("error_description", error)
+        print(f"🔷 Notion callback error: {error}")
+        return render_error(request.args.get("error_description", error)), 200
+    
+    if not code:
+        notion_auth_pending[state]["status"] = "error"
+        notion_auth_pending[state]["error"] = "no_code"
+        notion_auth_pending[state]["error_description"] = "No authorization code received"
+        return render_error("No authorization code received"), 200
+    
+    auth_token = notion_auth_pending[state].get("auth_token")
+    
+    if not auth_token:
+        notion_auth_pending[state]["status"] = "error"
+        notion_auth_pending[state]["error"] = "no_auth_token"
+        notion_auth_pending[state]["error_description"] = "Auth token not found - user must be logged in"
+        return render_error("Please log in first."), 200
+    
+    # Exchange code for tokens via Lambda
+    try:
+        print(f"🔷 Exchanging Notion code for tokens via Lambda (state={state[:8]}...)...")
+        token_response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/notion/exchange",
+            json={
+                "code": code,
+                "redirect_uri": NOTION_REDIRECT_URI,
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
+        )
+        token_data = token_response.json()
+        
+        if not token_response.ok or "error" in token_data:
+            err = token_data.get("error", "token_exchange_failed")
+            err_desc = token_data.get("error_description", "Token exchange failed")
+            notion_auth_pending[state]["status"] = "error"
+            notion_auth_pending[state]["error"] = err
+            notion_auth_pending[state]["error_description"] = err_desc
+            print(f"🔷 Notion token exchange failed: {err} - {err_desc}")
+            return render_error(err_desc), 200
+        
+        access_token = token_data.get("access_token")
+        workspace_name = token_data.get("workspace_name")
+        workspace_id = token_data.get("workspace_id")
+        bot_id = token_data.get("bot_id")
+        
+        # Save to integration_tokens table
+        # Notion tokens don't expire
+        integration_dao.save_token(
+            provider="notion",
+            access_token=access_token,
+            refresh_token=None,  # Notion doesn't use refresh tokens
+            expires_at=None,     # Notion tokens don't expire
+            scopes=None,         # Notion doesn't use scopes in the same way
+            provider_metadata={
+                "workspace_name": workspace_name,
+                "workspace_id": workspace_id,
+                "bot_id": bot_id,
+            },
+        )
+        
+        # Mark as ready for frontend polling
+        notion_auth_pending[state]["status"] = "ready"
+        notion_auth_pending[state]["workspace_name"] = workspace_name
+        
+        print(f"🔷 Notion auth complete: workspace={workspace_name}")
+        return load_html_template('auth_success.html'), 200
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        notion_auth_pending[state]["status"] = "error"
+        notion_auth_pending[state]["error"] = "exception"
+        notion_auth_pending[state]["error_description"] = str(e)
+        return render_error(f"An error occurred: {e}"), 200
+
+
+@app.route("/integrations/notion/check", methods=["GET"])
+def notion_auth_check():
+    """
+    Polled by frontend after starting Notion OAuth. Query param: state.
+    Returns: { "status": "pending" | "ready" | "error", ... }
+    """
+    state = request.args.get("state")
+    if not state:
+        return jsonify({"status": "error", "error": "missing state"}), 400
+    
+    if state not in notion_auth_pending:
+        return jsonify({"status": "error", "error": "invalid_state"}), 400
+    
+    pending = notion_auth_pending[state]
+    status = pending.get("status", "pending")
+    
+    if status == "ready":
+        workspace_name = pending.get("workspace_name")
+        del notion_auth_pending[state]
+        return jsonify({"status": "ready", "workspace_name": workspace_name}), 200
+    elif status == "error":
+        error = pending.get("error")
+        error_desc = pending.get("error_description")
+        del notion_auth_pending[state]
+        return jsonify({"status": "error", "error": error, "error_description": error_desc}), 200
+    else:
+        return jsonify({"status": "pending"}), 200
+
+
+@app.route("/integrations/notion/disconnect", methods=["POST"])
+def notion_disconnect():
+    """
+    Disconnect Notion integration (delete tokens).
+    """
+    deleted = integration_dao.delete_token("notion")
+    print(f"🔷 Notion disconnected (deleted={deleted})")
     return jsonify({"ok": True, "deleted": deleted > 0}), 200
 
 
