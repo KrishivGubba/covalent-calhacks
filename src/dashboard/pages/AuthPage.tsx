@@ -74,7 +74,11 @@ type AuthCheckResponse = {
   error_description?: string;
 };
 
-const AuthPage: React.FC = () => {
+interface AuthPageProps {
+  onAuthChange: (authenticated: boolean) => void;
+}
+
+const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [polling, setPolling] = useState(false);
@@ -126,6 +130,7 @@ const AuthPage: React.FC = () => {
                 user: user?.email || user?.name || 'Authenticated',
                 message: 'Session restored',
               });
+              onAuthChange(true);
               return;
             } else {
               // Refresh failed - clear everything and require re-login
@@ -133,6 +138,7 @@ const AuthPage: React.FC = () => {
               localStorage.removeItem(USER_ID_KEY);
               sessionStorage.clear();
               setAuthStatus({ authenticated: false, user: null, message: 'Session expired. Please log in again.' });
+              onAuthChange(false);
               return;
             }
           }
@@ -150,11 +156,13 @@ const AuthPage: React.FC = () => {
             user: user?.email || user?.name || 'Authenticated',
             message: 'Connected via Auth0',
           });
+          onAuthChange(true);
           return;
         } else {
           // No session found in backend - clear stale localStorage
           console.log('[AuthPage] No backend session found, clearing localStorage');
           localStorage.removeItem(USER_ID_KEY);
+          onAuthChange(false);
         }
       }
       
@@ -168,13 +176,16 @@ const AuthPage: React.FC = () => {
           user: user?.email || user?.name || 'Authenticated',
           message: 'Connected via Auth0',
         });
+        onAuthChange(true);
       } else {
         // No auth found
         setAuthStatus({ authenticated: false, user: null, message: 'Not connected' });
+        onAuthChange(false);
       }
     } catch (error) {
       console.error('Failed to load auth status:', error);
       setAuthStatus({ authenticated: false, user: null, message: 'Failed to load auth status' });
+      onAuthChange(false);
     } finally {
       setLoading(false);
     }
@@ -245,6 +256,7 @@ const AuthPage: React.FC = () => {
               user: user?.email || user?.name || user?.sub || 'Authenticated',
               message: 'Successfully authenticated',
             });
+            onAuthChange(true);
             return;
           }
           if (data.status === 'error') {
@@ -294,6 +306,7 @@ const AuthPage: React.FC = () => {
     sessionStorage.removeItem('auth0_code_verifier');
 
     setAuthStatus({ authenticated: false, user: null, message: 'Logged out' });
+    onAuthChange(false);
     setAuthError(null);
   };
 
