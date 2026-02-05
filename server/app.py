@@ -3,12 +3,18 @@ import sqlite3
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 
 from flask_cors import CORS
+from dotenv import load_dotenv
+
+# Load .env from project root
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 # Add context-engine to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'context-engine'))
 from graph import Tree
+from auth_dao import AuthDAO
 
 
 
@@ -31,6 +37,58 @@ def log_request(response):
 db_path = os.path.join(os.path.dirname(__file__), '..', 'context-engine', 'graph.db')
 
 tree = Tree(db_path)
+
+
+import requests as http_requests  # for server-side HTTP calls to Auth0
+
+# Auth0 config (must match frontend)
+AUTH0_DOMAIN = 'dev-sb3sx3jnljwod4ab.us.auth0.com'
+AUTH0_CLIENT_ID = os.environ.get('VITE_AUTH0_CLIENT_ID', '')
+AUTH0_REDIRECT_URI = 'http://localhost:5001/callback'
+
+# HTML templates directory
+HTML_TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'htmlstuff')
+
+
+def load_html_template(filename, replacements=None):
+    """Load an HTML template from htmlstuff/ and optionally replace placeholders."""
+    filepath = os.path.join(HTML_TEMPLATES_DIR, filename)
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    if replacements:
+        for key, value in replacements.items():
+            content = content.replace(key, value)
+    return content
+
+
+def _ensure_auth_table_schema():
+    """Ensure auth_pending table has all required columns (migration for existing DBs)."""
+    conn = sqlite3.connect(db_path, timeout=10.0)
+    try:
+        cursor = conn.execute("PRAGMA table_info(auth_pending)")
+        existing_cols = {row[1] for row in cursor.fetchall()}
+        needed = [
+            ("code_verifier", "TEXT"),
+            ("access_token", "TEXT"),
+            ("id_token", "TEXT"),
+            ("refresh_token", "TEXT"),
+            ("user_info", "TEXT"),
+        ]
+        for col_name, col_type in needed:
+            if col_name not in existing_cols:
+                conn.execute(f"ALTER TABLE auth_pending ADD COLUMN {col_name} {col_type}")
+                print(f"🔧 Added column {col_name} to auth_pending table")
+        conn.commit()
+    except Exception as e:
+        print(f"⚠️  Failed to migrate auth_pending table: {e}")
+    finally:
+        conn.close()
+
+
+# Run migration on startup, then instantiate AuthDAO
+_ensure_auth_table_schema()
+auth_dao = AuthDAO(db_path)
+auth_dao.ensure_sessions_table()  # Create user_sessions table if needed
 
 
 @app.route("/screen", methods=["POST"])
@@ -113,21 +171,260 @@ def health():
     return jsonify({"status": "healthy", "service": "covalent-context-engine"}), 200
 
 
+@app.route("/auth/start", methods=["POST"])
+def auth_start():
+    """
+    Called by frontend before opening Auth0 login.
+    Stores the code_verifier so the backend can do the token exchange later.
+    Body: { "state": "...", "code_verifier": "..." }
+    """
+    body = request.get_json() or {}
+    state = body.get("state")
+    code_verifier = body.get("code_verifier")
+    if not state or not code_verifier:
+        return jsonify({"error": "state and code_verifier are required"}), 400
+    auth_dao.save_code_verifier(state, code_verifier)
+    print(f"🔐 Auth start: stored code_verifier for state={state[:8]}...")
+    return jsonify({"ok": True}), 200
+
+
 @app.route("/callback", methods=["GET", "POST"])
 def auth_callback():
     """
-    Auth callback endpoint (e.g. for Auth0 login redirect).
-    Stub: returns success; implement code exchange and token handling later.
+    Auth0 redirect target. Performs server-side token exchange and stores result for frontend to poll.
     """
-    # TODO: Handle ?code=... and ?state=... from Auth0, exchange for tokens
     code = request.args.get("code")
     state = request.args.get("state")
-    return jsonify({
-        "status": "ok",
-        "message": "Callback received (stub)",
-        "code_present": code is not None,
-        "state_present": state is not None,
-    }), 200
+    error = request.args.get("error")
+    error_description = request.args.get("error_description")
+
+    def render_error(message):
+        return load_html_template('auth_error.html', {'{{ERROR_MESSAGE}}': message})
+
+    if not state:
+        return render_error("Missing state parameter"), 400
+
+    # If Auth0 returned an error
+    if error:
+        auth_dao.save_auth_result(state, error=error, error_description=error_description)
+        print(f"🔐 Auth callback error: {error} - {error_description}")
+        return render_error(error_description or error), 200
+
+    if not code:
+        auth_dao.save_auth_result(state, error="no_code", error_description="No authorization code received")
+        return render_error("No authorization code received"), 200
+
+    # Retrieve the code_verifier
+    code_verifier = auth_dao.get_code_verifier(state)
+    if not code_verifier:
+        auth_dao.save_auth_result(state, error="no_verifier", error_description="Code verifier not found - session may have expired")
+        return render_error("Session expired. Please try again."), 200
+
+    # Exchange code for tokens (server-side, no CORS issues)
+    try:
+        print(f"🔐 Exchanging code for tokens (state={state[:8]}...)...")
+        token_response = http_requests.post(
+            f"https://{AUTH0_DOMAIN}/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": AUTH0_CLIENT_ID,
+                "code_verifier": code_verifier,
+                "code": code,
+                "redirect_uri": AUTH0_REDIRECT_URI,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10,
+        )
+        token_data = token_response.json()
+
+        if not token_response.ok or "error" in token_data:
+            err = token_data.get("error", "token_exchange_failed")
+            err_desc = token_data.get("error_description", "Token exchange failed")
+            auth_dao.save_auth_result(state, error=err, error_description=err_desc)
+            print(f"🔐 Token exchange failed: {err} - {err_desc}")
+            return render_error(err_desc), 200
+
+        access_token = token_data.get("access_token")
+        id_token = token_data.get("id_token")
+        refresh_token = token_data.get("refresh_token")
+        expires_in = token_data.get("expires_in", 86400)  # Default 24 hours
+
+        print(f"🔐 Tokens received. Fetching user info...")
+
+        # Fetch user info
+        user_info = None
+        try:
+            userinfo_response = http_requests.get(
+                f"https://{AUTH0_DOMAIN}/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=5,
+            )
+            if userinfo_response.ok:
+                user_info = userinfo_response.json()
+                print(f"🔐 User info: {user_info.get('email', user_info.get('sub', 'unknown'))}")
+        except Exception as e:
+            print(f"🔐 Failed to fetch user info: {e}")
+
+        auth_dao.save_auth_result(
+            state,
+            access_token=access_token,
+            id_token=id_token,
+            refresh_token=refresh_token,
+            user_info=user_info,
+        )
+
+        # Save persistent session for future logins
+        if user_info and user_info.get("sub"):
+            expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+            auth_dao.save_session(
+                user_id=user_info["sub"],
+                access_token=access_token,
+                refresh_token=refresh_token,
+                id_token=id_token,
+                expires_at=expires_at,
+                user_info=user_info,
+            )
+            print(f"🔐 Saved persistent session for user={user_info['sub']}")
+
+        print(f"🔐 Auth complete for state={state[:8]}...")
+        return load_html_template('auth_success.html'), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        auth_dao.save_auth_result(state, error="exception", error_description=str(e))
+        return render_error(f"An error occurred: {e}"), 200
+
+
+@app.route("/auth/check", methods=["GET"])
+def auth_check():
+    """
+    Polled by frontend after starting Auth0 login. Query param: state.
+    Returns: { "status": "pending" | "ready" | "error", tokens/user if ready, error info if error }.
+    When status is "ready", tokens are returned once and then removed.
+    """
+    state = request.args.get("state")
+    if not state:
+        return jsonify({"status": "pending", "error": "missing state"}), 400
+    result = auth_dao.get_and_consume_pending_auth(state)
+    return jsonify(result), 200
+
+
+@app.route("/auth/session", methods=["GET"])
+def get_session():
+    """
+    Retrieve a persistent user session by user_id.
+    Query param: user_id (the Auth0 sub claim).
+    Returns session data if found, or null.
+    """
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+    
+    session = auth_dao.get_session(user_id)
+    if not session:
+        return jsonify({"session": None}), 200
+    
+    # Check if token is expired
+    if session.get("expires_at"):
+        try:
+            expires = datetime.fromisoformat(session["expires_at"])
+            if datetime.utcnow() > expires:
+                # Token expired - frontend should refresh
+                return jsonify({
+                    "session": session,
+                    "expired": True,
+                }), 200
+        except ValueError:
+            pass
+    
+    return jsonify({"session": session, "expired": False}), 200
+
+
+@app.route("/auth/session/refresh", methods=["POST"])
+def refresh_session():
+    """
+    Refresh an expired access token using the refresh token.
+    Body: { "user_id": "..." }
+    """
+    body = request.get_json() or {}
+    user_id = body.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+    
+    session = auth_dao.get_session(user_id)
+    if not session:
+        return jsonify({"error": "Session not found"}), 404
+    
+    refresh_token = session.get("refresh_token")
+    if not refresh_token:
+        return jsonify({"error": "No refresh token available"}), 400
+    
+    try:
+        # Use refresh token to get new access token
+        token_response = http_requests.post(
+            f"https://{AUTH0_DOMAIN}/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": AUTH0_CLIENT_ID,
+                "refresh_token": refresh_token,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10,
+        )
+        token_data = token_response.json()
+
+        if not token_response.ok or "error" in token_data:
+            err = token_data.get("error", "refresh_failed")
+            err_desc = token_data.get("error_description", "Token refresh failed")
+            print(f"🔐 Token refresh failed: {err} - {err_desc}")
+            return jsonify({"error": err, "error_description": err_desc}), 400
+
+        new_access_token = token_data.get("access_token")
+        expires_in = token_data.get("expires_in", 86400)
+        new_refresh_token = token_data.get("refresh_token")  # Auth0 may rotate
+
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+
+        # Update session with new tokens
+        if new_refresh_token:
+            # If Auth0 rotated the refresh token, save the new one
+            auth_dao.save_session(
+                user_id=user_id,
+                access_token=new_access_token,
+                refresh_token=new_refresh_token,
+                expires_at=expires_at,
+            )
+        else:
+            auth_dao.update_access_token(user_id, new_access_token, expires_at)
+
+        print(f"🔐 Refreshed access token for user={user_id}")
+        
+        return jsonify({
+            "access_token": new_access_token,
+            "expires_at": expires_at,
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "exception", "error_description": str(e)}), 500
+
+
+@app.route("/auth/logout", methods=["POST"])
+def logout():
+    """
+    Delete a user session (logout).
+    Body: { "user_id": "..." }
+    """
+    body = request.get_json() or {}
+    user_id = body.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+    
+    deleted = auth_dao.delete_session(user_id)
+    print(f"🔐 Logged out user={user_id} (deleted={deleted})")
+    return jsonify({"ok": True, "deleted": deleted > 0}), 200
 
 
 @app.route("/trigger_action", methods=["POST"])
