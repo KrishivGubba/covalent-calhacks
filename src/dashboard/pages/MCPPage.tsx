@@ -1,6 +1,38 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
 const BACKEND_URL = 'http://localhost:5001';
+
+// Google OAuth config (must match backend)
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+const GOOGLE_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/google/callback';
+const GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email';
+
+// PKCE utilities
+function generateRandomString(length: number): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+  const array = new Uint8Array(length);
+  crypto.getRandomValues(array);
+  return Array.from(array, (byte) => chars[byte % chars.length]).join('');
+}
+
+async function sha256(plain: string): Promise<ArrayBuffer> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(plain);
+  return crypto.subtle.digest('SHA-256', data);
+}
+
+function base64UrlEncode(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  bytes.forEach((b) => (binary += String.fromCharCode(b)));
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function generateCodeChallenge(verifier: string): Promise<string> {
+  const hashed = await sha256(verifier);
+  return base64UrlEncode(hashed);
+}
 
 interface MCPIntegration {
   id: string;
@@ -18,9 +50,16 @@ interface MCPPageProps {
 const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   const [integrations, setIntegrations] = useState<MCPIntegration[]>([]);
   const [loading, setLoading] = useState(true);
+  const [connectingId, setConnectingId] = useState<string | null>(null);
+  const pollIntervalRef = useRef<number | null>(null);
 
   useEffect(() => {
     loadIntegrations();
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
   }, []);
 
   const loadIntegrations = async () => {
@@ -47,14 +86,120 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
     }
   };
 
-  const handleConnect = (id: string) => {
-    console.log(`Connecting to ${id}`);
-    alert(`${id} integration under construction`);
+  const handleConnectGoogle = async () => {
+    setConnectingId('google');
+    
+    try {
+      // Get Auth0 access token (required for Lambda call)
+      const authToken = sessionStorage.getItem('access_token');
+      if (!authToken) {
+        alert('Please log in first to connect Google');
+        setConnectingId(null);
+        return;
+      }
+      
+      // Generate PKCE values
+      const codeVerifier = generateRandomString(64);
+      const codeChallenge = await generateCodeChallenge(codeVerifier);
+      const state = generateRandomString(32);
+      
+      // Tell backend to store the code_verifier and auth token
+      const startResponse = await fetch(`${BACKEND_URL}/integrations/google/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state, code_verifier: codeVerifier, auth_token: authToken }),
+      });
+      
+      if (!startResponse.ok) {
+        const errorData = await startResponse.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to start Google auth');
+      }
+      
+      // Build Google OAuth URL
+      const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      authUrl.searchParams.set('client_id', GOOGLE_CLIENT_ID);
+      authUrl.searchParams.set('redirect_uri', GOOGLE_REDIRECT_URI);
+      authUrl.searchParams.set('response_type', 'code');
+      authUrl.searchParams.set('scope', GOOGLE_SCOPES);
+      authUrl.searchParams.set('state', state);
+      authUrl.searchParams.set('code_challenge', codeChallenge);
+      authUrl.searchParams.set('code_challenge_method', 'S256');
+      authUrl.searchParams.set('access_type', 'offline'); // Get refresh token
+      authUrl.searchParams.set('prompt', 'consent'); // Force consent to get refresh token
+      
+      // Open in default browser
+      await openUrl(authUrl.toString());
+      
+      // Poll for completion
+      pollIntervalRef.current = window.setInterval(async () => {
+        try {
+          const checkResponse = await fetch(`${BACKEND_URL}/integrations/google/check?state=${state}`);
+          const result = await checkResponse.json();
+          
+          if (result.status === 'ready') {
+            clearInterval(pollIntervalRef.current!);
+            pollIntervalRef.current = null;
+            setConnectingId(null);
+            console.log('Google connected:', result.email);
+            loadIntegrations(); // Refresh the list
+          } else if (result.status === 'error') {
+            clearInterval(pollIntervalRef.current!);
+            pollIntervalRef.current = null;
+            setConnectingId(null);
+            console.error('Google auth error:', result.error, result.error_description);
+            alert(`Google auth failed: ${result.error_description || result.error}`);
+          }
+          // status === 'pending' -> keep polling
+        } catch (err) {
+          console.error('Error polling Google auth status:', err);
+        }
+      }, 1500);
+      
+      // Stop polling after 5 minutes
+      setTimeout(() => {
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+          setConnectingId(null);
+        }
+      }, 5 * 60 * 1000);
+      
+    } catch (error) {
+      console.error('Failed to connect Google:', error);
+      setConnectingId(null);
+      alert('Failed to start Google authentication');
+    }
   };
 
-  const handleDisconnect = (id: string) => {
-    console.log(`Disconnecting from ${id}`);
-    alert(`Disconnect under construction`);
+  const handleConnect = async (id: string) => {
+    if (id === 'google') {
+      await handleConnectGoogle();
+    } else {
+      console.log(`Connecting to ${id}`);
+      alert(`${id} integration coming soon`);
+    }
+  };
+
+  const handleDisconnect = async (id: string) => {
+    if (id === 'google') {
+      try {
+        const response = await fetch(`${BACKEND_URL}/integrations/google/disconnect`, {
+          method: 'POST',
+        });
+        if (response.ok) {
+          console.log('Google disconnected');
+          loadIntegrations();
+        } else {
+          alert('Failed to disconnect Google');
+        }
+      } catch (error) {
+        console.error('Failed to disconnect Google:', error);
+        alert('Failed to disconnect Google');
+      }
+    } else {
+      console.log(`Disconnecting from ${id}`);
+      alert(`Disconnect for ${id} coming soon`);
+    }
   };
 
   if (loading) {
@@ -116,13 +261,13 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
                 <button
                   style={{
                     ...styles.connectButton,
-                    ...(isAuthenticated ? {} : styles.buttonDisabled),
+                    ...(!isAuthenticated || connectingId === integration.id ? styles.buttonDisabled : {}),
                   }}
                   onClick={() => handleConnect(integration.id)}
-                  disabled={!isAuthenticated}
-                  title={isAuthenticated ? undefined : 'Please log in first'}
+                  disabled={!isAuthenticated || connectingId === integration.id}
+                  title={!isAuthenticated ? 'Please log in first' : undefined}
                 >
-                  Connect
+                  {connectingId === integration.id ? 'Connecting...' : 'Connect'}
                 </button>
               ) : (
                 <button

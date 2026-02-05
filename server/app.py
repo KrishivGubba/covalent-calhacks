@@ -47,6 +47,18 @@ AUTH0_DOMAIN = 'dev-sb3sx3jnljwod4ab.us.auth0.com'
 AUTH0_CLIENT_ID = os.environ.get('VITE_AUTH0_CLIENT_ID', '')
 AUTH0_REDIRECT_URI = 'http://localhost:5001/callback'
 
+# Google OAuth config (token exchange happens via Lambda to keep secret secure)
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
+GOOGLE_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/google/callback'
+GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email'
+
+# Lambda Gateway URL for secure token exchange
+LAMBDA_GATEWAY_URL = os.environ.get('LAMBDA_GATEWAY_URL', 'https://tnsr65016k.execute-api.us-east-1.amazonaws.com')
+
+# In-memory storage for pending Google OAuth (state -> {code_verifier, result, ...})
+# Short-lived, cleared after auth completes
+google_auth_pending = {}
+
 # HTML templates directory
 HTML_TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'htmlstuff')
 
@@ -487,6 +499,258 @@ def integrations_status():
     ]
     
     return jsonify({"integrations": integrations}), 200
+
+
+# ========================
+# Google OAuth Endpoints
+# ========================
+
+@app.route("/integrations/google/start", methods=["POST"])
+def google_auth_start():
+    """
+    Called by frontend before opening Google OAuth.
+    Stores the code_verifier and auth token so backend can do token exchange later via Lambda.
+    Body: { "state": "...", "code_verifier": "...", "auth_token": "..." }
+    """
+    body = request.get_json() or {}
+    state = body.get("state")
+    code_verifier = body.get("code_verifier")
+    auth_token = body.get("auth_token")  # Auth0 access token for Lambda call
+    
+    if not state or not code_verifier:
+        return jsonify({"error": "state and code_verifier are required"}), 400
+    
+    if not auth_token:
+        return jsonify({"error": "auth_token is required (user must be logged in)"}), 400
+    
+    google_auth_pending[state] = {
+        "code_verifier": code_verifier,
+        "auth_token": auth_token,
+        "status": "pending",
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    print(f"🔷 Google auth start: stored code_verifier for state={state[:8]}...")
+    return jsonify({"ok": True}), 200
+
+
+@app.route("/integrations/google/callback", methods=["GET"])
+def google_auth_callback():
+    """
+    Google OAuth redirect target. Exchanges code for tokens using PKCE (no secret).
+    """
+    code = request.args.get("code")
+    state = request.args.get("state")
+    error = request.args.get("error")
+    
+    def render_error(message):
+        return load_html_template('auth_error.html', {'{{ERROR_MESSAGE}}': f"Google: {message}"})
+    
+    if not state:
+        return render_error("Missing state parameter"), 400
+    
+    if state not in google_auth_pending:
+        return render_error("Invalid or expired state. Please try again."), 400
+    
+    # If Google returned an error
+    if error:
+        google_auth_pending[state]["status"] = "error"
+        google_auth_pending[state]["error"] = error
+        google_auth_pending[state]["error_description"] = request.args.get("error_description", error)
+        print(f"🔷 Google callback error: {error}")
+        return render_error(request.args.get("error_description", error)), 200
+    
+    if not code:
+        google_auth_pending[state]["status"] = "error"
+        google_auth_pending[state]["error"] = "no_code"
+        google_auth_pending[state]["error_description"] = "No authorization code received"
+        return render_error("No authorization code received"), 200
+    
+    code_verifier = google_auth_pending[state].get("code_verifier")
+    auth_token = google_auth_pending[state].get("auth_token")
+    
+    if not code_verifier:
+        google_auth_pending[state]["status"] = "error"
+        google_auth_pending[state]["error"] = "no_verifier"
+        google_auth_pending[state]["error_description"] = "Code verifier not found"
+        return render_error("Session expired. Please try again."), 200
+    
+    if not auth_token:
+        google_auth_pending[state]["status"] = "error"
+        google_auth_pending[state]["error"] = "no_auth_token"
+        google_auth_pending[state]["error_description"] = "Auth token not found - user must be logged in"
+        return render_error("Please log in first."), 200
+    
+    # Exchange code for tokens via Lambda (keeps client_secret secure on server)
+    try:
+        print(f"🔷 Exchanging Google code for tokens via Lambda (state={state[:8]}...)...")
+        token_response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/google/exchange",
+            json={
+                "code": code,
+                "code_verifier": code_verifier,
+                "redirect_uri": GOOGLE_REDIRECT_URI,
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
+        )
+        token_data = token_response.json()
+        
+        if not token_response.ok or "error" in token_data:
+            err = token_data.get("error", "token_exchange_failed")
+            err_desc = token_data.get("error_description", "Token exchange failed")
+            google_auth_pending[state]["status"] = "error"
+            google_auth_pending[state]["error"] = err
+            google_auth_pending[state]["error_description"] = err_desc
+            print(f"🔷 Google token exchange failed: {err} - {err_desc}")
+            return render_error(err_desc), 200
+        
+        access_token = token_data.get("access_token")
+        refresh_token = token_data.get("refresh_token")
+        expires_in = token_data.get("expires_in", 3600)  # Default 1 hour
+        scope = token_data.get("scope", "")
+        
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+        
+        # Fetch user info from Google
+        user_email = None
+        try:
+            userinfo_response = http_requests.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=5,
+            )
+            if userinfo_response.ok:
+                user_info = userinfo_response.json()
+                user_email = user_info.get("email")
+                print(f"🔷 Google user: {user_email}")
+        except Exception as e:
+            print(f"🔷 Failed to fetch Google user info: {e}")
+        
+        # Save to integration_tokens table
+        integration_dao.save_token(
+            provider="google",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+            scopes=scope,
+            provider_metadata={"email": user_email} if user_email else None,
+        )
+        
+        # Mark as ready for frontend polling
+        google_auth_pending[state]["status"] = "ready"
+        google_auth_pending[state]["email"] = user_email
+        
+        print(f"🔷 Google auth complete for state={state[:8]}...")
+        return load_html_template('auth_success.html'), 200
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        google_auth_pending[state]["status"] = "error"
+        google_auth_pending[state]["error"] = "exception"
+        google_auth_pending[state]["error_description"] = str(e)
+        return render_error(f"An error occurred: {e}"), 200
+
+
+@app.route("/integrations/google/check", methods=["GET"])
+def google_auth_check():
+    """
+    Polled by frontend after starting Google OAuth. Query param: state.
+    Returns: { "status": "pending" | "ready" | "error", ... }
+    """
+    state = request.args.get("state")
+    if not state:
+        return jsonify({"status": "error", "error": "missing state"}), 400
+    
+    if state not in google_auth_pending:
+        return jsonify({"status": "error", "error": "invalid_state"}), 400
+    
+    pending = google_auth_pending[state]
+    status = pending.get("status", "pending")
+    
+    if status == "ready":
+        # Clean up and return success
+        email = pending.get("email")
+        del google_auth_pending[state]
+        return jsonify({"status": "ready", "email": email}), 200
+    elif status == "error":
+        # Clean up and return error
+        error = pending.get("error")
+        error_desc = pending.get("error_description")
+        del google_auth_pending[state]
+        return jsonify({"status": "error", "error": error, "error_description": error_desc}), 200
+    else:
+        return jsonify({"status": "pending"}), 200
+
+
+@app.route("/integrations/google/disconnect", methods=["POST"])
+def google_disconnect():
+    """
+    Disconnect Google integration (delete tokens).
+    """
+    deleted = integration_dao.delete_token("google")
+    print(f"🔷 Google disconnected (deleted={deleted})")
+    return jsonify({"ok": True, "deleted": deleted > 0}), 200
+
+
+@app.route("/integrations/google/refresh", methods=["POST"])
+def google_refresh_token():
+    """
+    Refresh Google access token using the refresh token via Lambda.
+    Body: { "auth_token": "..." } - Auth0 token to authenticate with Lambda
+    """
+    body = request.get_json() or {}
+    auth_token = body.get("auth_token")
+    
+    if not auth_token:
+        return jsonify({"error": "auth_token is required"}), 400
+    
+    token_data = integration_dao.get_token("google")
+    if not token_data:
+        return jsonify({"error": "Google not connected"}), 404
+    
+    refresh_token = token_data.get("refresh_token")
+    if not refresh_token:
+        return jsonify({"error": "No refresh token available"}), 400
+    
+    try:
+        # Call Lambda to refresh the token (keeps client_secret secure)
+        token_response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/google/refresh",
+            json={"refresh_token": refresh_token},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
+        )
+        new_token_data = token_response.json()
+        
+        if not token_response.ok or "error" in new_token_data:
+            err = new_token_data.get("error", "refresh_failed")
+            err_desc = new_token_data.get("error_description", "Token refresh failed")
+            print(f"🔷 Google token refresh failed: {err} - {err_desc}")
+            return jsonify({"error": err, "error_description": err_desc}), 400
+        
+        new_access_token = new_token_data.get("access_token")
+        expires_in = new_token_data.get("expires_in", 3600)
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+        
+        integration_dao.update_access_token("google", new_access_token, expires_at)
+        print(f"🔷 Google access token refreshed")
+        
+        return jsonify({
+            "access_token": new_access_token,
+            "expires_at": expires_at,
+        }), 200
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "exception", "error_description": str(e)}), 500
 
 
 @app.route("/trigger_action", methods=["POST"])

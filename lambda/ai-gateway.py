@@ -1,13 +1,17 @@
 """
-AI Gateway Lambda - Routes LLM requests to AWS Bedrock.
+AI Gateway Lambda - Routes LLM requests to AWS Bedrock and handles OAuth token exchange.
 
 This Lambda serves as a secure gateway for the desktop app to access
-Bedrock models without exposing credentials on the client side.
+Bedrock models and exchange OAuth tokens without exposing credentials on the client side.
 
 Endpoints:
     POST /invoke - Invoke a Bedrock model (Claude, etc.)
     POST /converse - Use Bedrock's Converse API for chat
     GET /health - Health check (no auth required)
+    
+    Google OAuth (protected by Auth0 JWT):
+    POST /integrations/google/exchange - Exchange auth code for tokens
+    POST /integrations/google/refresh - Refresh access token
 
 Expected request body for /invoke:
 {
@@ -26,6 +30,9 @@ Authentication:
 import json
 import logging
 import os
+import urllib.request
+import urllib.parse
+import urllib.error
 from typing import Any, Dict, Optional
 from functools import lru_cache
 
@@ -48,6 +55,10 @@ DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", "0.7"))
 AUTH0_DOMAIN = os.environ.get("AUTH0_DOMAIN", "")  # e.g., "dev-abc123.us.auth0.com"
 AUTH0_AUDIENCE = os.environ.get("AUTH0_AUDIENCE", "")  # e.g., "https://dev-abc123.us.auth0.com/api/v2/"
 AUTH0_ALGORITHMS = ["RS256"]
+
+# Google OAuth configuration (for token exchange - secret stored securely here)
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 
 # Cache the JWKS client (reused across invocations)
 _jwks_client = None
@@ -383,6 +394,137 @@ def handle_invoke(body: Dict[str, Any]) -> Dict[str, Any]:
         return create_response(500, {"error": f"Internal server error: {str(e)}"})
 
 
+# ========================
+# Google OAuth Handlers
+# ========================
+
+def handle_google_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Exchange Google auth code for tokens.
+    
+    Body: {
+        "code": "auth_code_from_google",
+        "code_verifier": "pkce_verifier",
+        "redirect_uri": "http://127.0.0.1:5001/integrations/google/callback"
+    }
+    """
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        return create_response(500, {"error": "Google OAuth not configured on server"})
+    
+    code = body.get("code")
+    code_verifier = body.get("code_verifier")
+    redirect_uri = body.get("redirect_uri")
+    
+    if not code or not code_verifier or not redirect_uri:
+        return create_response(400, {"error": "code, code_verifier, and redirect_uri are required"})
+    
+    # Exchange code for tokens
+    token_data = {
+        "code": code,
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "code_verifier": code_verifier,
+        "grant_type": "authorization_code",
+        "redirect_uri": redirect_uri,
+    }
+    
+    try:
+        encoded_data = urllib.parse.urlencode(token_data).encode("utf-8")
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/token",
+            data=encoded_data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        
+        logger.info("Google token exchange successful")
+        return create_response(200, {
+            "access_token": result.get("access_token"),
+            "refresh_token": result.get("refresh_token"),
+            "expires_in": result.get("expires_in"),
+            "scope": result.get("scope"),
+            "token_type": result.get("token_type"),
+        })
+        
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        logger.error(f"Google token exchange failed: {e.code} - {error_body}")
+        try:
+            error_json = json.loads(error_body)
+            return create_response(400, {
+                "error": error_json.get("error", "token_exchange_failed"),
+                "error_description": error_json.get("error_description", "Token exchange failed"),
+            })
+        except json.JSONDecodeError:
+            return create_response(400, {"error": "token_exchange_failed", "error_description": error_body})
+    except Exception as e:
+        logger.error(f"Google token exchange error: {e}")
+        return create_response(500, {"error": "internal_error", "error_description": str(e)})
+
+
+def handle_google_refresh(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Refresh Google access token.
+    
+    Body: {
+        "refresh_token": "the_refresh_token"
+    }
+    """
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        return create_response(500, {"error": "Google OAuth not configured on server"})
+    
+    refresh_token = body.get("refresh_token")
+    
+    if not refresh_token:
+        return create_response(400, {"error": "refresh_token is required"})
+    
+    # Refresh the token
+    token_data = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+    }
+    
+    try:
+        encoded_data = urllib.parse.urlencode(token_data).encode("utf-8")
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/token",
+            data=encoded_data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        
+        logger.info("Google token refresh successful")
+        return create_response(200, {
+            "access_token": result.get("access_token"),
+            "expires_in": result.get("expires_in"),
+            "scope": result.get("scope"),
+            "token_type": result.get("token_type"),
+        })
+        
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        logger.error(f"Google token refresh failed: {e.code} - {error_body}")
+        try:
+            error_json = json.loads(error_body)
+            return create_response(400, {
+                "error": error_json.get("error", "refresh_failed"),
+                "error_description": error_json.get("error_description", "Token refresh failed"),
+            })
+        except json.JSONDecodeError:
+            return create_response(400, {"error": "refresh_failed", "error_description": error_body})
+    except Exception as e:
+        logger.error(f"Google token refresh error: {e}")
+        return create_response(500, {"error": "internal_error", "error_description": str(e)})
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Main Lambda handler.
@@ -425,6 +567,34 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 return create_response(400, {"error": "Invalid JSON in request body"})
         
         return handle_invoke(body)
+    
+    # Google OAuth token exchange
+    if path == "/integrations/google/exchange" or path.endswith("/integrations/google/exchange"):
+        if http_method != "POST":
+            return create_response(405, {"error": "Method not allowed. Use POST."})
+        
+        body = event.get("body", "{}")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except json.JSONDecodeError:
+                return create_response(400, {"error": "Invalid JSON in request body"})
+        
+        return handle_google_exchange(body)
+    
+    # Google OAuth token refresh
+    if path == "/integrations/google/refresh" or path.endswith("/integrations/google/refresh"):
+        if http_method != "POST":
+            return create_response(405, {"error": "Method not allowed. Use POST."})
+        
+        body = event.get("body", "{}")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except json.JSONDecodeError:
+                return create_response(400, {"error": "Invalid JSON in request body"})
+        
+        return handle_google_refresh(body)
     
     # Default: treat as invoke for backward compatibility
     if http_method == "POST":
