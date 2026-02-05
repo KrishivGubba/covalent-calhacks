@@ -52,12 +52,18 @@ GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 GOOGLE_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/google/callback'
 GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email'
 
+# GitHub OAuth config (token exchange via Lambda for consistency, even though PKCE doesn't require secret)
+GITHUB_CLIENT_ID = os.environ.get('GITHUB_CLIENT_ID', '')
+GITHUB_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/github/callback'
+GITHUB_SCOPES = 'repo read:user'  # repo = full repo access (repos, issues, PRs), read:user = user profile
+
 # Lambda Gateway URL for secure token exchange
 LAMBDA_GATEWAY_URL = os.environ.get('LAMBDA_GATEWAY_URL', 'https://gtfrn4otol.execute-api.us-east-1.amazonaws.com')
 
-# In-memory storage for pending Google OAuth (state -> {code_verifier, result, ...})
+# In-memory storage for pending OAuth (state -> {code_verifier, result, ...})
 # Short-lived, cleared after auth completes
 google_auth_pending = {}
+github_auth_pending = {}
 
 # HTML templates directory
 HTML_TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'htmlstuff')
@@ -751,6 +757,205 @@ def google_refresh_token():
         import traceback
         traceback.print_exc()
         return jsonify({"error": "exception", "error_description": str(e)}), 500
+
+
+# ============================================================================
+# GitHub OAuth Integration (with PKCE, token exchange via Lambda)
+# ============================================================================
+
+@app.route("/integrations/github/start", methods=["POST"])
+def github_auth_start():
+    """
+    Called by frontend before opening GitHub OAuth.
+    Stores the code_verifier and auth token so backend can do token exchange later via Lambda.
+    Body: { "state": "...", "code_verifier": "...", "auth_token": "..." }
+    """
+    body = request.get_json() or {}
+    state = body.get("state")
+    code_verifier = body.get("code_verifier")
+    auth_token = body.get("auth_token")  # Auth0 access token for Lambda call
+    
+    if not state or not code_verifier:
+        return jsonify({"error": "state and code_verifier are required"}), 400
+    
+    if not auth_token:
+        return jsonify({"error": "auth_token is required (user must be logged in)"}), 400
+    
+    github_auth_pending[state] = {
+        "code_verifier": code_verifier,
+        "auth_token": auth_token,
+        "status": "pending",
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    print(f"🔷 GitHub auth start: stored code_verifier for state={state[:8]}...")
+    return jsonify({"ok": True}), 200
+
+
+@app.route("/integrations/github/callback", methods=["GET"])
+def github_auth_callback():
+    """
+    GitHub OAuth redirect target. Exchanges code for tokens using PKCE via Lambda.
+    """
+    code = request.args.get("code")
+    state = request.args.get("state")
+    error = request.args.get("error")
+    error_description = request.args.get("error_description")
+    
+    def render_error(message):
+        return load_html_template('auth_error.html', {'{{ERROR_MESSAGE}}': f"GitHub: {message}"})
+    
+    if not state:
+        return render_error("Missing state parameter"), 400
+    
+    if state not in github_auth_pending:
+        return render_error("Invalid or expired state. Please try again."), 400
+    
+    # If GitHub returned an error
+    if error:
+        github_auth_pending[state]["status"] = "error"
+        github_auth_pending[state]["error"] = error
+        github_auth_pending[state]["error_description"] = error_description or error
+        print(f"🔷 GitHub callback error: {error}")
+        return render_error(error_description or error), 200
+    
+    if not code:
+        github_auth_pending[state]["status"] = "error"
+        github_auth_pending[state]["error"] = "no_code"
+        github_auth_pending[state]["error_description"] = "No authorization code received"
+        return render_error("No authorization code received"), 200
+    
+    code_verifier = github_auth_pending[state].get("code_verifier")
+    auth_token = github_auth_pending[state].get("auth_token")
+    
+    if not code_verifier:
+        github_auth_pending[state]["status"] = "error"
+        github_auth_pending[state]["error"] = "no_verifier"
+        github_auth_pending[state]["error_description"] = "Code verifier not found"
+        return render_error("Session expired. Please try again."), 200
+    
+    if not auth_token:
+        github_auth_pending[state]["status"] = "error"
+        github_auth_pending[state]["error"] = "no_auth_token"
+        github_auth_pending[state]["error_description"] = "Auth token not found - user must be logged in"
+        return render_error("Please log in first."), 200
+    
+    # Exchange code for tokens via Lambda
+    try:
+        print(f"🔷 Exchanging GitHub code for tokens via Lambda (state={state[:8]}...)...")
+        token_response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/github/exchange",
+            json={
+                "code": code,
+                "code_verifier": code_verifier,
+                "redirect_uri": GITHUB_REDIRECT_URI,
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
+        )
+        token_data = token_response.json()
+        
+        if not token_response.ok or "error" in token_data:
+            err = token_data.get("error", "token_exchange_failed")
+            err_desc = token_data.get("error_description", "Token exchange failed")
+            github_auth_pending[state]["status"] = "error"
+            github_auth_pending[state]["error"] = err
+            github_auth_pending[state]["error_description"] = err_desc
+            print(f"🔷 GitHub token exchange failed: {err} - {err_desc}")
+            return render_error(err_desc), 200
+        
+        access_token = token_data.get("access_token")
+        # GitHub classic OAuth tokens don't expire and don't have refresh tokens
+        scope = token_data.get("scope", "")
+        
+        # Fetch user info from GitHub
+        username = None
+        user_email = None
+        try:
+            userinfo_response = http_requests.get(
+                "https://api.github.com/user",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/vnd.github.v3+json",
+                },
+                timeout=5,
+            )
+            if userinfo_response.ok:
+                user_info = userinfo_response.json()
+                username = user_info.get("login")
+                user_email = user_info.get("email")
+                print(f"🔷 GitHub user: {username} ({user_email})")
+        except Exception as e:
+            print(f"🔷 Failed to fetch GitHub user info: {e}")
+        
+        # Save to integration_tokens table
+        # GitHub tokens don't expire, so expires_at is None
+        integration_dao.save_token(
+            provider="github",
+            access_token=access_token,
+            refresh_token=None,  # GitHub doesn't use refresh tokens
+            expires_at=None,     # GitHub tokens don't expire
+            scopes=scope,
+            provider_metadata={"username": username, "email": user_email},
+        )
+        
+        # Mark as ready for frontend polling
+        github_auth_pending[state]["status"] = "ready"
+        github_auth_pending[state]["username"] = username
+        
+        print(f"🔷 GitHub auth complete for state={state[:8]}...")
+        return load_html_template('auth_success.html'), 200
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        github_auth_pending[state]["status"] = "error"
+        github_auth_pending[state]["error"] = "exception"
+        github_auth_pending[state]["error_description"] = str(e)
+        return render_error(f"An error occurred: {e}"), 200
+
+
+@app.route("/integrations/github/check", methods=["GET"])
+def github_auth_check():
+    """
+    Polled by frontend after starting GitHub OAuth. Query param: state.
+    Returns: { "status": "pending" | "ready" | "error", ... }
+    """
+    state = request.args.get("state")
+    if not state:
+        return jsonify({"status": "error", "error": "missing state"}), 400
+    
+    if state not in github_auth_pending:
+        return jsonify({"status": "error", "error": "invalid_state"}), 400
+    
+    pending = github_auth_pending[state]
+    status = pending.get("status", "pending")
+    
+    if status == "ready":
+        # Clean up and return success
+        username = pending.get("username")
+        del github_auth_pending[state]
+        return jsonify({"status": "ready", "username": username}), 200
+    elif status == "error":
+        # Clean up and return error
+        error = pending.get("error")
+        error_desc = pending.get("error_description")
+        del github_auth_pending[state]
+        return jsonify({"status": "error", "error": error, "error_description": error_desc}), 200
+    else:
+        return jsonify({"status": "pending"}), 200
+
+
+@app.route("/integrations/github/disconnect", methods=["POST"])
+def github_disconnect():
+    """
+    Disconnect GitHub integration (delete tokens).
+    """
+    deleted = integration_dao.delete_token("github")
+    print(f"🔷 GitHub disconnected (deleted={deleted})")
+    return jsonify({"ok": True, "deleted": deleted > 0}), 200
 
 
 @app.route("/trigger_action", methods=["POST"])

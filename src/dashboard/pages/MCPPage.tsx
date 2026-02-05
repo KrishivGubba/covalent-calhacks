@@ -8,6 +8,11 @@ const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const GOOGLE_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/google/callback';
 const GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email';
 
+// GitHub OAuth config (must match backend)
+const GITHUB_CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID || '';
+const GITHUB_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/github/callback';
+const GITHUB_SCOPES = 'repo read:user'; // repo = full repo access, read:user = profile
+
 // PKCE utilities
 function generateRandomString(length: number): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
@@ -104,7 +109,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
             const sessionResponse = await fetch(`${BACKEND_URL}/auth/session?user_id=${encodeURIComponent(userId)}`);
             const sessionData = await sessionResponse.json();
             if (sessionData.session?.access_token) {
-              authToken = sessionData.session.access_token;
+              authToken = sessionData.session.access_token as string;
               // Restore to sessionStorage for future use
               sessionStorage.setItem('access_token', authToken);
               console.log('Token restored from backend session');
@@ -205,10 +210,128 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
     }
   };
 
+  const handleConnectGithub = async () => {
+    console.log('handleConnectGithub called');
+    setConnectingId('github');
+    
+    try {
+      // Get Auth0 access token (required for Lambda call)
+      let authToken = sessionStorage.getItem('access_token');
+      console.log('Auth token in sessionStorage:', !!authToken);
+      
+      // If not in sessionStorage, try to get from backend session
+      if (!authToken) {
+        const userId = localStorage.getItem('covalent_user_id');
+        if (userId) {
+          console.log('Fetching token from backend session...');
+          try {
+            const sessionResponse = await fetch(`${BACKEND_URL}/auth/session?user_id=${encodeURIComponent(userId)}`);
+            const sessionData = await sessionResponse.json();
+            if (sessionData.session?.access_token) {
+              authToken = sessionData.session.access_token as string;
+              // Restore to sessionStorage for future use
+              sessionStorage.setItem('access_token', authToken);
+              console.log('Token restored from backend session');
+            }
+          } catch (err) {
+            console.error('Failed to fetch session:', err);
+          }
+        }
+      }
+      
+      if (!authToken) {
+        alert('Please log in again to connect GitHub (session expired)');
+        setConnectingId(null);
+        return;
+      }
+      
+      // Generate PKCE values
+      const codeVerifier = generateRandomString(64);
+      const codeChallenge = await generateCodeChallenge(codeVerifier);
+      const state = generateRandomString(32);
+      
+      // Tell backend to store the code_verifier and auth token
+      const startResponse = await fetch(`${BACKEND_URL}/integrations/github/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state, code_verifier: codeVerifier, auth_token: authToken }),
+      });
+      
+      if (!startResponse.ok) {
+        const errorData = await startResponse.json().catch(() => ({}));
+        console.error('Start response error:', errorData);
+        throw new Error(errorData.error || 'Failed to start GitHub auth');
+      }
+      
+      console.log('GitHub auth start successful, building OAuth URL');
+      
+      // Build GitHub OAuth URL with PKCE
+      const authUrl = new URL('https://github.com/login/oauth/authorize');
+      authUrl.searchParams.set('client_id', GITHUB_CLIENT_ID);
+      authUrl.searchParams.set('redirect_uri', GITHUB_REDIRECT_URI);
+      authUrl.searchParams.set('scope', GITHUB_SCOPES);
+      authUrl.searchParams.set('state', state);
+      authUrl.searchParams.set('code_challenge', codeChallenge);
+      authUrl.searchParams.set('code_challenge_method', 'S256');
+      
+      // Open in default browser
+      console.log('Opening GitHub OAuth URL:', authUrl.toString());
+      try {
+        await openUrl(authUrl.toString());
+        console.log('openUrl completed successfully');
+      } catch (openError) {
+        console.error('openUrl failed:', openError);
+        // Fallback to window.open
+        window.open(authUrl.toString(), '_blank');
+      }
+      
+      // Poll for completion
+      pollIntervalRef.current = window.setInterval(async () => {
+        try {
+          const checkResponse = await fetch(`${BACKEND_URL}/integrations/github/check?state=${state}`);
+          const result = await checkResponse.json();
+          
+          if (result.status === 'ready') {
+            clearInterval(pollIntervalRef.current!);
+            pollIntervalRef.current = null;
+            setConnectingId(null);
+            console.log('GitHub connected:', result.username);
+            loadIntegrations(); // Refresh the list
+          } else if (result.status === 'error') {
+            clearInterval(pollIntervalRef.current!);
+            pollIntervalRef.current = null;
+            setConnectingId(null);
+            console.error('GitHub auth error:', result.error, result.error_description);
+            alert(`GitHub auth failed: ${result.error_description || result.error}`);
+          }
+          // status === 'pending' -> keep polling
+        } catch (err) {
+          console.error('Error polling GitHub auth status:', err);
+        }
+      }, 1500);
+      
+      // Stop polling after 5 minutes
+      setTimeout(() => {
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+          setConnectingId(null);
+        }
+      }, 5 * 60 * 1000);
+      
+    } catch (error) {
+      console.error('Failed to connect GitHub:', error);
+      setConnectingId(null);
+      alert('Failed to start GitHub authentication');
+    }
+  };
+
   const handleConnect = async (id: string) => {
     console.log(`handleConnect called with id: ${id}, isAuthenticated: ${isAuthenticated}`);
     if (id === 'google') {
       await handleConnectGoogle();
+    } else if (id === 'github') {
+      await handleConnectGithub();
     } else {
       console.log(`Connecting to ${id}`);
       alert(`${id} integration coming soon`);
@@ -230,6 +353,21 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
       } catch (error) {
         console.error('Failed to disconnect Google:', error);
         alert('Failed to disconnect Google');
+      }
+    } else if (id === 'github') {
+      try {
+        const response = await fetch(`${BACKEND_URL}/integrations/github/disconnect`, {
+          method: 'POST',
+        });
+        if (response.ok) {
+          console.log('GitHub disconnected');
+          loadIntegrations();
+        } else {
+          alert('Failed to disconnect GitHub');
+        }
+      } catch (error) {
+        console.error('Failed to disconnect GitHub:', error);
+        alert('Failed to disconnect GitHub');
       }
     } else {
       console.log(`Disconnecting from ${id}`);

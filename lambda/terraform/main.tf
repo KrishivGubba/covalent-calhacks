@@ -90,6 +90,19 @@ variable "google_client_secret" {
   sensitive   = true
 }
 
+variable "github_client_id" {
+  description = "GitHub OAuth Client ID"
+  type        = string
+  default     = ""
+}
+
+variable "github_client_secret" {
+  description = "GitHub OAuth Client Secret (sensitive)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 # Data sources
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
@@ -179,6 +192,9 @@ resource "aws_lambda_function" "ai_gateway" {
       # Google OAuth (for secure token exchange)
       GOOGLE_CLIENT_ID     = var.google_client_id
       GOOGLE_CLIENT_SECRET = var.google_client_secret
+      # GitHub OAuth (for secure token exchange)
+      GITHUB_CLIENT_ID     = var.github_client_id
+      GITHUB_CLIENT_SECRET = var.github_client_secret
     }
   }
   
@@ -283,6 +299,12 @@ resource "aws_apigatewayv2_route" "google_exchange" {
 resource "aws_apigatewayv2_route" "google_refresh" {
   api_id    = aws_apigatewayv2_api.ai_gateway.id
   route_key = "POST /integrations/google/refresh"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+}
+
+resource "aws_apigatewayv2_route" "github_exchange" {
+  api_id    = aws_apigatewayv2_api.ai_gateway.id
+  route_key = "POST /integrations/github/exchange"
   target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
 }
 

@@ -12,6 +12,9 @@ Endpoints:
     Google OAuth (protected by Auth0 JWT):
     POST /integrations/google/exchange - Exchange auth code for tokens
     POST /integrations/google/refresh - Refresh access token
+    
+    GitHub OAuth (protected by Auth0 JWT):
+    POST /integrations/github/exchange - Exchange auth code for tokens
 
 Expected request body for /invoke:
 {
@@ -59,6 +62,10 @@ AUTH0_ALGORITHMS = ["RS256"]
 # Google OAuth configuration (for token exchange - secret stored securely here)
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+
+# GitHub OAuth configuration (for token exchange - using Lambda for consistency with Google)
+GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 
 # Cache the JWKS client (reused across invocations)
 _jwks_client = None
@@ -525,6 +532,88 @@ def handle_google_refresh(body: Dict[str, Any]) -> Dict[str, Any]:
         return create_response(500, {"error": "internal_error", "error_description": str(e)})
 
 
+def handle_github_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Exchange GitHub auth code for access token (with PKCE).
+    
+    Body: {
+        "code": "auth_code_from_github",
+        "code_verifier": "pkce_verifier",
+        "redirect_uri": "http://127.0.0.1:5001/integrations/github/callback"
+    }
+    
+    Note: GitHub with PKCE technically doesn't require client_secret,
+    but we use it here for added security since it's available.
+    """
+    if not GITHUB_CLIENT_ID:
+        return create_response(500, {"error": "GitHub OAuth not configured on server"})
+    
+    code = body.get("code")
+    code_verifier = body.get("code_verifier")
+    redirect_uri = body.get("redirect_uri")
+    
+    if not code or not code_verifier or not redirect_uri:
+        return create_response(400, {"error": "code, code_verifier, and redirect_uri are required"})
+    
+    # Exchange code for tokens
+    # GitHub's token endpoint accepts form-encoded data
+    token_data = {
+        "client_id": GITHUB_CLIENT_ID,
+        "code": code,
+        "code_verifier": code_verifier,
+        "redirect_uri": redirect_uri,
+    }
+    
+    # Include client_secret if available (adds extra security)
+    if GITHUB_CLIENT_SECRET:
+        token_data["client_secret"] = GITHUB_CLIENT_SECRET
+    
+    try:
+        encoded_data = urllib.parse.urlencode(token_data).encode("utf-8")
+        req = urllib.request.Request(
+            "https://github.com/login/oauth/access_token",
+            data=encoded_data,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",  # GitHub returns form-encoded by default, request JSON
+            },
+            method="POST",
+        )
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        
+        # Check for error in response (GitHub returns 200 even on errors)
+        if "error" in result:
+            logger.error(f"GitHub token exchange error: {result}")
+            return create_response(400, {
+                "error": result.get("error"),
+                "error_description": result.get("error_description", result.get("error")),
+            })
+        
+        logger.info("GitHub token exchange successful")
+        return create_response(200, {
+            "access_token": result.get("access_token"),
+            "token_type": result.get("token_type"),
+            "scope": result.get("scope"),
+        })
+        
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        logger.error(f"GitHub token exchange failed: {e.code} - {error_body}")
+        try:
+            error_json = json.loads(error_body)
+            return create_response(400, {
+                "error": error_json.get("error", "token_exchange_failed"),
+                "error_description": error_json.get("error_description", "Token exchange failed"),
+            })
+        except json.JSONDecodeError:
+            return create_response(400, {"error": "token_exchange_failed", "error_description": error_body})
+    except Exception as e:
+        logger.error(f"GitHub token exchange error: {e}")
+        return create_response(500, {"error": "internal_error", "error_description": str(e)})
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Main Lambda handler.
@@ -595,6 +684,20 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 return create_response(400, {"error": "Invalid JSON in request body"})
         
         return handle_google_refresh(body)
+    
+    # GitHub OAuth token exchange
+    if path == "/integrations/github/exchange" or path.endswith("/integrations/github/exchange"):
+        if http_method != "POST":
+            return create_response(405, {"error": "Method not allowed. Use POST."})
+        
+        body = event.get("body", "{}")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except json.JSONDecodeError:
+                return create_response(400, {"error": "Invalid JSON in request body"})
+        
+        return handle_github_exchange(body)
     
     # Default: treat as invoke for backward compatibility
     if http_method == "POST":
