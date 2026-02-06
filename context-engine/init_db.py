@@ -144,6 +144,44 @@ def create_schema(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # Action execution history - tracks all executed actions for history page
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS action_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action_uuid TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            action_data TEXT,
+            creation_timestamp TEXT DEFAULT (datetime('now')),
+            node_uuid TEXT,
+            status TEXT DEFAULT 'completed',
+            result TEXT,
+            error_message TEXT,
+            duration_ms INTEGER,
+            FOREIGN KEY (node_uuid) REFERENCES node_table(UUID) ON DELETE SET NULL
+        );
+        """
+    )
+
+    # Indexes for action_history queries
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_action_history_timestamp ON action_history(creation_timestamp);
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_action_history_type ON action_history(action_type);
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_action_history_status ON action_history(status);
+        """
+    )
+
     conn.commit()
 
 

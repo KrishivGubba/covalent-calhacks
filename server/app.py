@@ -1151,26 +1151,47 @@ def notion_disconnect():
 
 @app.route("/trigger_action", methods=["POST"])
 def trigger_action():
+    import json
+    start_time = time.perf_counter()
+    action_uuid = ""
+    action_type = "unknown"
+    effective_action = None
+    node_uuid = None
+    
     try:
         body = request.get_json()
         action_uuid = body.get("action_uuid", "")
         action = body.get("action", "")
         action_override = body.get("action_override")
         
-        effective_action = None
-        if action_override:
-            action_data = tree.dao.get_action_by_id(action_uuid)
-            if action_data:
-                _, action_name, action_plan, action_prompt, _ = action_data
+        # Get action data to determine type and node
+        action_data = tree.dao.get_action_by_id(action_uuid)
+        if action_data:
+            _, action_name, action_plan, action_prompt, fetched_node_uuid = action_data
+            node_uuid = fetched_node_uuid
+            action_type = action_name or "unknown"
+            
+            if action_override:
                 effective_action = {
                     "action_name": action_override.get("action_name") or action_name,
                     "action_plan": action_override.get("action_plan") or action_plan,
                     "action_prompt": action_override.get("action_prompt") or action_prompt
                 }
+                action_type = effective_action.get("action_name", action_type)
             else:
-                effective_action = action_override
+                effective_action = {
+                    "action_name": action_name,
+                    "action_plan": action_plan,
+                    "action_prompt": action_prompt
+                }
+        elif action_override:
+            effective_action = action_override
+            action_type = action_override.get("action_name", "unknown")
 
         result = tree.trigger_action(action_uuid, action_override=action_override)
+        
+        # Calculate duration
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
         
         # result is a tuple: (action_text, collected_data_string, graph_output)
         if result and len(result) >= 3:
@@ -1194,6 +1215,21 @@ def trigger_action():
                     else:
                         serializable_output[key] = str(value)
             
+            # Log successful action to history
+            try:
+                tree.dao.insert_action_history(
+                    action_uuid=action_uuid,
+                    action_type=action_type,
+                    action_data=json.dumps(effective_action) if effective_action else None,
+                    node_uuid=node_uuid,
+                    status="completed",
+                    result=json.dumps(serializable_output) if serializable_output else None,
+                    error_message=None,
+                    duration_ms=duration_ms
+                )
+            except Exception as log_err:
+                print(f"⚠️ Failed to log action history: {log_err}")
+            
             return jsonify({
                 "message": "Action triggered successfully",
                 "action_text": action_text,
@@ -1201,7 +1237,90 @@ def trigger_action():
                 "effective_action": effective_action
             }), 200
         else:
+            # Log action with no result
+            try:
+                tree.dao.insert_action_history(
+                    action_uuid=action_uuid,
+                    action_type=action_type,
+                    action_data=json.dumps(effective_action) if effective_action else None,
+                    node_uuid=node_uuid,
+                    status="completed",
+                    result=None,
+                    error_message="No result returned",
+                    duration_ms=duration_ms
+                )
+            except Exception as log_err:
+                print(f"⚠️ Failed to log action history: {log_err}")
+            
             return jsonify({"message": "Action triggered but no result returned"}), 200
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        
+        # Calculate duration even for failed actions
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        
+        # Log failed action to history
+        try:
+            tree.dao.insert_action_history(
+                action_uuid=action_uuid,
+                action_type=action_type,
+                action_data=json.dumps(effective_action) if effective_action else None,
+                node_uuid=node_uuid,
+                status="failed",
+                result=None,
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
+        except Exception as log_err:
+            print(f"⚠️ Failed to log action history: {log_err}")
+        
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/action_history", methods=["GET"])
+def get_action_history():
+    """
+    Get action execution history.
+    Query params:
+        - limit: Max number of records (default: 50)
+        - offset: Pagination offset (default: 0)
+        - status: Filter by status (optional)
+        - action_type: Filter by action type (optional)
+    """
+    try:
+        limit = request.args.get("limit", 50, type=int)
+        offset = request.args.get("offset", 0, type=int)
+        status = request.args.get("status")
+        action_type = request.args.get("action_type")
+        
+        # Cap limit to prevent huge queries
+        limit = min(limit, 200)
+        
+        records = tree.dao.get_action_history(
+            limit=limit,
+            offset=offset,
+            status=status,
+            action_type=action_type
+        )
+        
+        # Convert tuples to dicts
+        history = []
+        for record in records:
+            history.append({
+                "id": record[0],
+                "action_uuid": record[1],
+                "action_type": record[2],
+                "action_data": record[3],
+                "creation_timestamp": record[4],
+                "node_uuid": record[5],
+                "status": record[6],
+                "result": record[7],
+                "error_message": record[8],
+                "duration_ms": record[9],
+            })
+        
+        return jsonify({"history": history, "count": len(history)}), 200
     except Exception as e:
         import traceback
         traceback.print_exc()
