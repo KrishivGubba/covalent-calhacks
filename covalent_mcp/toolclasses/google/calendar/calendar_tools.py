@@ -2,12 +2,12 @@
 Google Calendar MCP Tools - Calendar and Event operations.
 
 Exposes Google Calendar operations as MCP tools and resources for LLM agents.
+Token is managed by the server via OAuth flow - MCP reads token from database.
 """
 import json
 from typing import Optional, List
 from covalent_mcp.toolclasses.base import MCPToolModule
 from covalent_mcp.toolclasses.google.calendar.calendar_client import CalendarService
-from covalent_mcp.toolclasses.google.gauth import GoogleAuth, DEFAULT_SCOPES
 from fastmcp import FastMCP
 
 
@@ -28,21 +28,19 @@ class CalendarToolModule(MCPToolModule):
     """
     
     def __init__(self):
-        """Initialize Calendar tool module with auth and client."""
-        self.auth = None  # Lazy initialization
-        self.client = None
+        """Initialize Calendar tool module."""
+        self._client = None
     
     def _ensure_client(self) -> CalendarService:
-        """Ensure Calendar client is initialized."""
-        if self.client is None:
-            # Use DEFAULT_SCOPES to include both Calendar and Gmail scopes
-            self.auth = GoogleAuth(scopes=DEFAULT_SCOPES)
-            self.client = CalendarService(auth=self.auth)
-        return self.client
+        """Ensure Calendar client is initialized with credentials from database."""
+        if self._client is None:
+            # CalendarService reads token from database via get_credentials_from_db()
+            self._client = CalendarService()
+        return self._client
     
     def register(self, mcp: FastMCP) -> None:
         """Register Google Calendar tools (write operations) with MCP server."""
-        client = self._ensure_client()
+        tool_module = self
         
         @mcp.tool()
         def create_event(
@@ -73,6 +71,7 @@ class CalendarToolModule(MCPToolModule):
             Returns:
                 Event information including ID and HTML link
             """
+            client = tool_module._ensure_client()
             event = client.create_event(
                 summary=summary,
                 start_time=start_time,
@@ -128,6 +127,7 @@ class CalendarToolModule(MCPToolModule):
             Returns:
                 Updated event information
             """
+            client = tool_module._ensure_client()
             event = client.update_event(
                 event_id=event_id,
                 calendar_id=calendar_id,
@@ -168,6 +168,7 @@ class CalendarToolModule(MCPToolModule):
             Returns:
                 Success status
             """
+            client = tool_module._ensure_client()
             success = client.delete_event(
                 event_id=event_id,
                 calendar_id=calendar_id,
@@ -202,6 +203,7 @@ class CalendarToolModule(MCPToolModule):
             Returns:
                 Updated calendar information
             """
+            client = tool_module._ensure_client()
             calendar = client.update_calendar(
                 calendar_id=calendar_id,
                 summary=summary,
@@ -222,7 +224,7 @@ class CalendarToolModule(MCPToolModule):
     
     def register_resources(self, mcp: FastMCP) -> None:
         """Register Google Calendar resources (read operations) with MCP server."""
-        client = self._ensure_client()
+        tool_module = self
         
         @mcp.resource("google://calendars{?view}")
         def list_calendars_resource(view: Optional[str] = None) -> str:
@@ -234,6 +236,7 @@ class CalendarToolModule(MCPToolModule):
             URI: google://calendars{?view}
             Optional query param: view - reserved for future use (e.g. filter)
             """
+            client = tool_module._ensure_client()
             calendars = client.list_calendars()
             return json.dumps({
                 "count": len(calendars),
@@ -249,6 +252,7 @@ class CalendarToolModule(MCPToolModule):
             
             URI: google://calendar/{calendar_id}
             """
+            client = tool_module._ensure_client()
             calendar = client.get_calendar(calendar_id)
             if not calendar:
                 return json.dumps({"error": "Calendar not found"}, indent=2)
@@ -262,6 +266,7 @@ class CalendarToolModule(MCPToolModule):
             URI: google://calendar/{calendar_id}/events
             Optional query params: time_min, time_max (RFC3339 format)
             """
+            client = tool_module._ensure_client()
             events = client.list_events(
                 calendar_id=calendar_id,
                 time_min=time_min,
@@ -281,6 +286,7 @@ class CalendarToolModule(MCPToolModule):
             
             URI: google://calendar/{calendar_id}/event/{event_id}
             """
+            client = tool_module._ensure_client()
             event = client.get_event(event_id, calendar_id)
             if not event:
                 return json.dumps({"error": "Event not found"}, indent=2)

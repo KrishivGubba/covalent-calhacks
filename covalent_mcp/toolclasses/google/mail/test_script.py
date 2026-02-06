@@ -1,6 +1,9 @@
 """
 Test script for Gmail MCP tools and resources.
 
+Token is read from the database (integration_tokens table) - no auth flow needed.
+Server handles OAuth via /integrations/google/auth endpoint.
+
 Tests Gmail operations in a sequential flow:
 1. List messages (resource)
 2. Get message details (resource)
@@ -13,18 +16,15 @@ from datetime import datetime
 
 # Add project root to path
 # test_script.py is in: covalent_mcp/toolclasses/google/mail/
-# Need to go up 5 levels to get to project root
 covalent_mcp_dir = Path(__file__).parent.parent.parent.parent  # Gets to covalent_mcp/
 project_root = covalent_mcp_dir.parent  # Gets to project root
 sys.path.insert(0, str(project_root))
 
-from covalent_mcp.toolclasses.google.gauth import GoogleAuth, DEFAULT_SCOPES
 from covalent_mcp.toolclasses.google.mail.gmail_client import GmailService
 
 
-# Initialize client (shared across all tests)
-auth = GoogleAuth(scopes=DEFAULT_SCOPES)
-client = GmailService(auth=auth)
+# Initialize client - reads token from database automatically
+client = GmailService()
 
 
 def test_list_messages():

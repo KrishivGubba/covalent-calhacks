@@ -1,3 +1,9 @@
+"""
+Test script for Google Calendar MCP tools.
+
+Token is read from the database (integration_tokens table) - no auth flow needed.
+Server handles OAuth via /integrations/google/auth endpoint.
+"""
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -5,19 +11,15 @@ import pytz
 
 # Add project root to path
 # test_script.py is in: covalent_mcp/toolclasses/google/calendar/
-# Need to go up 4 levels to get to covalent_mcp/, then one more to project root
-# But actually, we need the project root (where covalent_mcp/ is a subdirectory)
 covalent_mcp_dir = Path(__file__).parent.parent.parent.parent  # Gets to covalent_mcp/
 project_root = covalent_mcp_dir.parent  # Gets to project root
 sys.path.insert(0, str(project_root))
 
-from covalent_mcp.toolclasses.google.gauth import GoogleAuth, DEFAULT_SCOPES
 from covalent_mcp.toolclasses.google.calendar.calendar_client import CalendarService
 
 
-# Initialize client (shared across all tests)
-auth = GoogleAuth(scopes=DEFAULT_SCOPES)
-client = CalendarService(auth=auth)
+# Initialize client - reads token from database automatically
+client = CalendarService()
 
 
 def test_list_calendars():

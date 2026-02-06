@@ -829,6 +829,103 @@ class GraphDAO:
 
         return count
 
+    # ========================
+    # Action History Methods
+    # ========================
+
+    def insert_action_history(
+        self,
+        action_uuid,
+        action_type,
+        action_data=None,
+        node_uuid=None,
+        status="completed",
+        result=None,
+        error_message=None,
+        duration_ms=None
+    ):
+        """
+        Insert a record into the action_history table.
+        
+        Args:
+            action_uuid: Unique identifier for the action
+            action_type: Type of action (e.g., "calendar_create", "email_send")
+            action_data: JSON string with action parameters
+            node_uuid: Associated node UUID (optional)
+            status: "completed", "failed", or "pending"
+            result: JSON string with action output
+            error_message: Error details if failed
+            duration_ms: Execution time in milliseconds
+        
+        Returns:
+            The inserted row ID
+        """
+        query = """
+            INSERT INTO action_history 
+            (action_uuid, action_type, action_data, node_uuid, status, result, error_message, duration_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.execute_query(
+            query,
+            (action_uuid, action_type, action_data, node_uuid, status, result, error_message, duration_ms)
+        )
+        return self.cursor.lastrowid
+
+    def get_action_history(self, limit=50, offset=0, status=None, action_type=None):
+        """
+        Retrieve action history records.
+        
+        Args:
+            limit: Maximum number of records to return
+            offset: Number of records to skip (for pagination)
+            status: Filter by status (optional)
+            action_type: Filter by action type (optional)
+        
+        Returns:
+            List of action history records as tuples
+        """
+        query = """
+            SELECT id, action_uuid, action_type, action_data, creation_timestamp, 
+                   node_uuid, status, result, error_message, duration_ms
+            FROM action_history
+            WHERE 1=1
+        """
+        params = []
+        
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        
+        if action_type:
+            query += " AND action_type = ?"
+            params.append(action_type)
+        
+        query += " ORDER BY creation_timestamp DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        return self.execute_query(query, tuple(params))
+
+    def get_action_history_by_uuid(self, action_uuid):
+        """
+        Get a specific action history record by action_uuid.
+        
+        Args:
+            action_uuid: The action UUID to look up
+        
+        Returns:
+            Action history record or None
+        """
+        query = """
+            SELECT id, action_uuid, action_type, action_data, creation_timestamp,
+                   node_uuid, status, result, error_message, duration_ms
+            FROM action_history
+            WHERE action_uuid = ?
+            ORDER BY creation_timestamp DESC
+            LIMIT 1
+        """
+        result = self.execute_query(query, (action_uuid,))
+        return result[0] if result else None
+
     def close(self):
         '''Close the database connection.'''
         self.conn.close()

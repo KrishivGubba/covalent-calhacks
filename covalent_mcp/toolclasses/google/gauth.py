@@ -1,10 +1,14 @@
 """
-Google OAuth 2.0 Installed App Flow Authentication.
+Google OAuth 2.0 Authentication.
 
-Handles Google OAuth installed app flow (local server) to obtain and store credentials for API calls.
-Supports multiple scopes for Calendar, Gmail, and other Google APIs.
+Provides utilities for Google API authentication:
+- get_credentials_from_db(): Get credentials from the integration_tokens database (preferred)
+- GoogleAuth: Legacy installed app flow (for standalone use only)
+
+Token is managed by the server via OAuth flow - MCP just reads from the database.
 """
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -19,6 +23,9 @@ except ImportError:
 
 load_dotenv()
 
+# Google token endpoint
+GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
+
 # Default scopes for Google APIs
 # Can be extended when initializing GoogleAuth
 # Note: 'openid' is automatically added by Google when using 'userinfo.email',
@@ -31,6 +38,25 @@ DEFAULT_SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/userinfo.email",
 ]
+
+
+def _get_db_path() -> Path:
+    """Get path to the graph.db database."""
+    # Try context-engine location first (default location)
+    db_path = Path(__file__).parent.parent.parent.parent / "context-engine" / "graph.db"
+    if db_path.exists():
+        return db_path
+    
+    # Try environment variable
+    if os.getenv("GRAPH_DB_PATH"):
+        db_path = Path(os.getenv("GRAPH_DB_PATH"))
+        if db_path.exists():
+            return db_path
+    
+    raise FileNotFoundError(
+        "Database not found. Ensure graph.db exists in context-engine/ "
+        "or set GRAPH_DB_PATH environment variable."
+    )
 
 
 def load_oauth_secrets(secrets_path: Optional[Path] = None) -> Dict[str, Any]:
@@ -69,6 +95,58 @@ def load_oauth_secrets(secrets_path: Optional[Path] = None) -> Dict[str, Any]:
         "client_secret": client_info["client_secret"],
         "project_id": secrets.get("project_id", ""),
     }
+
+
+def get_credentials_from_db() -> Credentials:
+    """
+    Get Google credentials from the integration_tokens database.
+    
+    This is the preferred method for MCP tools - the server manages the OAuth flow
+    and stores tokens in the database. MCP just reads them.
+    
+    Returns:
+        Credentials object ready for use with Google APIs
+        
+    Raises:
+        RuntimeError: If no Google token found in database
+        FileNotFoundError: If database or oauth_secrets.json not found
+    """
+    # Import here to avoid circular imports
+    from server.integration_dao import IntegrationDAO
+    
+    db_path = _get_db_path()
+    dao = IntegrationDAO(str(db_path))
+    
+    # Get token from database
+    token_data = dao.get_token("google")
+    if not token_data:
+        raise RuntimeError(
+            "No Google token found in database. "
+            "Please authenticate via the server's OAuth flow first."
+        )
+    
+    access_token = token_data.get("access_token")
+    refresh_token = token_data.get("refresh_token")
+    
+    if not access_token:
+        raise RuntimeError("Google access_token not found in database")
+    
+    # Get client credentials from oauth_secrets.json
+    secrets = load_oauth_secrets()
+    client_id = secrets["client_id"]
+    client_secret = secrets["client_secret"]
+    
+    # Create Credentials object
+    creds = Credentials(
+        token=access_token,
+        refresh_token=refresh_token,
+        token_uri=GOOGLE_TOKEN_URI,
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=DEFAULT_SCOPES,
+    )
+    
+    return creds
 
 
 def get_stored_credentials(user_id: str = "default", credentials_path: Optional[Path] = None) -> Optional[Credentials]:

@@ -16,7 +16,7 @@ try:
 except ImportError:
     raise ImportError("Google API client not installed. Install with: pip install google-api-python-client")
 
-from covalent_mcp.toolclasses.google.gauth import get_stored_credentials, GoogleAuth, DEFAULT_SCOPES
+from covalent_mcp.toolclasses.google.gauth import get_credentials_from_db
 
 
 class GmailService:
@@ -26,27 +26,18 @@ class GmailService:
     Provides methods for sending, listing, and retrieving emails.
     """
     
-    def __init__(self, user_id: str = "default", auth: Optional[GoogleAuth] = None):
+    def __init__(self, credentials: Optional[Credentials] = None):
         """
         Initialize Gmail service.
         
         Args:
-            user_id: User identifier
-            auth: GoogleAuth instance (will get credentials automatically if not provided)
+            credentials: Google Credentials object. If not provided, reads from database.
         """
-        if auth:
-            self.credentials = auth.get_credentials(user_id)
-        else:
-            # Try to get stored credentials
-            self.credentials = get_stored_credentials(user_id)
-            if not self.credentials:
-                # No stored credentials, need to authenticate
-                # Use DEFAULT_SCOPES to include both Calendar and Gmail scopes
-                auth = GoogleAuth(scopes=DEFAULT_SCOPES)
-                self.credentials = auth.get_credentials(user_id)
+        if credentials is None:
+            credentials = get_credentials_from_db()
         
+        self.credentials = credentials
         self.service = build('gmail', 'v1', credentials=self.credentials)
-        self.user_id = user_id
     
     def list_messages(
         self,

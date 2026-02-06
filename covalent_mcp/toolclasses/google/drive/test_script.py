@@ -1,6 +1,9 @@
 """
 Test script for Google Drive MCP tools and resources.
 
+Token is read from the database (integration_tokens table) - no auth flow needed.
+Server handles OAuth via /integrations/google/auth endpoint.
+
 Tests Drive operations in a sequential flow:
 1. List root folder (resource)
 2. Create a test folder (tool)
@@ -19,18 +22,15 @@ from typing import Optional
 
 # Add project root to path
 # test_script.py is in: covalent_mcp/toolclasses/google/drive/
-# Need to go up 5 levels to get to project root
 covalent_mcp_dir = Path(__file__).parent.parent.parent.parent  # Gets to covalent_mcp/
 project_root = covalent_mcp_dir.parent  # Gets to project root
 sys.path.insert(0, str(project_root))
 
-from covalent_mcp.toolclasses.google.gauth import GoogleAuth, DEFAULT_SCOPES
 from covalent_mcp.toolclasses.google.drive.drive_client import DriveService
 
 
-# Initialize client (shared across all tests)
-auth = GoogleAuth(scopes=DEFAULT_SCOPES)
-client = DriveService(auth=auth)
+# Initialize client - reads token from database automatically
+client = DriveService()
 
 # Test folder and file names
 TEST_FOLDER_NAME = "MCP Test Folder"

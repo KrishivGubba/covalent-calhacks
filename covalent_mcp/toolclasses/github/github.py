@@ -2,13 +2,34 @@
 GitHub MCP Tools - Repository, Issue, and PR operations.
 
 Exposes GitHub operations as MCP tools for LLM agents.
+Token is managed by the server via OAuth flow - MCP reads token from database.
 """
 import json
+import os
+from pathlib import Path
 from typing import Optional, List
 from covalent_mcp.toolclasses.base import MCPToolModule
 from covalent_mcp.toolclasses.github.github_client import GitHubClient
-from covalent_mcp.toolclasses.github.github_auth import GitHubAuth
 from fastmcp import FastMCP
+
+
+def _get_db_path() -> Path:
+    """Get path to the graph.db database."""
+    # Try context-engine location first (default location)
+    db_path = Path(__file__).parent.parent.parent.parent / "context-engine" / "graph.db"
+    if db_path.exists():
+        return db_path
+    
+    # Try environment variable
+    if os.getenv("GRAPH_DB_PATH"):
+        db_path = Path(os.getenv("GRAPH_DB_PATH"))
+        if db_path.exists():
+            return db_path
+    
+    raise FileNotFoundError(
+        "Database not found. Ensure graph.db exists in context-engine/ "
+        "or set GRAPH_DB_PATH environment variable."
+    )
 
 
 class GitHubToolModule(MCPToolModule):
@@ -22,20 +43,36 @@ class GitHubToolModule(MCPToolModule):
     """
     
     def __init__(self):
-        """Initialize GitHub tool module with auth and client."""
-        self.auth = None  # Lazy initialization
-        self.client = None
+        """Initialize GitHub tool module."""
+        self._client = None
+        self._dao = None
+    
+    def _get_dao(self):
+        """Get IntegrationDAO instance."""
+        if self._dao is None:
+            from server.integration_dao import IntegrationDAO
+            db_path = _get_db_path()
+            self._dao = IntegrationDAO(str(db_path))
+        return self._dao
     
     def _ensure_client(self) -> GitHubClient:
-        """Ensure GitHub client is initialized."""
-        if self.client is None:
-            self.auth = GitHubAuth()
-            self.client = GitHubClient(self.auth)
-        return self.client
+        """Ensure GitHub client is initialized with token from database."""
+        if self._client is None:
+            dao = self._get_dao()
+            token_data = dao.get_token("github")
+            
+            if not token_data or not token_data.get("access_token"):
+                raise RuntimeError(
+                    "No GitHub token found in database. "
+                    "Please authenticate via the server's OAuth flow first."
+                )
+            
+            self._client = GitHubClient(access_token=token_data["access_token"])
+        return self._client
     
     def register(self, mcp: FastMCP) -> None:
         """Register GitHub tools with MCP server."""
-        client = self._ensure_client()
+        tool_module = self
         
         @mcp.tool()
         def create_repo(
@@ -62,6 +99,7 @@ class GitHubToolModule(MCPToolModule):
             Returns:
                 Repository information including URL and name
             """
+            client = tool_module._ensure_client()
             repo = client.create_repo(
                 name=name,
                 owner=owner,
@@ -102,6 +140,7 @@ class GitHubToolModule(MCPToolModule):
             Returns:
                 Repository information including URL and name
             """
+            client = tool_module._ensure_client()
             repo = client.create_repo_from_template(
                 template_owner=template_owner,
                 template_repo=template_repo,
@@ -140,6 +179,7 @@ class GitHubToolModule(MCPToolModule):
             Returns:
                 Issue information including number and URL
             """
+            client = tool_module._ensure_client()
             issue = client.create_issue(
                 owner=owner,
                 repo=repo,
@@ -180,6 +220,7 @@ class GitHubToolModule(MCPToolModule):
             Returns:
                 Pull request information including number and URL
             """
+            client = tool_module._ensure_client()
             pr = client.create_pull_request(
                 owner=owner,
                 repo=repo,
@@ -211,6 +252,7 @@ class GitHubToolModule(MCPToolModule):
             Returns:
                 Updated repository information
             """
+            client = tool_module._ensure_client()
             repo_data = client.update_repo_description(owner, repo, description)
             return {
                 "success": True,
@@ -233,6 +275,7 @@ class GitHubToolModule(MCPToolModule):
             Returns:
                 Response with topics that were set
             """
+            client = tool_module._ensure_client()
             result = client.set_repo_topics(owner, repo, topics)
             return {
                 "success": True,
@@ -252,6 +295,7 @@ class GitHubToolModule(MCPToolModule):
             Returns:
                 Response indicating success
             """
+            client = tool_module._ensure_client()
             result = client.rename_default_branch(owner, repo, new_name)
             return {
                 "success": True,
@@ -261,7 +305,7 @@ class GitHubToolModule(MCPToolModule):
     
     def register_resources(self, mcp: FastMCP) -> None:
         """Register GitHub resources (read-only operations) with MCP server."""
-        client = self._ensure_client()
+        tool_module = self
         
         @mcp.resource("github://repo/{owner}/{repo}")
         def get_repo_resource(owner: str, repo: str) -> str:
@@ -270,6 +314,7 @@ class GitHubToolModule(MCPToolModule):
             
             URI: github://repo/{owner}/{repo}
             """
+            client = tool_module._ensure_client()
             repo_data = client.get_repo(owner, repo)
             return json.dumps({
                 "name": repo_data["name"],
@@ -290,6 +335,7 @@ class GitHubToolModule(MCPToolModule):
             URI: github://repos{?type}
             Optional query param: type - "all", "owner", "member", "public", "private" (default: "all")
             """
+            client = tool_module._ensure_client()
             repos = client.list_repos(type=type)
             return json.dumps({
                 "count": len(repos),
@@ -312,6 +358,7 @@ class GitHubToolModule(MCPToolModule):
             
             URI: github://repos/{owner}
             """
+            client = tool_module._ensure_client()
             repos = client.list_repos(owner=owner)
             return json.dumps({
                 "count": len(repos),
