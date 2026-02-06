@@ -1,3 +1,9 @@
+"""
+Test script for GitHub MCP tools.
+
+Reads the access token from the integration_tokens database.
+User must connect GitHub via the UI first.
+"""
 import sys
 from pathlib import Path
 
@@ -5,13 +11,36 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from covalent_mcp.toolclasses.github.github_auth import GitHubAuth
 from covalent_mcp.toolclasses.github.github_client import GitHubClient
+from server.integration_dao import IntegrationDAO
+
+
+def get_github_client() -> GitHubClient:
+    """Get a GitHub client using the token from the database."""
+    db_path = project_root / "context-engine" / "graph.db"
+    
+    if not db_path.exists():
+        raise RuntimeError(f"Database not found at {db_path}")
+    
+    dao = IntegrationDAO(str(db_path))
+    token_data = dao.get_token("github")
+    
+    if not token_data:
+        raise RuntimeError(
+            "GitHub is not connected. Please connect GitHub from the Integrations page first."
+        )
+    
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise RuntimeError(
+            "GitHub token is missing. Please reconnect GitHub from the Integrations page."
+        )
+    
+    return GitHubClient(access_token=access_token)
 
 
 # Initialize client (shared across all tests)
-auth = GitHubAuth()
-client = GitHubClient(auth)
+client = get_github_client()
 
 
 def test_list_repos():

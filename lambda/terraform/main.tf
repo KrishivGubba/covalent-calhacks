@@ -226,6 +226,8 @@ resource "aws_lambda_function" "ai_gateway" {
       # Ignore code changes - handled by GitHub Actions
       filename,
       source_code_hash,
+      # Ignore environment changes - set manually in AWS Console or via terraform apply -var=...
+      environment,
     ]
   }
 }
@@ -406,6 +408,8 @@ resource "aws_lambda_function" "perplexity_gateway" {
       # Ignore code changes - handled by GitHub Actions
       filename,
       source_code_hash,
+      # Ignore environment changes - set manually in AWS Console or via terraform apply -var=...
+      environment,
     ]
   }
 }
