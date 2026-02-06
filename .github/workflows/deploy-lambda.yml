@@ -1,4 +1,4 @@
-name: Deploy AI Gateway Lambda
+name: Deploy Lambda Functions
 
 on:
   push:
@@ -12,13 +12,22 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  LAMBDA_FUNCTION_NAME: covalent-ai-gateway
   PYTHON_VERSION: '3.11'
 
 jobs:
   deploy:
-    name: Deploy Lambda
+    name: Deploy ${{ matrix.lambda.name }}
     runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        lambda:
+          - name: AI Gateway
+            function_name: covalent-ai-gateway
+            handler_file: ai-gateway.py
+          - name: Perplexity Gateway
+            function_name: covalent-perplexity-gateway
+            handler_file: perplexity-gateway.py
     
     permissions:
       id-token: write   # Required for OIDC
@@ -55,47 +64,50 @@ jobs:
             --only-binary=:all: \
             --upgrade
       
-      - name: Package Lambda
+      - name: Package Lambda (${{ matrix.lambda.name }})
         run: |
           cd lambda
-          # Copy the handler
-          cp ai-gateway.py package/
+          # Copy the handler for this specific Lambda
+          cp ${{ matrix.lambda.handler_file }} package/
           # Create deployment package
           cd package
-          zip -r ../deployment.zip .
+          zip -r ../deployment-${{ matrix.lambda.function_name }}.zip .
           cd ..
-          echo "Deployment package size: $(du -h deployment.zip | cut -f1)"
+          echo "Deployment package size: $(du -h deployment-${{ matrix.lambda.function_name }}.zip | cut -f1)"
       
-      - name: Deploy to AWS Lambda
+      - name: Deploy ${{ matrix.lambda.name }} to AWS Lambda
         run: |
+          FUNCTION_NAME="${{ matrix.lambda.function_name }}"
+          HANDLER_FILE="${{ matrix.lambda.handler_file }}"
+          HANDLER_NAME="${HANDLER_FILE%.py}.lambda_handler"
+          
           # Check if function exists
-          if aws lambda get-function --function-name ${{ env.LAMBDA_FUNCTION_NAME }} 2>/dev/null; then
-            echo "Updating existing function..."
+          if aws lambda get-function --function-name $FUNCTION_NAME 2>/dev/null; then
+            echo "Updating existing function: $FUNCTION_NAME"
             aws lambda update-function-code \
-              --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
-              --zip-file fileb://lambda/deployment.zip \
+              --function-name $FUNCTION_NAME \
+              --zip-file fileb://lambda/deployment-$FUNCTION_NAME.zip \
               --publish
           else
-            echo "Function doesn't exist. Please create it first via Terraform/CloudFormation or manually."
+            echo "Function $FUNCTION_NAME doesn't exist. Please create it first via Terraform."
             echo "Required configuration:"
             echo "  - Runtime: python3.11"
-            echo "  - Handler: ai-gateway.lambda_handler"
+            echo "  - Handler: $HANDLER_NAME"
             echo "  - Memory: 256 MB (minimum)"
-            echo "  - Timeout: 30 seconds (minimum)"
-            echo "  - IAM Role with Bedrock permissions"
+            echo "  - Timeout: 60 seconds (minimum)"
             exit 1
           fi
       
       - name: Wait for update to complete
         run: |
-          echo "Waiting for function update to complete..."
+          echo "Waiting for ${{ matrix.lambda.function_name }} update to complete..."
           aws lambda wait function-updated \
-            --function-name ${{ env.LAMBDA_FUNCTION_NAME }}
-          echo "Function updated successfully!"
+            --function-name ${{ matrix.lambda.function_name }}
+          echo "${{ matrix.lambda.name }} updated successfully!"
       
       - name: Get function info
         run: |
           aws lambda get-function \
-            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --function-name ${{ matrix.lambda.function_name }} \
             --query 'Configuration.{Version:Version,LastModified:LastModified,State:State}' \
             --output table
