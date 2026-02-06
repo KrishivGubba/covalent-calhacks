@@ -2,10 +2,10 @@
 GitHub API Client - REST wrapper for GitHub operations.
 
 Provides methods for repo, issue, and PR operations.
+Token is managed by the server via OAuth flow - client just receives the access token.
 """
 import requests
 from typing import Optional, Dict, Any, List
-from covalent_mcp.toolclasses.github.github_auth import GitHubAuth
 
 
 class GitHubClient:
@@ -13,44 +13,28 @@ class GitHubClient:
     GitHub API client for repository, issue, and PR operations.
     
     Usage:
-        auth = GitHubAuth(...)
-        client = GitHubClient(auth)
+        client = GitHubClient(access_token="ghp_xxx...")
         repo = client.create_repo("my-repo", private=False)
     """
     
     BASE_URL = "https://api.github.com"
     
-    def __init__(self, auth: Optional[GitHubAuth] = None, access_token: Optional[str] = None):
+    def __init__(self, access_token: str):
         """
         Initialize GitHub client.
         
         Args:
-            auth: GitHubAuth instance (will get token automatically)
-            access_token: Direct access token (if auth not provided)
+            access_token: GitHub access token (retrieved from database)
         """
-        if auth:
-            self.auth = auth
-            self.access_token = None  # Will be fetched on first use
-        elif access_token:
-            self.auth = None
-            self.access_token = access_token
-        else:
-            raise ValueError("Either auth or access_token must be provided")
-    
-    def _get_token(self) -> str:
-        """Get access token (from auth or direct)."""
-        if self.access_token:
-            return self.access_token
-        if self.auth:
-            self.access_token = self.auth.get_access_token()
-            return self.access_token
-        raise RuntimeError("No access token available")
+        if not access_token:
+            raise ValueError("access_token is required")
+        self.access_token = access_token
     
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """Make authenticated request to GitHub API."""
         url = f"{self.BASE_URL}{endpoint}"
         headers = {
-            "Authorization": f"token {self._get_token()}",
+            "Authorization": f"token {self.access_token}",
             "Accept": "application/vnd.github.v3+json"
         }
         headers.update(kwargs.pop("headers", {}))

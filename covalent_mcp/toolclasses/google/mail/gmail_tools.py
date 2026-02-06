@@ -2,12 +2,12 @@
 Gmail MCP Tools - Email operations.
 
 Exposes Gmail operations as MCP tools and resources for LLM agents.
+Token is managed by the server via OAuth flow - MCP reads token from database.
 """
 import json
 from typing import Optional, List
 from covalent_mcp.toolclasses.base import MCPToolModule
 from covalent_mcp.toolclasses.google.mail.gmail_client import GmailService
-from covalent_mcp.toolclasses.google.gauth import GoogleAuth, DEFAULT_SCOPES
 from fastmcp import FastMCP
 
 
@@ -24,21 +24,19 @@ class GmailToolModule(MCPToolModule):
     """
     
     def __init__(self):
-        """Initialize Gmail tool module with auth and client."""
-        self.auth = None  # Lazy initialization
-        self.client = None
+        """Initialize Gmail tool module."""
+        self._client = None
     
     def _ensure_client(self) -> GmailService:
-        """Ensure Gmail client is initialized."""
-        if self.client is None:
-            # Use DEFAULT_SCOPES to include both Calendar and Gmail scopes
-            self.auth = GoogleAuth(scopes=DEFAULT_SCOPES)
-            self.client = GmailService(auth=self.auth)
-        return self.client
+        """Ensure Gmail client is initialized with credentials from database."""
+        if self._client is None:
+            # GmailService reads token from database via get_credentials_from_db()
+            self._client = GmailService()
+        return self._client
     
     def register(self, mcp: FastMCP) -> None:
         """Register Gmail tools (write operations) with MCP server."""
-        client = self._ensure_client()
+        tool_module = self
         
         @mcp.tool()
         def send_email(
@@ -63,6 +61,7 @@ class GmailToolModule(MCPToolModule):
             Returns:
                 Sent message information including ID and thread ID
             """
+            client = tool_module._ensure_client()
             message = client.send_message(
                 to=to,
                 subject=subject,
@@ -84,7 +83,7 @@ class GmailToolModule(MCPToolModule):
     
     def register_resources(self, mcp: FastMCP) -> None:
         """Register Gmail resources (read operations) with MCP server."""
-        client = self._ensure_client()
+        tool_module = self
         
         @mcp.resource("gmail://messages{?query,max_results,label_ids}")
         def list_messages_resource(
@@ -101,6 +100,7 @@ class GmailToolModule(MCPToolModule):
             - max_results: Maximum number of messages (1-500, default: 10)
             - label_ids: Comma-separated label IDs (e.g., "INBOX,UNREAD")
             """
+            client = tool_module._ensure_client()
             label_list = None
             if label_ids:
                 label_list = [l.strip() for l in label_ids.split(',')]
@@ -123,6 +123,7 @@ class GmailToolModule(MCPToolModule):
             
             URI: gmail://message/{message_id}
             """
+            client = tool_module._ensure_client()
             message = client.get_message(message_id)
             if not message:
                 return json.dumps({"error": "Message not found"}, indent=2)

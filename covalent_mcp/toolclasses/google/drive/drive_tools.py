@@ -2,12 +2,12 @@
 Google Drive MCP Tools - File and folder operations.
 
 Exposes Google Drive operations as MCP tools and resources for LLM agents.
+Token is managed by the server via OAuth flow - MCP reads token from database.
 """
 import json
 from typing import Optional
 from covalent_mcp.toolclasses.base import MCPToolModule
 from covalent_mcp.toolclasses.google.drive.drive_client import DriveService
-from covalent_mcp.toolclasses.google.gauth import GoogleAuth, DEFAULT_SCOPES
 from fastmcp import FastMCP
 
 
@@ -26,21 +26,19 @@ class DriveToolModule(MCPToolModule):
     """
     
     def __init__(self):
-        """Initialize Drive tool module with auth and client."""
-        self.auth = None  # Lazy initialization
-        self.client = None
+        """Initialize Drive tool module."""
+        self._client = None
     
     def _ensure_client(self) -> DriveService:
-        """Ensure Drive client is initialized."""
-        if self.client is None:
-            # Use DEFAULT_SCOPES to include all Google API scopes
-            self.auth = GoogleAuth(scopes=DEFAULT_SCOPES)
-            self.client = DriveService(auth=self.auth)
-        return self.client
+        """Ensure Drive client is initialized with credentials from database."""
+        if self._client is None:
+            # DriveService reads token from database via get_credentials_from_db()
+            self._client = DriveService()
+        return self._client
     
     def register(self, mcp: FastMCP) -> None:
         """Register Drive tools (write operations) with MCP server."""
-        client = self._ensure_client()
+        tool_module = self
         
         @mcp.tool()
         def create_text_file(
@@ -59,6 +57,7 @@ class DriveToolModule(MCPToolModule):
             Returns:
                 Created file information including ID and web view link
             """
+            client = tool_module._ensure_client()
             file = client.create_text_file(
                 name=name,
                 content=content,
@@ -93,6 +92,7 @@ class DriveToolModule(MCPToolModule):
             Returns:
                 Updated file information
             """
+            client = tool_module._ensure_client()
             file = client.update_text_file(
                 file_id=file_id,
                 content=content,
@@ -125,6 +125,7 @@ class DriveToolModule(MCPToolModule):
             Returns:
                 Created folder information including ID and web view link
             """
+            client = tool_module._ensure_client()
             folder = client.create_folder(
                 name=name,
                 parent_folder_id=parent_folder_id
@@ -152,6 +153,7 @@ class DriveToolModule(MCPToolModule):
             Returns:
                 Success status
             """
+            client = tool_module._ensure_client()
             success = client.delete_file(file_id)
             
             return {
@@ -171,6 +173,7 @@ class DriveToolModule(MCPToolModule):
             Returns:
                 Updated file information
             """
+            client = tool_module._ensure_client()
             file = client.rename_file(file_id, new_name)
             
             if not file:
@@ -198,6 +201,7 @@ class DriveToolModule(MCPToolModule):
             Returns:
                 Updated file information
             """
+            client = tool_module._ensure_client()
             file = client.move_file(file_id, destination_folder_id)
             
             if not file:
@@ -212,7 +216,7 @@ class DriveToolModule(MCPToolModule):
     
     def register_resources(self, mcp: FastMCP) -> None:
         """Register Drive resources (read operations) with MCP server."""
-        client = self._ensure_client()
+        tool_module = self
         
         @mcp.resource("gdrive://search/{query}{?max_results,page_token}")
         def search_files_resource(
@@ -227,6 +231,7 @@ class DriveToolModule(MCPToolModule):
             Path param: query - Search query (e.g., "name contains 'test'")
             Optional query params: max_results (1-100, default 50), page_token (pagination)
             """
+            client = tool_module._ensure_client()
             result = client.search_files(
                 query=query,
                 max_results=max_results,
@@ -254,6 +259,7 @@ class DriveToolModule(MCPToolModule):
             - max_results: Maximum results (1-100, default: 50)
             - page_token: Token for pagination
             """
+            client = tool_module._ensure_client()
             result = client.list_folder(
                 folder_id=folder_id if folder_id != 'root' else None,
                 max_results=max_results,
@@ -274,6 +280,7 @@ class DriveToolModule(MCPToolModule):
             
             URI: gdrive://file/{file_id}
             """
+            client = tool_module._ensure_client()
             file = client.get_file(file_id)
             if not file:
                 return json.dumps({"error": "File not found"}, indent=2)
@@ -287,6 +294,7 @@ class DriveToolModule(MCPToolModule):
             URI: gdrive://file/{file_id}/content
             For Google Docs/Sheets/Slides, exports as text/markdown/CSV.
             """
+            client = tool_module._ensure_client()
             content = client.get_file_content(file_id)
             if content is None:
                 return json.dumps({"error": "Failed to get file content"}, indent=2)
