@@ -116,6 +116,13 @@ variable "notion_client_secret" {
   sensitive   = true
 }
 
+variable "perplexity_api_key" {
+  description = "Perplexity API Key (sensitive)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 # Data sources
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
@@ -344,23 +351,200 @@ resource "aws_lambda_permission" "api_gateway" {
   source_arn    = "${aws_apigatewayv2_api.ai_gateway.execution_arn}/*/*"
 }
 
+# ============================================
+# Perplexity Gateway Lambda (separate function)
+# ============================================
+
+# IAM Role for Perplexity Lambda
+resource "aws_iam_role" "perplexity_lambda_role" {
+  name = "covalent-perplexity-gateway-lambda-role-${var.environment}"
+  
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# CloudWatch Logs policy for Perplexity Lambda
+resource "aws_iam_role_policy_attachment" "perplexity_lambda_logs" {
+  role       = aws_iam_role.perplexity_lambda_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# Perplexity Lambda function
+resource "aws_lambda_function" "perplexity_gateway" {
+  function_name = "covalent-perplexity-gateway"
+  role          = aws_iam_role.perplexity_lambda_role.arn
+  handler       = "perplexity-gateway.lambda_handler"
+  runtime       = "python3.11"
+  memory_size   = var.lambda_memory
+  timeout       = var.lambda_timeout
+  
+  # Placeholder - actual code deployed via GitHub Actions
+  filename = data.archive_file.perplexity_lambda_placeholder.output_path
+  
+  environment {
+    variables = {
+      # Perplexity API
+      PERPLEXITY_API_KEY = var.perplexity_api_key
+      # Auth0 JWT verification (same as ai-gateway)
+      AUTH0_DOMAIN   = var.auth0_domain
+      AUTH0_AUDIENCE = var.auth0_audience
+    }
+  }
+  
+  lifecycle {
+    ignore_changes = [
+      # Ignore code changes - handled by GitHub Actions
+      filename,
+      source_code_hash,
+    ]
+  }
+}
+
+# Placeholder zip for Perplexity Lambda initial deployment
+data "archive_file" "perplexity_lambda_placeholder" {
+  type        = "zip"
+  output_path = "${path.module}/perplexity-placeholder.zip"
+  
+  source {
+    content  = "def lambda_handler(event, context): return {'statusCode': 200, 'body': 'Placeholder'}"
+    filename = "perplexity-gateway.py"
+  }
+}
+
+# Lambda Function URL for Perplexity Gateway
+resource "aws_lambda_function_url" "perplexity_gateway_url" {
+  function_name      = aws_lambda_function.perplexity_gateway.function_name
+  authorization_type = "NONE"  # Auth handled by JWT in Lambda
+  
+  cors {
+    allow_credentials = false
+    allow_origins     = ["*"]  # TODO: Restrict in production
+    allow_methods     = ["*"]
+    allow_headers     = ["Content-Type", "Authorization"]
+    max_age           = 86400
+  }
+}
+
+# API Gateway for Perplexity Gateway
+resource "aws_apigatewayv2_api" "perplexity_gateway" {
+  name          = "covalent-perplexity-gateway-${var.environment}"
+  protocol_type = "HTTP"
+  
+  cors_configuration {
+    allow_origins = ["*"]  # TODO: Restrict in production
+    allow_methods = ["POST", "GET", "OPTIONS"]
+    allow_headers = ["Content-Type", "Authorization"]
+    max_age       = 86400
+  }
+}
+
+resource "aws_apigatewayv2_stage" "perplexity_default" {
+  api_id      = aws_apigatewayv2_api.perplexity_gateway.id
+  name        = "$default"
+  auto_deploy = true
+  
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.perplexity_api_logs.arn
+    format = jsonencode({
+      requestId      = "$context.requestId"
+      ip             = "$context.identity.sourceIp"
+      requestTime    = "$context.requestTime"
+      httpMethod     = "$context.httpMethod"
+      routeKey       = "$context.routeKey"
+      status         = "$context.status"
+      responseLength = "$context.responseLength"
+      integrationError = "$context.integrationErrorMessage"
+    })
+  }
+}
+
+resource "aws_cloudwatch_log_group" "perplexity_api_logs" {
+  name              = "/aws/apigateway/covalent-perplexity-gateway-${var.environment}"
+  retention_in_days = 14
+}
+
+resource "aws_apigatewayv2_integration" "perplexity_lambda" {
+  api_id             = aws_apigatewayv2_api.perplexity_gateway.id
+  integration_type   = "AWS_PROXY"
+  integration_uri    = aws_lambda_function.perplexity_gateway.invoke_arn
+  integration_method = "POST"
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "perplexity_search" {
+  api_id    = aws_apigatewayv2_api.perplexity_gateway.id
+  route_key = "POST /search"
+  target    = "integrations/${aws_apigatewayv2_integration.perplexity_lambda.id}"
+}
+
+resource "aws_apigatewayv2_route" "perplexity_health" {
+  api_id    = aws_apigatewayv2_api.perplexity_gateway.id
+  route_key = "GET /health"
+  target    = "integrations/${aws_apigatewayv2_integration.perplexity_lambda.id}"
+}
+
+resource "aws_apigatewayv2_route" "perplexity_default" {
+  api_id    = aws_apigatewayv2_api.perplexity_gateway.id
+  route_key = "$default"
+  target    = "integrations/${aws_apigatewayv2_integration.perplexity_lambda.id}"
+}
+
+resource "aws_lambda_permission" "perplexity_api_gateway" {
+  statement_id  = "AllowAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.perplexity_gateway.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.perplexity_gateway.execution_arn}/*/*"
+}
+
 # Outputs
 output "lambda_function_name" {
-  description = "Lambda function name"
+  description = "AI Gateway Lambda function name"
   value       = aws_lambda_function.ai_gateway.function_name
 }
 
 output "lambda_function_url" {
-  description = "Lambda Function URL (direct)"
+  description = "AI Gateway Lambda Function URL (direct)"
   value       = aws_lambda_function_url.ai_gateway_url.function_url
 }
 
 output "api_gateway_url" {
-  description = "API Gateway URL"
+  description = "AI Gateway API Gateway URL"
   value       = aws_apigatewayv2_api.ai_gateway.api_endpoint
 }
 
 output "lambda_role_arn" {
-  description = "Lambda IAM role ARN (for GitHub Actions OIDC)"
+  description = "AI Gateway Lambda IAM role ARN (for GitHub Actions OIDC)"
   value       = aws_iam_role.lambda_role.arn
+}
+
+# Perplexity Gateway outputs
+output "perplexity_lambda_function_name" {
+  description = "Perplexity Gateway Lambda function name"
+  value       = aws_lambda_function.perplexity_gateway.function_name
+}
+
+output "perplexity_lambda_function_url" {
+  description = "Perplexity Gateway Lambda Function URL (direct)"
+  value       = aws_lambda_function_url.perplexity_gateway_url.function_url
+}
+
+output "perplexity_api_gateway_url" {
+  description = "Perplexity Gateway API Gateway URL"
+  value       = aws_apigatewayv2_api.perplexity_gateway.api_endpoint
+}
+
+output "perplexity_lambda_role_arn" {
+  description = "Perplexity Gateway Lambda IAM role ARN"
+  value       = aws_iam_role.perplexity_lambda_role.arn
 }

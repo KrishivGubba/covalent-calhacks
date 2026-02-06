@@ -1,11 +1,13 @@
 """
-Perplexity Search API Client - Wrapper for Perplexity Search operations.
+Perplexity Search API Client - Wrapper for Perplexity Search operations via Lambda.
 
-Provides methods for web search with filtering and content extraction.
+Proxies requests through the Perplexity Gateway Lambda to keep API keys secure.
 """
 import os
+import json
+import urllib.request
+import urllib.error
 from typing import Optional, List, Union, Dict, Any
-from perplexity import Perplexity
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,7 +15,7 @@ load_dotenv()
 
 class PerplexitySearchClient:
     """
-    Perplexity Search API client for web search operations.
+    Perplexity Search API client that proxies through Lambda Gateway.
     
     Usage:
         client = PerplexitySearchClient()
@@ -23,19 +25,25 @@ class PerplexitySearchClient:
         )
     """
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, gateway_url: Optional[str] = None, auth_token: Optional[str] = None):
         """
         Initialize Perplexity Search client.
         
         Args:
-            api_key: Perplexity API key (or from PERPLEXITY_API_KEY env var)
+            gateway_url: Perplexity Gateway Lambda URL (or from PERPLEXITY_GATEWAY_URL env var)
+            auth_token: Auth0 access token for authenticating with Lambda (optional for now)
         """
-        self.api_key = api_key or os.getenv("PERPLEXITY_API_KEY")
-        if not self.api_key:
+        self.gateway_url = gateway_url or os.getenv("PERPLEXITY_GATEWAY_URL", "")
+        self.auth_token = auth_token
+        
+        if not self.gateway_url:
             raise ValueError(
-                "Perplexity API key required. Set PERPLEXITY_API_KEY env var or pass api_key."
+                "Perplexity Gateway URL required. Set PERPLEXITY_GATEWAY_URL env var or pass gateway_url."
             )
-        self.client = Perplexity(api_key=self.api_key)
+    
+    def set_auth_token(self, token: str) -> None:
+        """Set the Auth0 access token for authenticating requests."""
+        self.auth_token = token
     
     def search(
         self,
@@ -54,7 +62,7 @@ class PerplexitySearchClient:
         last_updated_before_filter: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Perform a web search using Perplexity Search API.
+        Perform a web search using Perplexity Search API via Lambda Gateway.
         
         Args:
             query: Search query (string) or list of queries for multi-query search
@@ -74,57 +82,96 @@ class PerplexitySearchClient:
         Returns:
             Dict containing search results with 'results' list and 'id'
         """
-        # Build search parameters
-        params = {
+        # Build request payload for Lambda
+        payload = {
             "query": query,
             "max_results": max_results,
             "max_tokens_per_page": max_tokens_per_page,
         }
         
         if max_tokens is not None:
-            params["max_tokens"] = max_tokens
+            payload["max_tokens"] = max_tokens
         if country:
-            params["country"] = country
+            payload["country"] = country
         if search_domain_filter:
-            params["search_domain_filter"] = search_domain_filter
+            payload["search_domain_filter"] = search_domain_filter
         if search_language_filter:
-            params["search_language_filter"] = search_language_filter
+            payload["search_language_filter"] = search_language_filter
         if search_mode:
-            params["search_mode"] = search_mode
+            payload["search_mode"] = search_mode
         if search_recency_filter:
-            params["search_recency_filter"] = search_recency_filter
+            payload["search_recency_filter"] = search_recency_filter
         if search_after_date_filter:
-            params["search_after_date_filter"] = search_after_date_filter
+            payload["search_after_date_filter"] = search_after_date_filter
         if search_before_date_filter:
-            params["search_before_date_filter"] = search_before_date_filter
+            payload["search_before_date_filter"] = search_before_date_filter
         if last_updated_after_filter:
-            params["last_updated_after_filter"] = last_updated_after_filter
+            payload["last_updated_after_filter"] = last_updated_after_filter
         if last_updated_before_filter:
-            params["last_updated_before_filter"] = last_updated_before_filter
+            payload["last_updated_before_filter"] = last_updated_before_filter
         
-        # Perform search
-        search_response = self.client.search.create(**params)
-        
-        # Convert response to dict format.
-        # In the current SDK, results are always a flat list of Result objects,
-        # even when you pass a list of queries. We just normalize them to
-        # simple dicts; multi-query calls will return a single flat list.
-        results_data = []
-        for result in search_response.results:
-            results_data.append(
-                {
-                    "title": result.title,
-                    "url": result.url,
-                    "snippet": result.snippet,
-                    "date": getattr(result, "date", None),
-                    "last_updated": getattr(result, "last_updated", None),
-                }
-            )
-        
-        return {
-            "id": getattr(search_response, "id", None),
-            "results": results_data,
-            "query": query,
-            "max_results": max_results,
-            "server_time": getattr(search_response, "server_time", None),
+        # Build headers
+        headers = {
+            "Content-Type": "application/json",
         }
+        if self.auth_token:
+            headers["Authorization"] = f"Bearer {self.auth_token}"
+        
+        # Call Lambda Gateway
+        search_url = f"{self.gateway_url.rstrip('/')}/search"
+        req_data = json.dumps(payload).encode("utf-8")
+        
+        try:
+            req = urllib.request.Request(
+                search_url,
+                data=req_data,
+                headers=headers,
+                method="POST",
+            )
+            
+            with urllib.request.urlopen(req, timeout=30) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            
+            # Process and normalize response
+            # Lambda returns the raw Perplexity response, normalize it
+            return self._normalize_response(result, query, max_results)
+            
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode("utf-8")
+            try:
+                error_json = json.loads(error_body)
+                raise RuntimeError(f"Perplexity search failed: {error_json.get('error_description', error_json.get('error', error_body))}")
+            except json.JSONDecodeError:
+                raise RuntimeError(f"Perplexity search failed: {error_body}")
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"Failed to connect to Perplexity Gateway: {e}")
+    
+    def _normalize_response(self, result: Dict[str, Any], query: Union[str, List[str]], max_results: int) -> Dict[str, Any]:
+        """Normalize the Lambda response to a consistent format."""
+        # If Lambda returns results in expected format, use directly
+        if "results" in result:
+            # Normalize each result to have consistent fields
+            normalized_results = []
+            for r in result.get("results", []):
+                normalized_results.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "snippet": r.get("snippet", r.get("content", "")),
+                    "date": r.get("date"),
+                    "last_updated": r.get("last_updated"),
+                })
+            
+            return {
+                "id": result.get("id"),
+                "results": normalized_results,
+                "query": query,
+                "max_results": max_results,
+                "server_time": result.get("server_time"),
+            }
+        
+        # If Lambda returns error, propagate it
+        if "error" in result:
+            raise RuntimeError(f"Perplexity search failed: {result.get('error_description', result['error'])}")
+        
+        # Return as-is if format is unexpected
+        return result
