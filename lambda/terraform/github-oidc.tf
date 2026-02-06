@@ -69,7 +69,10 @@ resource "aws_iam_role_policy" "github_actions_lambda" {
           "lambda:GetFunctionConfiguration",
           "lambda:PublishVersion"
         ]
-        Resource = aws_lambda_function.ai_gateway.arn
+        Resource = [
+          aws_lambda_function.ai_gateway.arn,
+          aws_lambda_function.perplexity_gateway.arn,
+        ]
       },
       {
         Sid    = "LambdaWait"
@@ -77,7 +80,10 @@ resource "aws_iam_role_policy" "github_actions_lambda" {
         Action = [
           "lambda:GetFunction"
         ]
-        Resource = aws_lambda_function.ai_gateway.arn
+        Resource = [
+          aws_lambda_function.ai_gateway.arn,
+          aws_lambda_function.perplexity_gateway.arn,
+        ]
       }
     ]
   })
