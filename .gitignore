@@ -49,7 +49,12 @@ __pycache__/
 
 
 *.pid 
-
+server/flask_server.pid 
+server/flask_server.log
+context-engine/graph.db-shm
+context-engine/graph.db-wal
+context-engine/graph_visualization.html
+context-engine/graph_static.png
 
 covalent_mcp/toolclasses/github/github_token.json
 covalent_mcp/toolclasses/google/oauth_secrets.json
