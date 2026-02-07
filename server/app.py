@@ -3,6 +3,8 @@ import sqlite3
 import os
 import sys
 import time
+import asyncio
+import json
 from datetime import datetime, timedelta
 
 from flask_cors import CORS
@@ -17,10 +19,23 @@ from graph import Tree
 from auth_dao import AuthDAO
 from integration_dao import IntegrationDAO
 
+# Import action executor for MCP integration
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from action_executor import (
+    plan_action, 
+    execute_action, 
+    gather_context,
+    research_and_plan,
+    health_check as mcp_health_check
+)
+
 
 
 app = Flask(__name__)
 CORS(app)
+print("Starting Flask app")
+print("hello krishvi gubba")
+print("random startup log")
 
 @app.before_request
 def start_timer():
@@ -1276,6 +1291,370 @@ def trigger_action():
             print(f"⚠️ Failed to log action history: {log_err}")
         
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/plan_action", methods=["POST"])
+def plan_action_endpoint():
+    """
+    Research and plan an action using MCP tools - Phases 0+1 of three-phase execution.
+    
+    This endpoint:
+    1. Takes action text and context from trigger_action
+    2. RESEARCH: Reads relevant resources to gather additional context
+    3. PLANNING: Uses semantic tool routing to find relevant tools
+    4. Has agent propose ONE tool call with parameters
+    5. Returns proposed action for user approval/editing
+    
+    Body:
+        {
+            "action_uuid": "uuid-of-action",
+            "action_override": {...} (optional),
+            "skip_research": false (optional - skip resource reading)
+        }
+    
+    Returns:
+        {
+            "status": "success" | "error",
+            "research": {
+                "resources_read": [...],
+                "context_gathered": str
+            },
+            "proposed_action": {
+                "tool_name": str,
+                "parameters": dict,
+                "reasoning": str
+            },
+            "action_text": str,
+            "context_data": str
+        }
+    """
+    start_time = time.perf_counter()
+    
+    try:
+        body = request.get_json()
+        action_uuid = body.get("action_uuid", "")
+        action_override = body.get("action_override")
+        skip_research = body.get("skip_research", False)
+        
+        # Get action context using existing trigger_action logic
+        action_text, collected_data, _ = tree.trigger_action(action_uuid, action_override=action_override)
+        
+        if not action_text:
+            return jsonify({
+                "status": "error",
+                "error": "Failed to retrieve action details"
+            }), 400
+        
+        print(f"📋 Planning action: {action_text[:100]}...")
+        
+        # Run the research + planning async function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            if skip_research:
+                # Skip research phase, just plan directly
+                plan_result = loop.run_until_complete(
+                    plan_action(action_text, collected_data)
+                )
+                research_info = {"resources_read": [], "context_gathered": collected_data}
+            else:
+                # Full research + planning flow
+                result = loop.run_until_complete(
+                    research_and_plan(action_text, collected_data)
+                )
+                plan_result = {
+                    "status": result["status"],
+                    "proposed_action": result["proposed_action"],
+                    "error": result.get("error")
+                }
+                research_info = result.get("research", {"resources_read": [], "context_gathered": collected_data})
+        finally:
+            loop.close()
+        
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        
+        if plan_result["status"] == "error":
+            return jsonify({
+                "status": "error",
+                "error": plan_result["error"],
+                "research": research_info,
+                "duration_ms": duration_ms
+            }), 500
+        
+        return jsonify({
+            "status": "success",
+            "research": research_info,
+            "proposed_action": plan_result["proposed_action"],
+            "action_text": action_text,
+            "context_data": research_info.get("context_gathered", collected_data),
+            "duration_ms": duration_ms
+        }), 200
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "duration_ms": duration_ms
+        }), 500
+
+
+@app.route("/plan_action_direct", methods=["POST"])
+def plan_action_direct_endpoint():
+    """
+    Direct research and planning endpoint - bypasses action_uuid lookup.
+    
+    Use this for testing or when you have raw action text and context.
+    
+    Body:
+        {
+            "action_text": "Send an email to ritesh...",
+            "context": "Ritesh's email is ritesh@example.com",
+            "skip_research": false (optional)
+        }
+    
+    Returns:
+        {
+            "status": "success" | "error",
+            "research": {...},
+            "proposed_action": {...}
+        }
+    """
+    start_time = time.perf_counter()
+    
+    try:
+        body = request.get_json()
+        action_text = body.get("action_text", "")
+        context = body.get("context", "")
+        skip_research = body.get("skip_research", False)
+        
+        if not action_text:
+            return jsonify({
+                "status": "error",
+                "error": "action_text is required"
+            }), 400
+        
+        print(f"📋 Planning action (direct): {action_text[:100]}...")
+        
+        # Run the research + planning async function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            if skip_research:
+                plan_result = loop.run_until_complete(
+                    plan_action(action_text, context)
+                )
+                research_info = {"resources_read": [], "context_gathered": context}
+            else:
+                result = loop.run_until_complete(
+                    research_and_plan(action_text, context)
+                )
+                plan_result = {
+                    "status": result["status"],
+                    "proposed_action": result["proposed_action"],
+                    "error": result.get("error")
+                }
+                research_info = result.get("research", {"resources_read": [], "context_gathered": context})
+        finally:
+            loop.close()
+        
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        
+        if plan_result["status"] == "error":
+            return jsonify({
+                "status": "error",
+                "error": plan_result["error"],
+                "research": research_info,
+                "duration_ms": duration_ms
+            }), 500
+        
+        return jsonify({
+            "status": "success",
+            "research": research_info,
+            "proposed_action": plan_result["proposed_action"],
+            "action_text": action_text,
+            "context_data": research_info.get("context_gathered", context),
+            "duration_ms": duration_ms
+        }), 200
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "duration_ms": duration_ms
+        }), 500
+
+
+@app.route("/execute_action", methods=["POST"])
+def execute_action_endpoint():
+    """
+    Execute an approved action - Phase 2 of two-phase execution.
+    
+    This endpoint:
+    1. Takes user-approved/edited parameters
+    2. Executes the tool via MCP
+    3. Logs the execution to history
+    4. Returns the result
+    
+    Body:
+        {
+            "action_uuid": "uuid-of-action",
+            "tool_name": "send_email",
+            "parameters": {
+                "to": "user@example.com",
+                "subject": "...",
+                "body": "..."
+            }
+        }
+    
+    Returns:
+        {
+            "status": "success" | "error",
+            "result": Any,
+            "duration_ms": int
+        }
+    """
+    start_time = time.perf_counter()
+    action_uuid = ""
+    tool_name = ""
+    
+    try:
+        body = request.get_json()
+        action_uuid = body.get("action_uuid", "")
+        tool_name = body.get("tool_name", "")
+        parameters = body.get("parameters", {})
+        
+        if not tool_name or not parameters:
+            return jsonify({
+                "status": "error",
+                "error": "Missing tool_name or parameters"
+            }), 400
+        
+        print(f"🚀 Executing {tool_name} with parameters: {parameters}")
+        
+        # Get action data for logging
+        action_data = tree.dao.get_action_by_id(action_uuid)
+        node_uuid = action_data[4] if action_data else None
+        
+        # Run the execution async function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            exec_result = loop.run_until_complete(
+                execute_action(tool_name, parameters)
+            )
+        finally:
+            loop.close()
+        
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        
+        if exec_result["status"] == "error":
+            # Log failed execution
+            try:
+                tree.dao.insert_action_history(
+                    action_uuid=action_uuid,
+                    action_type=tool_name,
+                    action_data=str(parameters),
+                    node_uuid=node_uuid,
+                    status="failed",
+                    result=None,
+                    error_message=exec_result["error"],
+                    duration_ms=duration_ms
+                )
+            except Exception as log_err:
+                print(f"⚠️ Failed to log action history: {log_err}")
+            
+            return jsonify({
+                "status": "error",
+                "error": exec_result["error"],
+                "duration_ms": duration_ms
+            }), 500
+        
+        # Log successful execution
+        try:
+            tree.dao.insert_action_history(
+                action_uuid=action_uuid,
+                action_type=tool_name,
+                action_data=str(parameters),
+                node_uuid=node_uuid,
+                status="completed",
+                result=str(exec_result["result"]),
+                error_message=None,
+                duration_ms=duration_ms
+            )
+        except Exception as log_err:
+            print(f"⚠️ Failed to log action history: {log_err}")
+        
+        return jsonify({
+            "status": "success",
+            "result": exec_result["result"],
+            "duration_ms": duration_ms
+        }), 200
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        
+        # Log failed execution
+        try:
+            tree.dao.insert_action_history(
+                action_uuid=action_uuid,
+                action_type=tool_name,
+                action_data="execution_error",
+                node_uuid=None,
+                status="failed",
+                result=None,
+                error_message=str(e),
+                duration_ms=duration_ms
+            )
+        except Exception as log_err:
+            print(f"⚠️ Failed to log action history: {log_err}")
+        
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "duration_ms": duration_ms
+        }), 500
+
+
+@app.route("/mcp_health", methods=["GET"])
+def mcp_health_endpoint():
+    """
+    Check MCP server health and available tools.
+    
+    Returns:
+        {
+            "status": "healthy" | "unhealthy",
+            "tools_count": int,
+            "tool_names": list
+        }
+    """
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            health_result = loop.run_until_complete(mcp_health_check())
+        finally:
+            loop.close()
+        
+        return jsonify(health_result), 200
+        
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e)
+        }), 500
 
 
 @app.route("/action_history", methods=["GET"])
