@@ -1,9 +1,12 @@
 """
-Filesystem MCP Tools - Local file and directory operations.
+Filesystem MCP Tools & Resources - Local file and directory operations.
 
-Exposes filesystem operations as MCP tools for LLM agents.
+Write operations (tools): write_file, create_directory, delete_path, move_path, copy_path
+Read operations (resources): read_file, list_directory, file_exists, grep, read_pdf
+
 All operations are scoped to a configurable root (FILESYSTEM_ROOT or cwd).
 """
+import json
 from typing import Dict, Optional
 
 from covalent_mcp.toolclasses.base import (
@@ -17,17 +20,20 @@ from fastmcp import FastMCP
 
 class FilesystemToolModule(MCPToolModule):
     """
-    Filesystem tool module for local file and directory operations.
+    Filesystem module for local file and directory operations.
 
-    Provides MCP tools for:
-    - Reading and writing text files
-    - Listing directories
+    Provides MCP tools (write operations) for:
+    - Writing text files
     - Creating directories
-    - Deleting files and directories (optional recursive)
+    - Deleting files and directories
     - Moving and copying paths
+
+    Provides MCP resources (read-only operations) for:
+    - Reading text files
+    - Listing directories
     - Checking if a path exists
-    - Grep-style search in directory contents
-    - PDF text extraction (structured output)
+    - Grep-style search
+    - PDF text extraction
     """
 
     def __init__(self) -> None:
@@ -39,16 +45,8 @@ class FilesystemToolModule(MCPToolModule):
         return self._client
 
     def get_display_schemas(self) -> Dict[str, ToolDisplaySchema]:
-        """Return display schemas for filesystem tools."""
+        """Return display schemas for filesystem tools (write ops only)."""
         return {
-            "read_file": ToolDisplaySchema(
-                tool_name="read_file",
-                display_name="Read File",
-                description="Read a local text file.",
-                fields=[
-                    DisplayField(key="path", label="File Path", required=True, widget="text_input"),
-                ],
-            ),
             "write_file": ToolDisplaySchema(
                 tool_name="write_file",
                 display_name="Write File",
@@ -57,14 +55,6 @@ class FilesystemToolModule(MCPToolModule):
                     DisplayField(key="path", label="File Path", required=True, widget="text_input"),
                     DisplayField(key="content", label="Content", required=True, widget="textarea"),
                     DisplayField(key="create_dirs", label="Create Parent Dirs", widget="toggle"),
-                ],
-            ),
-            "list_directory": ToolDisplaySchema(
-                tool_name="list_directory",
-                display_name="List Directory",
-                description="List the contents of a directory.",
-                fields=[
-                    DisplayField(key="path", label="Directory Path", widget="text_input", placeholder="."),
                 ],
             ),
             "create_directory": ToolDisplaySchema(
@@ -106,25 +96,8 @@ class FilesystemToolModule(MCPToolModule):
         }
 
     def register(self, mcp: FastMCP) -> None:
-        """Register filesystem tools with the MCP server."""
+        """Register filesystem tools (write operations) with the MCP server."""
         client = self._ensure_client()
-
-        @mcp.tool()
-        def read_file(path: str, encoding: str = "utf-8") -> dict:
-            """
-            Read the contents of a text file.
-
-            Args:
-                path: Path relative to the filesystem root (e.g. "foo/bar.txt")
-                encoding: Text encoding (default: utf-8)
-
-            Returns:
-                Dict with success, content (or error message). Content is empty if failed.
-            """
-            content = client.read_file(path, encoding=encoding)
-            if content is None:
-                return {"success": False, "error": "File not found or outside allowed root", "content": ""}
-            return {"success": True, "content": content}
 
         @mcp.tool()
         def write_file(
@@ -149,22 +122,6 @@ class FilesystemToolModule(MCPToolModule):
             if not ok:
                 return {"success": False, "error": "Write failed (path invalid or outside root)"}
             return {"success": True, "message": f"Wrote {path}"}
-
-        @mcp.tool()
-        def list_directory(path: str = ".") -> dict:
-            """
-            List contents of a directory.
-
-            Args:
-                path: Directory path relative to root (default: "." for root)
-
-            Returns:
-                Dict with success, entries (list of {name, path, is_dir}), or error.
-            """
-            entries = client.list_directory(path)
-            if entries is None:
-                return {"success": False, "error": "Directory not found or outside allowed root", "entries": []}
-            return {"success": True, "entries": entries}
 
         @mcp.tool()
         def create_directory(path: str, parents: bool = True) -> dict:
@@ -201,20 +158,6 @@ class FilesystemToolModule(MCPToolModule):
             return {"success": True, "message": f"Deleted {path}"}
 
         @mcp.tool()
-        def file_exists(path: str) -> dict:
-            """
-            Check if a path exists (file or directory).
-
-            Args:
-                path: Path relative to root
-
-            Returns:
-                Dict with success and exists (bool).
-            """
-            exists = client.file_exists(path)
-            return {"success": True, "exists": exists}
-
-        @mcp.tool()
         def move_path(src: str, dst: str) -> dict:
             """
             Move or rename a file or directory.
@@ -248,29 +191,87 @@ class FilesystemToolModule(MCPToolModule):
                 return {"success": False, "error": err or "Copy failed"}
             return {"success": True, "message": f"Copied {src} -> {dst}"}
 
-        @mcp.tool()
+    def register_resources(self, mcp: FastMCP) -> None:
+        """Register filesystem resources (read-only operations) with the MCP server."""
+        client = self._ensure_client()
+
+        @mcp.resource("fs://read_file{?path,encoding}")
+        def read_file(path: str = "", encoding: str = "utf-8") -> str:
+            """
+            Read the contents of a text file.
+
+            URI: fs://read_file{?path,encoding}
+
+            Args:
+                path: Path relative to the filesystem root (e.g. "foo/bar.txt")
+                encoding: Text encoding (default: utf-8)
+
+            Returns:
+                JSON string with success and content (or error message).
+            """
+            content = client.read_file(path, encoding=encoding)
+            if content is None:
+                return json.dumps({"success": False, "error": "File not found or outside allowed root", "content": ""})
+            return json.dumps({"success": True, "content": content})
+
+        @mcp.resource("fs://list_directory{?path}")
+        def list_directory(path: str = ".") -> str:
+            """
+            List contents of a directory.
+
+            URI: fs://list_directory{?path}
+
+            Args:
+                path: Directory path relative to root (default: "." for root)
+
+            Returns:
+                JSON string with success and entries (list of {name, path, is_dir}).
+            """
+            entries = client.list_directory(path)
+            if entries is None:
+                return json.dumps({"success": False, "error": "Directory not found or outside allowed root", "entries": []})
+            return json.dumps({"success": True, "entries": entries})
+
+        @mcp.resource("fs://file_exists{?path}")
+        def file_exists(path: str = "") -> str:
+            """
+            Check if a path exists (file or directory).
+
+            URI: fs://file_exists{?path}
+
+            Args:
+                path: Path relative to root
+
+            Returns:
+                JSON string with success and exists (bool).
+            """
+            exists = client.file_exists(path)
+            return json.dumps({"success": True, "exists": exists})
+
+        @mcp.resource("fs://grep{?path,pattern,max_matches,recursive,use_regex,encoding}")
         def grep(
-            path: str,
-            pattern: str,
+            path: str = ".",
+            pattern: str = "",
             max_matches: int = 25,
             recursive: bool = True,
             use_regex: bool = False,
             encoding: str = "utf-8",
-        ) -> dict:
+        ) -> str:
             """
             Search directory for pattern in file contents (grep-style).
-            Returns matches as {path, line_number, line}. Truncates to max_matches.
+
+            URI: fs://grep{?path,pattern,max_matches,recursive,use_regex,encoding}
 
             Args:
                 path: Directory path relative to root to search in
                 pattern: String to search for (substring or regex if use_regex)
-                max_matches: Maximum number of matches to return (default: 100)
+                max_matches: Maximum number of matches to return (default: 25)
                 recursive: Search subdirectories (default: True)
                 use_regex: Treat pattern as regex (default: False)
                 encoding: Text encoding for files (default: utf-8)
 
             Returns:
-                Dict with success, matches (list of {path, line_number, line}), truncated (bool).
+                JSON string with success, matches, and truncated flag.
             """
             out = client.search_directory(
                 path=path,
@@ -281,42 +282,39 @@ class FilesystemToolModule(MCPToolModule):
                 encoding=encoding,
             )
             if out is None:
-                return {
+                return json.dumps({
                     "success": False,
                     "error": "Directory not found, outside root, or invalid regex",
                     "matches": [],
                     "truncated": False,
-                }
+                })
             matches, truncated = out
-            return {"success": True, "matches": matches, "truncated": truncated}
+            return json.dumps({"success": True, "matches": matches, "truncated": truncated})
 
-        @mcp.tool()
-        def read_pdf(path: str) -> dict:
+        @mcp.resource("fs://read_pdf{?path}")
+        def read_pdf(path: str = "") -> str:
             """
-            Extract text from a PDF. Returns structured output the agent can parse:
-            {pages: [{page, text, has_text_layer}], total_pages, extraction_method, warnings}.
+            Extract text from a PDF file.
+
+            URI: fs://read_pdf{?path}
 
             Args:
                 path: PDF path relative to filesystem root
 
             Returns:
-                Dict with success and either the structured PDF extraction
-                (pages, total_pages, extraction_method, warnings) or error.
+                JSON string with structured PDF extraction (pages, total_pages, etc).
             """
             result = client.read_pdf(path)
             if result is None:
-                return {
+                return json.dumps({
                     "success": False,
                     "error": "File not found, outside root, not a PDF, or extraction failed",
                     "pages": [],
                     "total_pages": 0,
                     "extraction_method": "text",
                     "warnings": [],
-                }
-            return {
-                "success": True,
-                **result,
-            }
+                })
+            return json.dumps({"success": True, **result})
 
 
 # Module instance for registry

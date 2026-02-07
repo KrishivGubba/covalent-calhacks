@@ -105,13 +105,72 @@ embeddings = OpenAIEmbeddings()
 # MCP CLIENT MANAGEMENT
 # =============================================================================
 _mcp_client = None
-_all_tools = None
+_all_tools = None      # LangChain BaseTool objects (write operations)
+_all_resources = None   # ResourceItem objects (read-only operations)
 _client_lock = None
 
 
+class ResourceItem:
+    """
+    Lightweight wrapper for an MCP resource template.
+    Provides .name and .description for semantic search compatibility,
+    plus .uri_template for invocation via session.read_resource().
+    """
+    def __init__(self, name: str, description: str, uri_template: str):
+        self.name = name
+        self.description = description
+        self.uri_template = uri_template
+
+    def __repr__(self) -> str:
+        return f"ResourceItem({self.name!r})"
+
+
+def _expand_uri_template(template: str, params: dict) -> str:
+    """
+    Expand a URI template with parameters (simple subset of RFC 6570).
+
+    Supports:
+      - Path expansion:  {name} → URL-encoded value
+      - Query expansion: {?a,b,c} → ?a=val_a&b=val_b (only non-None params)
+    """
+    import re as _re
+    from urllib.parse import quote as _quote
+
+    result = template
+
+    # 1. Handle query expansion {?param1,param2,...}
+    qm = _re.search(r'\{\?([^}]+)\}', result)
+    if qm:
+        keys = [k.strip() for k in qm.group(1).split(',')]
+        parts = []
+        for k in keys:
+            v = params.get(k)
+            if v is not None:
+                parts.append(f"{k}={_quote(str(v), safe='')}")
+        replacement = ('?' + '&'.join(parts)) if parts else ''
+        result = result[:qm.start()] + replacement + result[qm.end():]
+
+    # 2. Handle path expansion {name}
+    def _replace_path_param(m):
+        key = m.group(1)
+        v = params.get(key)
+        if v is not None:
+            return _quote(str(v), safe='')
+        return m.group(0)  # leave as-is if not in params
+
+    result = _re.sub(r'\{(\w+)\}', _replace_path_param, result)
+    return result
+
+
 async def get_mcp_client(max_retries: int = 3):
-    """Get or create the MCP client with connection pooling and retry logic."""
-    global _mcp_client, _all_tools, _client_lock
+    """
+    Get or create the MCP client.
+
+    Returns (client, tools, resources) where:
+      - tools: list[BaseTool] from get_tools() — write/action operations
+      - resources: list[ResourceItem] from list_resource_templates() — read-only operations
+    """
+    global _mcp_client, _all_tools, _all_resources, _client_lock
 
     if _client_lock is None:
         _client_lock = asyncio.Lock()
@@ -121,11 +180,38 @@ async def get_mcp_client(max_retries: int = 3):
             try:
                 if _mcp_client is None:
                     _mcp_client = MultiServerMCPClient(MCP_SERVERS)
+
+                    # Fetch tools (write operations)
                     _all_tools = await _mcp_client.get_tools()
-                return _mcp_client, _all_tools
+
+                    # Fetch resource templates (read-only operations)
+                    async with _mcp_client.session("covalent") as session:
+                        templates_result = await session.list_resource_templates()
+                        # Handle different SDK attribute naming (camelCase vs snake_case)
+                        if hasattr(templates_result, 'resourceTemplates'):
+                            templates = templates_result.resourceTemplates
+                        elif hasattr(templates_result, 'resource_templates'):
+                            templates = templates_result.resource_templates
+                        else:
+                            templates = list(templates_result)
+
+                        _all_resources = []
+                        for t in templates:
+                            uri_tmpl = t.uriTemplate if hasattr(t, 'uriTemplate') else t.uri_template
+                            _all_resources.append(
+                                ResourceItem(
+                                    name=t.name,
+                                    description=t.description or "",
+                                    uri_template=uri_tmpl,
+                                )
+                            )
+
+                    print(f"✅ MCP client initialized: {len(_all_tools)} tools, {len(_all_resources)} resources")
+                return _mcp_client, _all_tools, _all_resources
             except Exception as e:
                 _mcp_client = None
                 _all_tools = None
+                _all_resources = None
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1 * (attempt + 1))
                 else:
@@ -134,9 +220,10 @@ async def get_mcp_client(max_retries: int = 3):
 
 async def reset_mcp_client():
     """Reset the MCP client connection."""
-    global _mcp_client, _all_tools
+    global _mcp_client, _all_tools, _all_resources
     _mcp_client = None
     _all_tools = None
+    _all_resources = None
 
 
 # =============================================================================
@@ -146,19 +233,6 @@ async def reset_mcp_client():
 # Cache files for tools and resources
 TOOL_CACHE_FILE = TOOL_CACHE_DIR / "tool_embeddings.pkl"
 RESOURCE_CACHE_FILE = TOOL_CACHE_DIR / "resource_embeddings.pkl"
-
-# Resource name patterns (read-only operations)
-RESOURCE_PATTERNS = ['list_', 'get_', 'search_', 'read_', 'fetch_', 'query_']
-
-
-def _is_resource(item) -> bool:
-    """Check if an MCP item is a resource (read-only) vs a tool (write/action)."""
-    # Resources have URI attribute
-    if hasattr(item, 'uri'):
-        return True
-    # Or match read-only naming patterns
-    name_lower = item.name.lower()
-    return any(pattern in name_lower for pattern in RESOURCE_PATTERNS)
 
 
 class ToolRouter:
@@ -219,17 +293,19 @@ class ToolRouter:
         except Exception:
             return None
 
-    def initialize(self, all_items: list):
+    def initialize(self, tools: list, resources: list):
         """
-        Initialize the router by separating tools and resources,
-        then caching embeddings for each.
+        Initialize the router with pre-separated tools and resources.
+
+        Args:
+            tools: list of LangChain BaseTool objects (write/action operations)
+            resources: list of ResourceItem objects (read-only operations)
         """
         if self._initialized:
             return
-            
-        # Separate tools from resources
-        tools_list = [item for item in all_items if not _is_resource(item)]
-        resources_list = [item for item in all_items if _is_resource(item)]
+
+        tools_list = list(tools)
+        resources_list = list(resources)
         
         # Cache/load tools
         cached = self._load_cache(tools_list, TOOL_CACHE_FILE)
@@ -362,12 +438,12 @@ async def gather_context(action_text: str, existing_context: str = "") -> Dict[s
         }
     """
     try:
-        # Get MCP client and all items
-        client, all_items = await get_mcp_client()
+        # Get MCP client, tools, and resources separately
+        client, tools, resources = await get_mcp_client()
         
         # Initialize tool router if not already done
         if not tool_router._initialized:
-            tool_router.initialize(all_items)
+            tool_router.initialize(tools, resources)
         
         # Get relevant RESOURCES only (semantic search on resources, not tools)
         relevant_resources = tool_router.get_relevant_resources(
@@ -455,8 +531,8 @@ Which resources should I query to gather context for this action?"""
         gathered_context = []
         resources_read = []
         
-        # Build a tool lookup dict for invoking by name
-        tool_lookup = {t.name: t for t in all_items}
+        # Build a resource lookup by name for URI expansion
+        resource_lookup = {r.name: r for r in resources}
         
         for resource_spec in resources_to_read[:3]:  # Max 3 resources
             resource_name = resource_spec.get("name", "")
@@ -464,18 +540,25 @@ Which resources should I query to gather context for this action?"""
             reason = resource_spec.get("reason", "")
             
             try:
-                print(f"📖 Reading resource: {resource_name} with params {params}")
-                
-                # Find the tool by name and invoke it
-                tool = tool_lookup.get(resource_name)
-                if tool is None:
-                    print(f"⚠️ Tool/resource '{resource_name}' not found")
+                resource_item = resource_lookup.get(resource_name)
+                if resource_item is None:
+                    print(f"⚠️ Resource '{resource_name}' not found")
                     continue
                 
-                # Invoke the tool (LangChain tools use .ainvoke())
-                result = await tool.ainvoke(params)
+                # Expand URI template with the LLM-provided params
+                uri = _expand_uri_template(resource_item.uri_template, params)
+                print(f"📖 Reading resource: {resource_name} -> {uri}")
                 
-                gathered_context.append(f"--- {resource_name} ---\n{result}")
+                # Read the resource via MCP session
+                async with client.session("covalent") as session:
+                    read_result = await session.read_resource(uri)
+                    if read_result.contents:
+                        content = read_result.contents[0]
+                        text = content.text if hasattr(content, 'text') else str(content)
+                    else:
+                        text = ""
+                
+                gathered_context.append(f"--- {resource_name} ---\n{text}")
                 resources_read.append(resource_name)
                 print(f"✅ Successfully read {resource_name}")
                 
@@ -587,12 +670,12 @@ async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
         }
     """
     try:
-        # Get MCP client and all items
-        client, all_items = await get_mcp_client()
+        # Get MCP client, tools, and resources
+        client, tools, resources = await get_mcp_client()
         
         # Initialize tool router if not already done
         if not tool_router._initialized:
-            tool_router.initialize(all_items)
+            tool_router.initialize(tools, resources)
         
         # Get relevant TOOLS only (semantic search on tools, not resources)
         relevant_tools = tool_router.get_relevant_tools(
@@ -721,12 +804,12 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
         }
     """
     try:
-        client, all_tools = await get_mcp_client()
+        client, tools, resources = await get_mcp_client()
         
         print(f"🚀 Executing {tool_name} with parameters: {parameters}")
         
         # Find the tool by name
-        tool_lookup = {t.name: t for t in all_tools}
+        tool_lookup = {t.name: t for t in tools}
         tool = tool_lookup.get(tool_name)
         
         if tool is None:
@@ -834,8 +917,9 @@ async def research_and_plan(action_text: str, initial_context: str = "") -> Dict
 async def rebuild_tool_cache():
     """Rebuild the tool embedding cache. Run when adding new tools."""
     print("🔄 Rebuilding tool cache...")
-    client, all_tools = await get_mcp_client()
-    tool_router.cache_tools(all_tools)
+    client, tools, resources = await get_mcp_client()
+    tool_router._initialized = False  # Force re-initialization
+    tool_router.initialize(tools, resources)
     print("✅ Tool cache rebuilt successfully!")
 
 
@@ -850,11 +934,13 @@ async def health_check():
     
     # Check MCP
     try:
-        client, tools = await get_mcp_client()
+        client, tools, resources = await get_mcp_client()
         result["mcp_status"] = "healthy"
         result["tools_count"] = len(tools)
+        result["resources_count"] = len(resources)
         result["tool_names"] = [t.name for t in tools]
-        print(f"✅ MCP health check passed: {len(tools)} tools available")
+        result["resource_names"] = [r.name for r in resources]
+        print(f"✅ MCP health check passed: {len(tools)} tools, {len(resources)} resources")
     except Exception as e:
         result["mcp_status"] = "unhealthy"
         result["mcp_error"] = str(e)

@@ -109,7 +109,7 @@ class PerplexitySearchToolModule(MCPToolModule):
             results = client.search(query=query, country=country, max_results=max_results)
             return json.dumps(results, indent=2, default=str)
         
-        @mcp.resource("perplexity://search/advanced/{query}")
+        @mcp.resource("perplexity://search/advanced/{query}{?country,domains,recency,mode}")
         def search_web_advanced(
             query: str,
             max_results: int = 10,
