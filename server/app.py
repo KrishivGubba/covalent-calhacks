@@ -29,6 +29,69 @@ from action_executor import (
     health_check as mcp_health_check
 )
 
+# Import display schema registry for tool approval UI
+from covalent_mcp.tools import get_display_schema
+from covalent_mcp.toolclasses.base import resolve_display_fields
+
+
+# =============================================================================
+# DISPLAY SCHEMA RESOLUTION HELPER
+# =============================================================================
+
+def _resolve_tool_display(proposed_action: dict, loop=None) -> dict:
+    """
+    Given a proposed_action dict (with tool_name and parameters), resolve the
+    display schema so the frontend can render a human-readable approval card.
+
+    Returns a dict with:
+      - "display_name": human-readable tool name
+      - "description": short blurb
+      - "fields": list of field dicts with values populated
+      - "has_schema": True if a display schema exists, False for fallback
+
+    If no schema is registered for the tool, returns a fallback that shows
+    every parameter as an editable text field.
+    """
+    tool_name = proposed_action.get("tool_name", "")
+    parameters = proposed_action.get("parameters", {})
+
+    schema = get_display_schema(tool_name)
+
+    if schema is None:
+        # Fallback: show all params as editable text fields
+        fallback_fields = []
+        for key, value in parameters.items():
+            fallback_fields.append({
+                "key": key,
+                "label": key.replace("_", " ").title(),
+                "source": "param",
+                "editable": True,
+                "widget": "text_input",
+                "required": False,
+                "value": value,
+            })
+        return {
+            "display_name": tool_name.replace("_", " ").title(),
+            "description": "",
+            "fields": fallback_fields,
+            "has_schema": False,
+        }
+
+    # Schema exists - resolve it (may call external APIs)
+    _loop = loop or asyncio.new_event_loop()
+    _owns_loop = loop is None
+    if _owns_loop:
+        asyncio.set_event_loop(_loop)
+    try:
+        display_info = _loop.run_until_complete(
+            resolve_display_fields(schema, parameters)
+        )
+    finally:
+        if _owns_loop:
+            _loop.close()
+
+    display_info["has_schema"] = True
+    return display_info
 
 
 app = Flask(__name__)
@@ -1381,10 +1444,19 @@ def plan_action_endpoint():
                 "duration_ms": duration_ms
             }), 500
         
+        # Resolve display schema for the proposed tool call
+        display_info = None
+        if plan_result.get("proposed_action"):
+            try:
+                display_info = _resolve_tool_display(plan_result["proposed_action"])
+            except Exception as display_err:
+                print(f"Warning: display schema resolution failed: {display_err}")
+        
         return jsonify({
             "status": "success",
             "research": research_info,
             "proposed_action": plan_result["proposed_action"],
+            "display": display_info,
             "action_text": action_text,
             "context_data": research_info.get("context_gathered", collected_data),
             "duration_ms": duration_ms
@@ -1403,6 +1475,8 @@ def plan_action_endpoint():
         }), 500
 
 
+
+#TODO and NOTE: this shit is ONLY for testing, please remove before prod.
 @app.route("/plan_action_direct", methods=["POST"])
 def plan_action_direct_endpoint():
     """
@@ -1472,10 +1546,19 @@ def plan_action_direct_endpoint():
                 "duration_ms": duration_ms
             }), 500
         
+        # Resolve display schema for the proposed tool call
+        display_info = None
+        if plan_result.get("proposed_action"):
+            try:
+                display_info = _resolve_tool_display(plan_result["proposed_action"])
+            except Exception as display_err:
+                print(f"Warning: display schema resolution failed: {display_err}")
+        
         return jsonify({
             "status": "success",
             "research": research_info,
             "proposed_action": plan_result["proposed_action"],
+            "display": display_info,
             "action_text": action_text,
             "context_data": research_info.get("context_gathered", context),
             "duration_ms": duration_ms

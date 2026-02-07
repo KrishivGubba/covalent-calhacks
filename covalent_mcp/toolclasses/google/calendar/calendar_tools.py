@@ -5,8 +5,12 @@ Exposes Google Calendar operations as MCP tools and resources for LLM agents.
 Token is managed by the server via OAuth flow - MCP reads token from database.
 """
 import json
-from typing import Optional, List
-from covalent_mcp.toolclasses.base import MCPToolModule
+from typing import Dict, Optional, List
+from covalent_mcp.toolclasses.base import (
+    MCPToolModule,
+    ToolDisplaySchema,
+    DisplayField,
+)
 from covalent_mcp.toolclasses.google.calendar.calendar_client import CalendarService
 from fastmcp import FastMCP
 
@@ -16,12 +20,12 @@ class CalendarToolModule(MCPToolModule):
     Google Calendar tool module for calendar and event operations.
     
     Provides MCP tools for:
-    - Creating/updating/deleting events ✅
-    - Updating calendar settings ❌ (NOT WORKING - insufficient permissions)
+    - Creating/updating/deleting events
+    - Updating calendar settings (NOT WORKING - insufficient permissions)
     
     Provides MCP resources for:
-    - Listing/getting calendars ❌ (NOT WORKING - insufficient permissions)
-    - Listing/getting events ✅
+    - Listing/getting calendars (NOT WORKING - insufficient permissions)
+    - Listing/getting events
     
     Note: Calendar-level operations (list_calendars, get_calendar, update_calendar) 
     require additional OAuth scopes that are not currently configured.
@@ -37,6 +41,230 @@ class CalendarToolModule(MCPToolModule):
             # CalendarService reads token from database via get_credentials_from_db()
             self._client = CalendarService()
         return self._client
+
+    # -----------------------------------------------------------------
+    # Resolve helpers (used by display schemas)
+    # -----------------------------------------------------------------
+
+    async def _resolve_event_details(self, params: dict) -> dict:
+        """
+        Fetch event details from Google Calendar so the approval UI can show
+        human-readable info (event name, times, etc.) instead of just an event_id.
+        """
+        event_id = params.get("event_id", "")
+        calendar_id = params.get("calendar_id", "primary")
+        if not event_id:
+            return {}
+        try:
+            client = self._ensure_client()
+            event = client.get_event(event_id, calendar_id)
+            if not event:
+                return {"event_name": "(event not found)"}
+            start = event.get("start", {})
+            end = event.get("end", {})
+            return {
+                "event_name": event.get("summary", "(no title)"),
+                "current_start": start.get("dateTime") or start.get("date", ""),
+                "current_end": end.get("dateTime") or end.get("date", ""),
+                "current_location": event.get("location", ""),
+                "current_description": event.get("description", ""),
+                "current_attendees": [
+                    a.get("email", "") for a in (event.get("attendees") or [])
+                ],
+            }
+        except Exception as e:
+            print(f"Warning: failed to resolve event details for {event_id}: {e}")
+            return {"event_name": "(could not load event)"}
+
+    # -----------------------------------------------------------------
+    # Display schemas
+    # -----------------------------------------------------------------
+
+    def get_display_schemas(self) -> Dict[str, ToolDisplaySchema]:
+        """Return display schemas for calendar tools."""
+        return {
+            # ----------------------------------------------------------
+            # CREATE EVENT
+            # ----------------------------------------------------------
+            "create_event": ToolDisplaySchema(
+                tool_name="create_event",
+                display_name="Create Calendar Event",
+                description="Create a new event on your Google Calendar.",
+                fields=[
+                    DisplayField(
+                        key="summary",
+                        label="Event Title",
+                        source="param",
+                        editable=True,
+                        required=True,
+                        widget="text_input",
+                        placeholder="e.g. Team Standup",
+                    ),
+                    DisplayField(
+                        key="start_time",
+                        label="Start",
+                        source="param",
+                        editable=True,
+                        required=True,
+                        widget="datetime_picker",
+                        format_hint="RFC3339",
+                    ),
+                    DisplayField(
+                        key="end_time",
+                        label="End",
+                        source="param",
+                        editable=True,
+                        required=True,
+                        widget="datetime_picker",
+                        format_hint="RFC3339",
+                    ),
+                    DisplayField(
+                        key="location",
+                        label="Location",
+                        source="param",
+                        editable=True,
+                        widget="text_input",
+                        placeholder="e.g. Conference Room B",
+                    ),
+                    DisplayField(
+                        key="description",
+                        label="Description",
+                        source="param",
+                        editable=True,
+                        widget="textarea",
+                        placeholder="Event details...",
+                    ),
+                    DisplayField(
+                        key="attendees",
+                        label="Attendees",
+                        source="param",
+                        editable=True,
+                        widget="email_list",
+                        placeholder="Add email addresses...",
+                    ),
+                    DisplayField(
+                        key="send_notifications",
+                        label="Notify Attendees",
+                        source="param",
+                        editable=True,
+                        widget="toggle",
+                    ),
+                ],
+                resolve=None,  # all fields come straight from params
+            ),
+
+            # ----------------------------------------------------------
+            # UPDATE EVENT
+            # ----------------------------------------------------------
+            "update_event": ToolDisplaySchema(
+                tool_name="update_event",
+                display_name="Update Calendar Event",
+                description="Update an existing event on your Google Calendar.",
+                fields=[
+                    # Resolved: show which event is being updated
+                    DisplayField(
+                        key="event_name",
+                        label="Event",
+                        source="resolved",
+                        editable=False,
+                        widget="display_text",
+                    ),
+                    DisplayField(
+                        key="summary",
+                        label="New Title",
+                        source="param",
+                        editable=True,
+                        widget="text_input",
+                        placeholder="Leave blank to keep current title",
+                    ),
+                    DisplayField(
+                        key="start_time",
+                        label="New Start",
+                        source="param",
+                        editable=True,
+                        widget="datetime_picker",
+                        format_hint="RFC3339",
+                    ),
+                    DisplayField(
+                        key="end_time",
+                        label="New End",
+                        source="param",
+                        editable=True,
+                        widget="datetime_picker",
+                        format_hint="RFC3339",
+                    ),
+                    DisplayField(
+                        key="location",
+                        label="New Location",
+                        source="param",
+                        editable=True,
+                        widget="text_input",
+                    ),
+                    DisplayField(
+                        key="description",
+                        label="New Description",
+                        source="param",
+                        editable=True,
+                        widget="textarea",
+                    ),
+                    DisplayField(
+                        key="attendees",
+                        label="New Attendees",
+                        source="param",
+                        editable=True,
+                        widget="email_list",
+                    ),
+                    DisplayField(
+                        key="send_notifications",
+                        label="Notify Attendees",
+                        source="param",
+                        editable=True,
+                        widget="toggle",
+                    ),
+                ],
+                resolve=self._resolve_event_details,
+            ),
+
+            # ----------------------------------------------------------
+            # DELETE EVENT
+            # ----------------------------------------------------------
+            "delete_event": ToolDisplaySchema(
+                tool_name="delete_event",
+                display_name="Delete Calendar Event",
+                description="Permanently delete an event from your Google Calendar.",
+                fields=[
+                    DisplayField(
+                        key="event_name",
+                        label="Event",
+                        source="resolved",
+                        editable=False,
+                        widget="display_text",
+                    ),
+                    DisplayField(
+                        key="current_start",
+                        label="Start",
+                        source="resolved",
+                        editable=False,
+                        widget="display_datetime",
+                    ),
+                    DisplayField(
+                        key="current_end",
+                        label="End",
+                        source="resolved",
+                        editable=False,
+                        widget="display_datetime",
+                    ),
+                    DisplayField(
+                        key="send_notifications",
+                        label="Notify Attendees",
+                        source="param",
+                        editable=True,
+                        widget="toggle",
+                    ),
+                ],
+                resolve=self._resolve_event_details,
+            ),
+        }
     
     def register(self, mcp: FastMCP) -> None:
         """Register Google Calendar tools (write operations) with MCP server."""

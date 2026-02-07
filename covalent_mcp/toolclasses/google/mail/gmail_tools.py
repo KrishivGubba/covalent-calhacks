@@ -5,8 +5,12 @@ Exposes Gmail operations as MCP tools and resources for LLM agents.
 Token is managed by the server via OAuth flow - MCP reads token from database.
 """
 import json
-from typing import Optional, List
-from covalent_mcp.toolclasses.base import MCPToolModule
+from typing import Dict, Optional, List
+from covalent_mcp.toolclasses.base import (
+    MCPToolModule,
+    ToolDisplaySchema,
+    DisplayField,
+)
 from covalent_mcp.toolclasses.google.mail.gmail_client import GmailService
 from fastmcp import FastMCP
 
@@ -16,11 +20,11 @@ class GmailToolModule(MCPToolModule):
     Gmail tool module for email operations.
     
     Provides MCP tools for:
-    - Sending emails ✅
+    - Sending emails
     
     Provides MCP resources for:
-    - Listing messages ✅
-    - Getting message details ✅
+    - Listing messages
+    - Getting message details
     """
     
     def __init__(self):
@@ -33,6 +37,30 @@ class GmailToolModule(MCPToolModule):
             # GmailService reads token from database via get_credentials_from_db()
             self._client = GmailService()
         return self._client
+
+    def get_display_schemas(self) -> Dict[str, ToolDisplaySchema]:
+        """Return display schemas for Gmail tools."""
+        return {
+            "send_email": ToolDisplaySchema(
+                tool_name="send_email",
+                display_name="Send Email",
+                description="Send an email via Gmail.",
+                fields=[
+                    DisplayField(key="to", label="To", required=True, widget="text_input", placeholder="recipient@example.com"),
+                    DisplayField(key="subject", label="Subject", required=True, widget="text_input"),
+                    DisplayField(key="body", label="Body", required=True, widget="textarea", placeholder="Write your message..."),
+                    DisplayField(
+                        key="body_type", label="Format", widget="select",
+                        options=[
+                            {"value": "text/plain", "label": "Plain Text"},
+                            {"value": "text/html", "label": "HTML"},
+                        ],
+                    ),
+                    DisplayField(key="cc", label="CC", widget="text_input", placeholder="cc@example.com"),
+                    DisplayField(key="bcc", label="BCC", widget="text_input", placeholder="bcc@example.com"),
+                ],
+            ),
+        }
     
     def register(self, mcp: FastMCP) -> None:
         """Register Gmail tools (write operations) with MCP server."""

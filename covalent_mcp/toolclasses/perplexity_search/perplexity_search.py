@@ -1,14 +1,13 @@
 """
-Perplexity Search MCP Tools - Web search operations.
+Perplexity Search MCP Resources - Web search operations.
 
-Exposes Perplexity Search API as MCP tools for LLM agents.
-Registered as TOOLS (not resources) to avoid FastMCP query param issues.
+Exposes Perplexity Search API as MCP resources (read-only) for LLM agents.
 """
 import json
 import os
 import sys
 from pathlib import Path
-from typing import Optional, List
+from typing import Dict, Optional, List
 from covalent_mcp.toolclasses.base import MCPToolModule
 from covalent_mcp.toolclasses.perplexity_search.perplexity_search_client import PerplexitySearchClient
 from fastmcp import FastMCP
@@ -39,11 +38,13 @@ def _get_auth_token() -> Optional[str]:
 
 class PerplexitySearchToolModule(MCPToolModule):
     """
-    Perplexity Search tool module for web search operations.
+    Perplexity Search module for web search operations.
     
-    Provides MCP tools for:
+    All functions are registered as MCP **resources** (read-only).
+    
+    Provides MCP resources for:
     - Basic web search
-    - Regional web search  
+    - Regional web search
     - Advanced web search with filters
     """
     
@@ -57,19 +58,24 @@ class PerplexitySearchToolModule(MCPToolModule):
             auth_token = _get_auth_token()
             self.client = PerplexitySearchClient(auth_token=auth_token)
         return self.client
-    
+
     def register(self, mcp: FastMCP) -> None:
-        """Register Perplexity Search tools with MCP server."""
-        # Capture self for lazy client initialization in closures
+        """No tools - all search operations are resources (read-only)."""
+        pass
+    
+    def register_resources(self, mcp: FastMCP) -> None:
+        """Register Perplexity Search resources with MCP server."""
         tool_module = self
         
-        @mcp.tool()
+        @mcp.resource("perplexity://search/{query}")
         def search_web(query: str, max_results: int = 10) -> str:
             """
             Search the web using Perplexity Search API.
             
-            Use this tool to find current information, news, research, 
+            Use this resource to find current information, news, research, 
             or any real-time data from the internet.
+            
+            URI: perplexity://search/{query}
             
             Args:
                 query: Search query string (what to search for)
@@ -82,12 +88,14 @@ class PerplexitySearchToolModule(MCPToolModule):
             results = client.search(query=query, max_results=max_results)
             return json.dumps(results, indent=2, default=str)
         
-        @mcp.tool()
+        @mcp.resource("perplexity://search/{query}/region/{country}")
         def search_web_regional(query: str, country: str, max_results: int = 10) -> str:
             """
             Search the web with regional/country filtering.
             
             Use this for location-specific searches (e.g., news in a specific country).
+            
+            URI: perplexity://search/{query}/region/{country}
             
             Args:
                 query: Search query string
@@ -101,7 +109,7 @@ class PerplexitySearchToolModule(MCPToolModule):
             results = client.search(query=query, country=country, max_results=max_results)
             return json.dumps(results, indent=2, default=str)
         
-        @mcp.tool()
+        @mcp.resource("perplexity://search/advanced/{query}")
         def search_web_advanced(
             query: str,
             max_results: int = 10,
@@ -114,6 +122,8 @@ class PerplexitySearchToolModule(MCPToolModule):
             Advanced web search with multiple filters.
             
             Use this for specialized searches with domain filtering, recency, or academic mode.
+            
+            URI: perplexity://search/advanced/{query}
             
             Args:
                 query: Search query string
@@ -144,10 +154,6 @@ class PerplexitySearchToolModule(MCPToolModule):
             
             results = client.search(**search_params)
             return json.dumps(results, indent=2, default=str)
-    
-    def register_resources(self, mcp: FastMCP) -> None:
-        """No resources - using tools instead to avoid FastMCP query param issues."""
-        pass
 
 
 # Create module instance (required for registry pattern)

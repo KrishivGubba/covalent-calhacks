@@ -4,9 +4,13 @@ Filesystem MCP Tools - Local file and directory operations.
 Exposes filesystem operations as MCP tools for LLM agents.
 All operations are scoped to a configurable root (FILESYSTEM_ROOT or cwd).
 """
-from typing import Optional
+from typing import Dict, Optional
 
-from covalent_mcp.toolclasses.base import MCPToolModule
+from covalent_mcp.toolclasses.base import (
+    MCPToolModule,
+    ToolDisplaySchema,
+    DisplayField,
+)
 from covalent_mcp.toolclasses.filesystem.filesystem_client import FilesystemClient
 from fastmcp import FastMCP
 
@@ -33,6 +37,73 @@ class FilesystemToolModule(MCPToolModule):
         if self._client is None:
             self._client = FilesystemClient()
         return self._client
+
+    def get_display_schemas(self) -> Dict[str, ToolDisplaySchema]:
+        """Return display schemas for filesystem tools."""
+        return {
+            "read_file": ToolDisplaySchema(
+                tool_name="read_file",
+                display_name="Read File",
+                description="Read a local text file.",
+                fields=[
+                    DisplayField(key="path", label="File Path", required=True, widget="text_input"),
+                ],
+            ),
+            "write_file": ToolDisplaySchema(
+                tool_name="write_file",
+                display_name="Write File",
+                description="Write content to a local text file.",
+                fields=[
+                    DisplayField(key="path", label="File Path", required=True, widget="text_input"),
+                    DisplayField(key="content", label="Content", required=True, widget="textarea"),
+                    DisplayField(key="create_dirs", label="Create Parent Dirs", widget="toggle"),
+                ],
+            ),
+            "list_directory": ToolDisplaySchema(
+                tool_name="list_directory",
+                display_name="List Directory",
+                description="List the contents of a directory.",
+                fields=[
+                    DisplayField(key="path", label="Directory Path", widget="text_input", placeholder="."),
+                ],
+            ),
+            "create_directory": ToolDisplaySchema(
+                tool_name="create_directory",
+                display_name="Create Directory",
+                description="Create a new directory.",
+                fields=[
+                    DisplayField(key="path", label="Directory Path", required=True, widget="text_input"),
+                    DisplayField(key="parents", label="Create Parents", widget="toggle"),
+                ],
+            ),
+            "delete_path": ToolDisplaySchema(
+                tool_name="delete_path",
+                display_name="Delete Path",
+                description="Delete a file or directory.",
+                fields=[
+                    DisplayField(key="path", label="Path", required=True, widget="text_input"),
+                    DisplayField(key="recursive", label="Recursive", widget="toggle"),
+                ],
+            ),
+            "move_path": ToolDisplaySchema(
+                tool_name="move_path",
+                display_name="Move / Rename Path",
+                description="Move or rename a file or directory.",
+                fields=[
+                    DisplayField(key="src", label="Source Path", required=True, widget="text_input"),
+                    DisplayField(key="dst", label="Destination Path", required=True, widget="text_input"),
+                ],
+            ),
+            "copy_path": ToolDisplaySchema(
+                tool_name="copy_path",
+                display_name="Copy Path",
+                description="Copy a file or directory.",
+                fields=[
+                    DisplayField(key="src", label="Source Path", required=True, widget="text_input"),
+                    DisplayField(key="dst", label="Destination Path", required=True, widget="text_input"),
+                ],
+            ),
+        }
 
     def register(self, mcp: FastMCP) -> None:
         """Register filesystem tools with the MCP server."""
