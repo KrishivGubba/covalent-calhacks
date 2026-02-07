@@ -33,6 +33,9 @@ from action_executor import (
 
 app = Flask(__name__)
 CORS(app)
+print("Starting Flask app")
+print("hello krishvi gubba")
+print("random startup log")
 
 @app.before_request
 def start_timer():
@@ -1384,6 +1387,97 @@ def plan_action_endpoint():
             "proposed_action": plan_result["proposed_action"],
             "action_text": action_text,
             "context_data": research_info.get("context_gathered", collected_data),
+            "duration_ms": duration_ms
+        }), 200
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "duration_ms": duration_ms
+        }), 500
+
+
+@app.route("/plan_action_direct", methods=["POST"])
+def plan_action_direct_endpoint():
+    """
+    Direct research and planning endpoint - bypasses action_uuid lookup.
+    
+    Use this for testing or when you have raw action text and context.
+    
+    Body:
+        {
+            "action_text": "Send an email to ritesh...",
+            "context": "Ritesh's email is ritesh@example.com",
+            "skip_research": false (optional)
+        }
+    
+    Returns:
+        {
+            "status": "success" | "error",
+            "research": {...},
+            "proposed_action": {...}
+        }
+    """
+    start_time = time.perf_counter()
+    
+    try:
+        body = request.get_json()
+        action_text = body.get("action_text", "")
+        context = body.get("context", "")
+        skip_research = body.get("skip_research", False)
+        
+        if not action_text:
+            return jsonify({
+                "status": "error",
+                "error": "action_text is required"
+            }), 400
+        
+        print(f"📋 Planning action (direct): {action_text[:100]}...")
+        
+        # Run the research + planning async function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            if skip_research:
+                plan_result = loop.run_until_complete(
+                    plan_action(action_text, context)
+                )
+                research_info = {"resources_read": [], "context_gathered": context}
+            else:
+                result = loop.run_until_complete(
+                    research_and_plan(action_text, context)
+                )
+                plan_result = {
+                    "status": result["status"],
+                    "proposed_action": result["proposed_action"],
+                    "error": result.get("error")
+                }
+                research_info = result.get("research", {"resources_read": [], "context_gathered": context})
+        finally:
+            loop.close()
+        
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        
+        if plan_result["status"] == "error":
+            return jsonify({
+                "status": "error",
+                "error": plan_result["error"],
+                "research": research_info,
+                "duration_ms": duration_ms
+            }), 500
+        
+        return jsonify({
+            "status": "success",
+            "research": research_info,
+            "proposed_action": plan_result["proposed_action"],
+            "action_text": action_text,
+            "context_data": research_info.get("context_gathered", context),
             "duration_ms": duration_ms
         }), 200
         
