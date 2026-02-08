@@ -160,11 +160,24 @@ class ChatModel:
                     messages.append({"role": "system", "content": system_prompt})
                 messages.append({"role": "user", "content": prompt})
                 
-                response = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=messages,
-                    max_tokens=self.max_tokens
-                )
+                # Newer OpenAI models (o1, o3, gpt-5 series) use max_completion_tokens
+                # Older models (gpt-4, gpt-3.5) use max_tokens
+                # Check model name to determine which parameter to use
+                uses_completion_tokens = any(prefix in self.model_name.lower() 
+                                            for prefix in ["o1", "o3", "gpt-5"])
+                
+                if uses_completion_tokens:
+                    response = self.client.chat.completions.create(
+                        model=self.model_name,
+                        messages=messages,
+                        max_completion_tokens=self.max_tokens
+                    )
+                else:
+                    response = self.client.chat.completions.create(
+                        model=self.model_name,
+                        messages=messages,
+                        max_tokens=self.max_tokens
+                    )
                 return response.choices[0].message.content
             
         except Exception as e:
