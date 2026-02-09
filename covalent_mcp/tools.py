@@ -2,6 +2,8 @@
 MCP Tools Registry.
 
 This module imports all tool modules and registers them with the MCP server.
+It also builds a global display-schema registry used by the Flask server to
+resolve human-readable approval UIs for tool calls.
 
 To add a new tool module:
   1. Copy toolclasses/_template.py → toolclasses/my_tool.py
@@ -12,7 +14,8 @@ To add a new tool module:
   6. Import here: from mcp.toolclasses import my_tool_module
   7. Add to TOOL_MODULES list below
 """
-from covalent_mcp.toolclasses.base import MCPToolModule
+from typing import Dict, Optional
+from covalent_mcp.toolclasses.base import MCPToolModule, ToolDisplaySchema
 from fastmcp import FastMCP
 
 
@@ -37,6 +40,59 @@ TOOL_MODULES: list[MCPToolModule] = [
     notion_module,
 ]
 
+
+# =============================================================================
+# DISPLAY SCHEMA REGISTRY
+# =============================================================================
+
+# Global registry: tool_name -> ToolDisplaySchema
+# Built once at import time by collecting schemas from all modules.
+_DISPLAY_SCHEMA_REGISTRY: Dict[str, ToolDisplaySchema] = {}
+
+
+def _build_display_schema_registry() -> Dict[str, ToolDisplaySchema]:
+    """Collect display schemas from all tool modules into a single dict."""
+    registry: Dict[str, ToolDisplaySchema] = {}
+    for tool_module in TOOL_MODULES:
+        if not isinstance(tool_module, MCPToolModule):
+            continue
+        try:
+            schemas = tool_module.get_display_schemas()
+            for tool_name, schema in schemas.items():
+                if tool_name in registry:
+                    print(
+                        f"Warning: duplicate display schema for '{tool_name}', "
+                        f"overwritten by {tool_module.__class__.__name__}"
+                    )
+                registry[tool_name] = schema
+        except Exception as e:
+            print(f"Warning: failed to get display schemas from {tool_module.__class__.__name__}: {e}")
+    return registry
+
+
+def get_display_schema(tool_name: str) -> Optional[ToolDisplaySchema]:
+    """
+    Look up the display schema for a given tool name.
+
+    Returns None if no schema is registered (caller should fall back to raw params).
+    """
+    global _DISPLAY_SCHEMA_REGISTRY
+    if not _DISPLAY_SCHEMA_REGISTRY:
+        _DISPLAY_SCHEMA_REGISTRY = _build_display_schema_registry()
+    return _DISPLAY_SCHEMA_REGISTRY.get(tool_name)
+
+
+def get_all_display_schemas() -> Dict[str, ToolDisplaySchema]:
+    """Return the full display schema registry (tool_name -> schema)."""
+    global _DISPLAY_SCHEMA_REGISTRY
+    if not _DISPLAY_SCHEMA_REGISTRY:
+        _DISPLAY_SCHEMA_REGISTRY = _build_display_schema_registry()
+    return _DISPLAY_SCHEMA_REGISTRY
+
+
+# =============================================================================
+# TOOL REGISTRATION
+# =============================================================================
 
 def register_tools(mcp: FastMCP) -> None:
     """
@@ -65,3 +121,8 @@ def register_tools(mcp: FastMCP) -> None:
         
         # Register resources (optional - default implementation does nothing)
         tool_module.register_resources(mcp)
+
+    # Eagerly build the display schema registry so it's ready for the server
+    global _DISPLAY_SCHEMA_REGISTRY
+    _DISPLAY_SCHEMA_REGISTRY = _build_display_schema_registry()
+    print(f"📋 Display schemas registered for {len(_DISPLAY_SCHEMA_REGISTRY)} tools: {list(_DISPLAY_SCHEMA_REGISTRY.keys())}")

@@ -7,8 +7,12 @@ Token is managed by the server via OAuth flow - MCP reads token from database.
 import json
 import os
 from pathlib import Path
-from typing import Optional, List
-from covalent_mcp.toolclasses.base import MCPToolModule
+from typing import Dict, Optional, List
+from covalent_mcp.toolclasses.base import (
+    MCPToolModule,
+    ToolDisplaySchema,
+    DisplayField,
+)
 from covalent_mcp.toolclasses.github.github_client import GitHubClient
 from fastmcp import FastMCP
 
@@ -303,6 +307,92 @@ class GitHubToolModule(MCPToolModule):
                 "new_name": new_name
             }
     
+    def get_display_schemas(self) -> Dict[str, ToolDisplaySchema]:
+        """Return display schemas for GitHub tools."""
+        return {
+            "create_repo": ToolDisplaySchema(
+                tool_name="create_repo",
+                display_name="Create GitHub Repository",
+                description="Create a new GitHub repository.",
+                fields=[
+                    DisplayField(key="name", label="Repository Name", required=True, widget="text_input", placeholder="my-new-repo"),
+                    DisplayField(key="description", label="Description", widget="textarea", placeholder="A short description..."),
+                    DisplayField(key="private", label="Private", widget="toggle"),
+                    DisplayField(key="owner", label="Owner / Org", widget="text_input", placeholder="Leave blank for your account"),
+                    DisplayField(key="auto_init", label="Initialize with README", widget="toggle"),
+                    DisplayField(key="license_template", label="License", widget="text_input", placeholder="e.g. mit, apache-2.0"),
+                ],
+            ),
+            "create_repo_from_template": ToolDisplaySchema(
+                tool_name="create_repo_from_template",
+                display_name="Create Repo from Template",
+                description="Create a new repository from a template.",
+                fields=[
+                    DisplayField(key="template_owner", label="Template Owner", required=True, widget="text_input"),
+                    DisplayField(key="template_repo", label="Template Repo", required=True, widget="text_input"),
+                    DisplayField(key="name", label="New Repo Name", required=True, widget="text_input"),
+                    DisplayField(key="description", label="Description", widget="textarea"),
+                    DisplayField(key="private", label="Private", widget="toggle"),
+                ],
+            ),
+            "create_issue": ToolDisplaySchema(
+                tool_name="create_issue",
+                display_name="Create GitHub Issue",
+                description="Create a new issue in a GitHub repository.",
+                fields=[
+                    DisplayField(key="owner", label="Repo Owner", required=True, widget="text_input"),
+                    DisplayField(key="repo", label="Repository", required=True, widget="text_input"),
+                    DisplayField(key="title", label="Issue Title", required=True, widget="text_input"),
+                    DisplayField(key="body", label="Description", widget="textarea", placeholder="Describe the issue..."),
+                    DisplayField(key="labels", label="Labels", widget="email_list", placeholder="Add labels..."),
+                ],
+            ),
+            "create_pull_request": ToolDisplaySchema(
+                tool_name="create_pull_request",
+                display_name="Create Pull Request",
+                description="Open a new pull request.",
+                fields=[
+                    DisplayField(key="owner", label="Repo Owner", required=True, widget="text_input"),
+                    DisplayField(key="repo", label="Repository", required=True, widget="text_input"),
+                    DisplayField(key="title", label="PR Title", required=True, widget="text_input"),
+                    DisplayField(key="head", label="From Branch", required=True, widget="text_input"),
+                    DisplayField(key="base", label="Into Branch", required=True, widget="text_input", placeholder="main"),
+                    DisplayField(key="body", label="Description", widget="textarea"),
+                    DisplayField(key="draft", label="Draft PR", widget="toggle"),
+                ],
+            ),
+            "update_repo_description": ToolDisplaySchema(
+                tool_name="update_repo_description",
+                display_name="Update Repo Description",
+                description="Update a repository's description.",
+                fields=[
+                    DisplayField(key="owner", label="Repo Owner", required=True, widget="text_input"),
+                    DisplayField(key="repo", label="Repository", required=True, widget="text_input"),
+                    DisplayField(key="description", label="New Description", required=True, widget="textarea"),
+                ],
+            ),
+            "set_repo_topics": ToolDisplaySchema(
+                tool_name="set_repo_topics",
+                display_name="Set Repo Topics",
+                description="Set topic tags on a repository.",
+                fields=[
+                    DisplayField(key="owner", label="Repo Owner", required=True, widget="text_input"),
+                    DisplayField(key="repo", label="Repository", required=True, widget="text_input"),
+                    DisplayField(key="topics", label="Topics", widget="email_list", placeholder="Add topics..."),
+                ],
+            ),
+            "rename_default_branch": ToolDisplaySchema(
+                tool_name="rename_default_branch",
+                display_name="Rename Default Branch",
+                description="Rename the default branch of a repository.",
+                fields=[
+                    DisplayField(key="owner", label="Repo Owner", required=True, widget="text_input"),
+                    DisplayField(key="repo", label="Repository", required=True, widget="text_input"),
+                    DisplayField(key="new_name", label="New Branch Name", required=True, widget="text_input", placeholder="main"),
+                ],
+            ),
+        }
+
     def register_resources(self, mcp: FastMCP) -> None:
         """Register GitHub resources (read-only operations) with MCP server."""
         tool_module = self

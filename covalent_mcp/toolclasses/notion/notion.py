@@ -7,7 +7,11 @@ import json
 import os
 import sys
 from typing import Optional, List, Dict, Any
-from covalent_mcp.toolclasses.base import MCPToolModule
+from covalent_mcp.toolclasses.base import (
+    MCPToolModule,
+    ToolDisplaySchema,
+    DisplayField,
+)
 from covalent_mcp.toolclasses.notion.notion_client import NotionClient
 from fastmcp import FastMCP
 
@@ -67,6 +71,162 @@ class NotionToolModule(MCPToolModule):
             self.client = NotionClient(access_token=token)
         return self.client
     
+    # -----------------------------------------------------------------
+    # Resolve helpers
+    # -----------------------------------------------------------------
+
+    async def _resolve_page_title(self, params: dict) -> dict:
+        """Fetch page title from Notion so the UI shows a human-readable name."""
+        page_id = params.get("page_id", "")
+        if not page_id:
+            return {}
+        try:
+            client = self._ensure_client()
+            page = client.get_page(page_id)
+            return {"page_title": _extract_title(page)}
+        except Exception as e:
+            print(f"Warning: failed to resolve Notion page title for {page_id}: {e}")
+            return {"page_title": "(could not load page)"}
+
+    async def _resolve_database_title(self, params: dict) -> dict:
+        """Fetch database title from Notion."""
+        db_id = params.get("database_id", "")
+        if not db_id:
+            return {}
+        try:
+            client = self._ensure_client()
+            db = client.get_database(db_id)
+            return {"database_title": _extract_title(db)}
+        except Exception as e:
+            print(f"Warning: failed to resolve Notion database title for {db_id}: {e}")
+            return {"database_title": "(could not load database)"}
+
+    async def _resolve_parent_title(self, params: dict) -> dict:
+        """Resolve the parent page title for create operations."""
+        parent_id = params.get("parent_id") or params.get("parent_page_id", "")
+        if not parent_id:
+            return {}
+        try:
+            client = self._ensure_client()
+            page = client.get_page(parent_id)
+            return {"parent_title": _extract_title(page)}
+        except Exception:
+            return {"parent_title": "(could not load parent)"}
+
+    # -----------------------------------------------------------------
+    # Display schemas
+    # -----------------------------------------------------------------
+
+    def get_display_schemas(self) -> Dict[str, ToolDisplaySchema]:
+        """Return display schemas for Notion tools."""
+        return {
+            "notion_search": ToolDisplaySchema(
+                tool_name="notion_search",
+                display_name="Search Notion",
+                description="Search pages and databases in Notion.",
+                fields=[
+                    DisplayField(key="query", label="Search Query", widget="text_input", placeholder="Search by title..."),
+                    DisplayField(
+                        key="filter_type", label="Filter", widget="select",
+                        options=[
+                            {"value": "", "label": "All"},
+                            {"value": "page", "label": "Pages only"},
+                            {"value": "database", "label": "Databases only"},
+                        ],
+                    ),
+                ],
+            ),
+            "notion_create_page": ToolDisplaySchema(
+                tool_name="notion_create_page",
+                display_name="Create Notion Page",
+                description="Create a new page in Notion.",
+                fields=[
+                    DisplayField(key="parent_title", label="Parent", source="resolved", editable=False, widget="display_text"),
+                    DisplayField(
+                        key="parent_type", label="Parent Type", required=True, widget="select",
+                        options=[
+                            {"value": "page_id", "label": "Sub-page"},
+                            {"value": "database_id", "label": "Database entry"},
+                        ],
+                    ),
+                    DisplayField(key="title", label="Page Title", required=True, widget="text_input"),
+                    DisplayField(key="content", label="Content", widget="textarea", placeholder="Page body text..."),
+                    DisplayField(key="icon", label="Icon", widget="text_input", placeholder="Emoji, e.g. \U0001f4dd"),
+                ],
+                resolve=self._resolve_parent_title,
+            ),
+            "notion_update_page": ToolDisplaySchema(
+                tool_name="notion_update_page",
+                display_name="Update Notion Page",
+                description="Update properties or archive a Notion page.",
+                fields=[
+                    DisplayField(key="page_title", label="Page", source="resolved", editable=False, widget="display_text"),
+                    DisplayField(key="properties", label="Properties (JSON)", widget="textarea", placeholder='{"Status": {"select": {"name": "Done"}}}'),
+                    DisplayField(key="archived", label="Archive", widget="toggle"),
+                    DisplayField(key="icon", label="Icon", widget="text_input", placeholder="Emoji"),
+                ],
+                resolve=self._resolve_page_title,
+            ),
+            "notion_append_blocks": ToolDisplaySchema(
+                tool_name="notion_append_blocks",
+                display_name="Append to Notion Page",
+                description="Append content blocks to a Notion page.",
+                fields=[
+                    DisplayField(key="page_title", label="Page", source="resolved", editable=False, widget="display_text"),
+                    DisplayField(key="content", label="Content", required=True, widget="textarea"),
+                    DisplayField(
+                        key="block_type", label="Block Type", widget="select",
+                        options=[
+                            {"value": "paragraph", "label": "Paragraph"},
+                            {"value": "bulleted_list_item", "label": "Bulleted List"},
+                        ],
+                    ),
+                ],
+                resolve=self._resolve_page_title,
+            ),
+            "notion_delete_block": ToolDisplaySchema(
+                tool_name="notion_delete_block",
+                display_name="Delete Notion Block",
+                description="Delete a block from a Notion page.",
+                fields=[
+                    DisplayField(key="block_id", label="Block ID", required=True, editable=False, widget="display_text"),
+                ],
+            ),
+            "notion_query_database": ToolDisplaySchema(
+                tool_name="notion_query_database",
+                display_name="Query Notion Database",
+                description="Query a Notion database with filters.",
+                fields=[
+                    DisplayField(key="database_title", label="Database", source="resolved", editable=False, widget="display_text"),
+                    DisplayField(key="filter_json", label="Filter (JSON)", widget="textarea", placeholder="Optional filter conditions..."),
+                    DisplayField(key="sorts_json", label="Sort (JSON)", widget="textarea", placeholder='[{"property":"Name","direction":"ascending"}]'),
+                ],
+                resolve=self._resolve_database_title,
+            ),
+            "notion_create_database": ToolDisplaySchema(
+                tool_name="notion_create_database",
+                display_name="Create Notion Database",
+                description="Create a new database as a child of a page.",
+                fields=[
+                    DisplayField(key="parent_title", label="Parent Page", source="resolved", editable=False, widget="display_text"),
+                    DisplayField(key="title", label="Database Title", required=True, widget="text_input"),
+                    DisplayField(key="properties_json", label="Properties Schema (JSON)", required=True, widget="textarea",
+                                 placeholder='{"Name": {"title": {}}, "Status": {"select": {}}}'),
+                ],
+                resolve=self._resolve_parent_title,
+            ),
+            "notion_create_comment": ToolDisplaySchema(
+                tool_name="notion_create_comment",
+                display_name="Comment on Notion Page",
+                description="Add a comment to a Notion page.",
+                fields=[
+                    DisplayField(key="page_title", label="Page", source="resolved", editable=False, widget="display_text"),
+                    DisplayField(key="content", label="Comment", required=True, widget="textarea", placeholder="Write your comment..."),
+                ],
+                resolve=self._resolve_page_title,
+            ),
+        }
+
     def register(self, mcp: FastMCP) -> None:
         """Register Notion tools (write operations) with MCP server."""
         module = self  # Capture reference for closures

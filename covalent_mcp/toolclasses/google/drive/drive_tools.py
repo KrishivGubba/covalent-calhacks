@@ -5,8 +5,12 @@ Exposes Google Drive operations as MCP tools and resources for LLM agents.
 Token is managed by the server via OAuth flow - MCP reads token from database.
 """
 import json
-from typing import Optional
-from covalent_mcp.toolclasses.base import MCPToolModule
+from typing import Dict, Optional
+from covalent_mcp.toolclasses.base import (
+    MCPToolModule,
+    ToolDisplaySchema,
+    DisplayField,
+)
 from covalent_mcp.toolclasses.google.drive.drive_client import DriveService
 from fastmcp import FastMCP
 
@@ -16,13 +20,13 @@ class DriveToolModule(MCPToolModule):
     Google Drive tool module for file and folder operations.
     
     Provides MCP tools for:
-    - Creating/updating/deleting files and folders ✅
-    - Renaming and moving files ✅
+    - Creating/updating/deleting files and folders
+    - Renaming and moving files
     
     Provides MCP resources for:
-    - Listing folders ✅
-    - Getting file information ✅
-    - Getting file content ✅
+    - Listing folders
+    - Getting file information
+    - Getting file content
     """
     
     def __init__(self):
@@ -35,6 +39,95 @@ class DriveToolModule(MCPToolModule):
             # DriveService reads token from database via get_credentials_from_db()
             self._client = DriveService()
         return self._client
+
+    # -----------------------------------------------------------------
+    # Resolve helpers
+    # -----------------------------------------------------------------
+
+    async def _resolve_file_details(self, params: dict) -> dict:
+        """Fetch file metadata from Drive so the approval UI can show the file name."""
+        file_id = params.get("file_id", "")
+        if not file_id:
+            return {}
+        try:
+            client = self._ensure_client()
+            meta = client.get_file(file_id)
+            if not meta:
+                return {"file_name": "(file not found)"}
+            return {
+                "file_name": meta.get("name", "(unknown)"),
+                "file_type": meta.get("mimeType", ""),
+            }
+        except Exception as e:
+            print(f"Warning: failed to resolve Drive file details for {file_id}: {e}")
+            return {"file_name": "(could not load file info)"}
+
+    # -----------------------------------------------------------------
+    # Display schemas
+    # -----------------------------------------------------------------
+
+    def get_display_schemas(self) -> Dict[str, ToolDisplaySchema]:
+        """Return display schemas for Drive tools."""
+        return {
+            "create_text_file": ToolDisplaySchema(
+                tool_name="create_text_file",
+                display_name="Create File in Drive",
+                description="Create a new text file in Google Drive.",
+                fields=[
+                    DisplayField(key="name", label="File Name", required=True, widget="text_input", placeholder="notes.txt"),
+                    DisplayField(key="content", label="Content", required=True, widget="textarea"),
+                ],
+            ),
+            "update_text_file": ToolDisplaySchema(
+                tool_name="update_text_file",
+                display_name="Update File in Drive",
+                description="Update an existing text file in Google Drive.",
+                fields=[
+                    DisplayField(key="file_name", label="File", source="resolved", editable=False, widget="display_text"),
+                    DisplayField(key="name", label="New Name", widget="text_input", placeholder="Leave blank to keep current name"),
+                    DisplayField(key="content", label="New Content", required=True, widget="textarea"),
+                ],
+                resolve=self._resolve_file_details,
+            ),
+            "create_folder": ToolDisplaySchema(
+                tool_name="create_folder",
+                display_name="Create Folder in Drive",
+                description="Create a new folder in Google Drive.",
+                fields=[
+                    DisplayField(key="name", label="Folder Name", required=True, widget="text_input"),
+                ],
+            ),
+            "delete_file": ToolDisplaySchema(
+                tool_name="delete_file",
+                display_name="Delete File from Drive",
+                description="Move a file or folder to trash in Google Drive.",
+                fields=[
+                    DisplayField(key="file_name", label="File", source="resolved", editable=False, widget="display_text"),
+                    DisplayField(key="file_type", label="Type", source="resolved", editable=False, widget="display_text"),
+                ],
+                resolve=self._resolve_file_details,
+            ),
+            "rename_file": ToolDisplaySchema(
+                tool_name="rename_file",
+                display_name="Rename File in Drive",
+                description="Rename a file or folder in Google Drive.",
+                fields=[
+                    DisplayField(key="file_name", label="Current Name", source="resolved", editable=False, widget="display_text"),
+                    DisplayField(key="new_name", label="New Name", required=True, widget="text_input"),
+                ],
+                resolve=self._resolve_file_details,
+            ),
+            "move_file": ToolDisplaySchema(
+                tool_name="move_file",
+                display_name="Move File in Drive",
+                description="Move a file or folder to a different location.",
+                fields=[
+                    DisplayField(key="file_name", label="File", source="resolved", editable=False, widget="display_text"),
+                    DisplayField(key="destination_folder_id", label="Destination Folder ID", widget="text_input"),
+                ],
+                resolve=self._resolve_file_details,
+            ),
+        }
     
     def register(self, mcp: FastMCP) -> None:
         """Register Drive tools (write operations) with MCP server."""
