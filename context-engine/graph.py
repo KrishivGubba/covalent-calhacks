@@ -147,6 +147,7 @@ class Tree:
                 └── Approve Leave Requests
         
         KEY PRINCIPLES FROM THIS EXAMPLE:
+        - Nodes higher up in the tree are more general, while nodes lower down are more specific. For example, "Recruiting", "Academics", "Software Development" are all general categories while "Summer 2026", "Ritesh", "Hemant" are all specific items.
         - When you have a task with subtasks (e.g., "Summer 2026" interns → individual applicants like Ritesh), CREATE CHILD NODES
         - When you have parallel tasks of the same type (e.g., "Summer 2026" and "Fall 2026"), CREATE SIBLING NODES
         - When you have a category that contains multiple specific items (e.g., "Events" → "Online Webinar", "Career Fair"), use PARENT-CHILD relationships
