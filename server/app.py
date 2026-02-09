@@ -839,13 +839,24 @@ def google_disconnect():
 def google_refresh_token():
     """
     Refresh Google access token using the refresh token via Lambda.
-    Body: { "auth_token": "..." } - Auth0 token to authenticate with Lambda
+    Body: { "auth_token": "..." } - Auth0 token to authenticate with Lambda.
+    
+    If auth_token is not provided in the body, it will be auto-read from the
+    user_sessions table in the database (single-user desktop app).
     """
     body = request.get_json() or {}
     auth_token = body.get("auth_token")
     
+    # If no auth_token provided, try to read from user sessions DB
     if not auth_token:
-        return jsonify({"error": "auth_token is required"}), 400
+        sessions = auth_dao.get_all_sessions()
+        if sessions:
+            session = auth_dao.get_session(sessions[0]["user_id"])
+            if session:
+                auth_token = session.get("access_token")
+    
+    if not auth_token:
+        return jsonify({"error": "auth_token is required and no active session found"}), 400
     
     token_data = integration_dao.get_token("google")
     if not token_data:
@@ -1265,6 +1276,86 @@ def notion_disconnect():
     deleted = integration_dao.delete_token("notion")
     print(f"🔷 Notion disconnected (deleted={deleted})")
     return jsonify({"ok": True, "deleted": deleted > 0}), 200
+
+
+@app.route("/integrations/notion/refresh", methods=["POST"])
+def notion_refresh_token():
+    """
+    Refresh Notion access token using the refresh token via Lambda.
+    Body: { "auth_token": "..." } - Auth0 token to authenticate with Lambda.
+    
+    If auth_token is not provided in the body, it will be auto-read from the
+    user_sessions table in the database (single-user desktop app).
+    """
+    body = request.get_json() or {}
+    auth_token = body.get("auth_token")
+    
+    # If no auth_token provided, try to read from user sessions DB
+    if not auth_token:
+        sessions = auth_dao.get_all_sessions()
+        if sessions:
+            session = auth_dao.get_session(sessions[0]["user_id"])
+            if session:
+                auth_token = session.get("access_token")
+    
+    if not auth_token:
+        return jsonify({"error": "auth_token is required and no active session found"}), 400
+    
+    token_data = integration_dao.get_token("notion")
+    if not token_data:
+        return jsonify({"error": "Notion not connected"}), 404
+    
+    refresh_token = token_data.get("refresh_token")
+    if not refresh_token:
+        return jsonify({"error": "No refresh token available"}), 400
+    
+    try:
+        # Call Lambda to refresh the token (keeps client_secret secure)
+        token_response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/notion/refresh",
+            json={"refresh_token": refresh_token},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
+        )
+        new_token_data = token_response.json()
+        
+        if not token_response.ok or "error" in new_token_data:
+            err = new_token_data.get("error", "refresh_failed")
+            err_desc = new_token_data.get("error_description", "Token refresh failed")
+            print(f"🔷 Notion token refresh failed: {err} - {err_desc}")
+            return jsonify({"error": err, "error_description": err_desc}), 400
+        
+        new_access_token = new_token_data.get("access_token")
+        new_refresh_token = new_token_data.get("refresh_token")  # Notion may rotate
+        expires_in = new_token_data.get("expires_in", 3600)
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+        
+        # Update access token in DB
+        integration_dao.update_access_token("notion", new_access_token, expires_at)
+        
+        # If Notion rotated the refresh token, update that too
+        if new_refresh_token and new_refresh_token != refresh_token:
+            integration_dao.save_token(
+                provider="notion",
+                access_token=new_access_token,
+                refresh_token=new_refresh_token,
+                expires_at=expires_at,
+            )
+        
+        print(f"🔷 Notion access token refreshed")
+        
+        return jsonify({
+            "access_token": new_access_token,
+            "expires_at": expires_at,
+        }), 200
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "exception", "error_description": str(e)}), 500
 
 
 # ========================

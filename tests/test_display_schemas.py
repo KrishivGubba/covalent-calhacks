@@ -21,7 +21,7 @@ TEST_CASES = [
         {
             "action_text": "Create a calendar event called Team Standup tomorrow at 10am for 30 minutes",
             "context": "",
-            "skip_research": True,
+            "skip_research": False,
         },
     ),
     (
