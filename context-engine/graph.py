@@ -157,13 +157,14 @@ class Tree:
         string = """this query is part of a traversal algorithm. You will be given the current node's metadata
         and the metadata of its children. You will also be given a user query. Your task is to determine the following:"""
 
-    def trigger_action(self, action_uuid, action_override=None):
+    def get_action_context(self, action_uuid, action_override=None):
         """
-        Trigger an action by its UUID, gathering all relevant context data from the node 
-        and its ancestors into a single concatenated string.
+        Get context for an action by its UUID, gathering all relevant context data from the node 
+        and its ancestors into a single concatenated string. Does NOT execute the action.
         
         Args:
-            action_uuid (str): UUID of the action to trigger
+            action_uuid (str): UUID of the action to get context for
+            action_override (dict, optional): Override values for action_name, action_plan, action_prompt
             
         Returns:
             tuple: (action_text, collected_data_string) - The action description and all collected data as a single string
@@ -253,36 +254,7 @@ class Tree:
         print(f"Total data length: {len(collected_data_string)} characters")
         print(f"{'='*60}\n")
         
-        # ================================================================
-        # SPACE FOR ACTION EXECUTION
-        # ================================================================
-        # TODO: Add your action execution logic here
-        # You can call external functions/modules to perform the actual action
-        # 
-        # Example structure:
-        # if "send email" in action_text.lower():
-        #     from email_handler import send_email
-        #     result = send_email(action_text, collected_data_string)
-        # elif "schedule meeting" in action_text.lower():
-        #     from calendar_handler import schedule_meeting
-        #     result = schedule_meeting(action_text, collected_data_string)
-        # 
-        # For now, just print what would be executed
-        print("ACTION EXECUTION PLACEHOLDER")
-        print(f"🚀 [graph.py] About to call run_graph() with action_text: {action_text[:100]}...")
-        print(f"🚀 [graph.py] Data length being passed: {len(collected_data_string)} characters")
-        
-        # Run the graph and capture the result
-        result = "MCP not set up yet"
-        # result = asyncio.run(run_graph(action_text, collected_data_string))
-        print(f"✅ [graph.py] run_graph() call completed")
-        print(f"📊 [graph.py] Result from run_graph: {result}")
-        
-        print(f"Would execute: {action_text}")
-        print(f"With context data string of length: {len(collected_data_string)}")
-        # ================================================================
-        
-        return action_text, collected_data_string, result
+        return action_text, collected_data_string
 
 
 

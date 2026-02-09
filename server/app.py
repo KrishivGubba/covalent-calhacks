@@ -1398,138 +1398,140 @@ def graph_reset():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/trigger_action", methods=["POST"])
-def trigger_action():
-    import json
-    start_time = time.perf_counter()
-    action_uuid = ""
-    action_type = "unknown"
-    effective_action = None
-    node_uuid = None
-    
-    try:
-        body = request.get_json()
-        action_uuid = body.get("action_uuid", "")
-        action = body.get("action", "")
-        action_override = body.get("action_override")
-        
-        # Get action data to determine type and node
-        action_data = tree.dao.get_action_by_id(action_uuid)
-        if action_data:
-            _, action_name, action_plan, action_prompt, fetched_node_uuid = action_data
-            node_uuid = fetched_node_uuid
-            action_type = action_name or "unknown"
-            
-            if action_override:
-                effective_action = {
-                    "action_name": action_override.get("action_name") or action_name,
-                    "action_plan": action_override.get("action_plan") or action_plan,
-                    "action_prompt": action_override.get("action_prompt") or action_prompt
-                }
-                action_type = effective_action.get("action_name", action_type)
-            else:
-                effective_action = {
-                    "action_name": action_name,
-                    "action_plan": action_plan,
-                    "action_prompt": action_prompt
-                }
-        elif action_override:
-            effective_action = action_override
-            action_type = action_override.get("action_name", "unknown")
-
-        result = tree.trigger_action(action_uuid, action_override=action_override)
-        
-        # Calculate duration
-        duration_ms = int((time.perf_counter() - start_time) * 1000)
-        
-        # result is a tuple: (action_text, collected_data_string, graph_output)
-        if result and len(result) >= 3:
-            action_text, collected_data, graph_output = result
-            
-            # Convert graph_output to JSON-serializable format
-            # graph_output may be a dict (real run) or a str (placeholder/error message)
-            serializable_output = {}
-            if graph_output:
-                if isinstance(graph_output, dict):
-                    for key, value in graph_output.items():
-                        # Handle Pydantic models and other non-serializable objects
-                        if hasattr(value, 'dict'):
-                            serializable_output[key] = value.dict()
-                        elif hasattr(value, '__dict__'):
-                            serializable_output[key] = value.__dict__
-                        elif isinstance(value, list):
-                            serializable_output[key] = [
-                                item.dict() if hasattr(item, 'dict') else 
-                                item.__dict__ if hasattr(item, '__dict__') else 
-                                str(item) for item in value
-                            ]
-                        else:
-                            serializable_output[key] = str(value)
-                else:
-                    # Placeholder or string result (e.g. "MCP not set up yet")
-                    serializable_output["message"] = str(graph_output)
-            
-            # Log successful action to history
-            try:
-                tree.dao.insert_action_history(
-                    action_uuid=action_uuid,
-                    action_type=action_type,
-                    action_data=json.dumps(effective_action) if effective_action else None,
-                    node_uuid=node_uuid,
-                    status="completed",
-                    result=json.dumps(serializable_output) if serializable_output else None,
-                    error_message=None,
-                    duration_ms=duration_ms
-                )
-            except Exception as log_err:
-                print(f"⚠️ Failed to log action history: {log_err}")
-            
-            return jsonify({
-                "message": "Action triggered successfully",
-                "action_text": action_text,
-                "graph_output": serializable_output,
-                "effective_action": effective_action
-            }), 200
-        else:
-            # Log action with no result
-            try:
-                tree.dao.insert_action_history(
-                    action_uuid=action_uuid,
-                    action_type=action_type,
-                    action_data=json.dumps(effective_action) if effective_action else None,
-                    node_uuid=node_uuid,
-                    status="completed",
-                    result=None,
-                    error_message="No result returned",
-                    duration_ms=duration_ms
-                )
-            except Exception as log_err:
-                print(f"⚠️ Failed to log action history: {log_err}")
-            
-            return jsonify({"message": "Action triggered but no result returned"}), 200
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        
-        # Calculate duration even for failed actions
-        duration_ms = int((time.perf_counter() - start_time) * 1000)
-        
-        # Log failed action to history
-        try:
-            tree.dao.insert_action_history(
-                action_uuid=action_uuid,
-                action_type=action_type,
-                action_data=json.dumps(effective_action) if effective_action else None,
-                node_uuid=node_uuid,
-                status="failed",
-                result=None,
-                error_message=str(e),
-                duration_ms=duration_ms
-            )
-        except Exception as log_err:
-            print(f"⚠️ Failed to log action history: {log_err}")
-        
-        return jsonify({"error": str(e)}), 500
+# DEPRECATED: /trigger_action endpoint is no longer used.
+# New flow: frontend calls /plan_action -> user approves/edits -> /execute_action
+# @app.route("/trigger_action", methods=["POST"])
+# def trigger_action():
+#     import json
+#     start_time = time.perf_counter()
+#     action_uuid = ""
+#     action_type = "unknown"
+#     effective_action = None
+#     node_uuid = None
+#     
+#     try:
+#         body = request.get_json()
+#         action_uuid = body.get("action_uuid", "")
+#         action = body.get("action", "")
+#         action_override = body.get("action_override")
+#         
+#         # Get action data to determine type and node
+#         action_data = tree.dao.get_action_by_id(action_uuid)
+#         if action_data:
+#             _, action_name, action_plan, action_prompt, fetched_node_uuid = action_data
+#             node_uuid = fetched_node_uuid
+#             action_type = action_name or "unknown"
+#             
+#             if action_override:
+#                 effective_action = {
+#                     "action_name": action_override.get("action_name") or action_name,
+#                     "action_plan": action_override.get("action_plan") or action_plan,
+#                     "action_prompt": action_override.get("action_prompt") or action_prompt
+#                 }
+#                 action_type = effective_action.get("action_name", action_type)
+#             else:
+#                 effective_action = {
+#                     "action_name": action_name,
+#                     "action_plan": action_plan,
+#                     "action_prompt": action_prompt
+#                 }
+#         elif action_override:
+#             effective_action = action_override
+#             action_type = action_override.get("action_name", "unknown")
+# 
+#         result = tree.trigger_action(action_uuid, action_override=action_override)
+#         
+#         # Calculate duration
+#         duration_ms = int((time.perf_counter() - start_time) * 1000)
+#         
+#         # result is a tuple: (action_text, collected_data_string, graph_output)
+#         if result and len(result) >= 3:
+#             action_text, collected_data, graph_output = result
+#             
+#             # Convert graph_output to JSON-serializable format
+#             # graph_output may be a dict (real run) or a str (placeholder/error message)
+#             serializable_output = {}
+#             if graph_output:
+#                 if isinstance(graph_output, dict):
+#                     for key, value in graph_output.items():
+#                         # Handle Pydantic models and other non-serializable objects
+#                         if hasattr(value, 'dict'):
+#                             serializable_output[key] = value.dict()
+#                         elif hasattr(value, '__dict__'):
+#                             serializable_output[key] = value.__dict__
+#                         elif isinstance(value, list):
+#                             serializable_output[key] = [
+#                                 item.dict() if hasattr(item, 'dict') else 
+#                                 item.__dict__ if hasattr(item, '__dict__') else 
+#                                 str(item) for item in value
+#                             ]
+#                         else:
+#                             serializable_output[key] = str(value)
+#                 else:
+#                     # Placeholder or string result (e.g. "MCP not set up yet")
+#                     serializable_output["message"] = str(graph_output)
+#             
+#             # Log successful action to history
+#             try:
+#                 tree.dao.insert_action_history(
+#                     action_uuid=action_uuid,
+#                     action_type=action_type,
+#                     action_data=json.dumps(effective_action) if effective_action else None,
+#                     node_uuid=node_uuid,
+#                     status="completed",
+#                     result=json.dumps(serializable_output) if serializable_output else None,
+#                     error_message=None,
+#                     duration_ms=duration_ms
+#                 )
+#             except Exception as log_err:
+#                 print(f"⚠️ Failed to log action history: {log_err}")
+#             
+#             return jsonify({
+#                 "message": "Action triggered successfully",
+#                 "action_text": action_text,
+#                 "graph_output": serializable_output,
+#                 "effective_action": effective_action
+#             }), 200
+#         else:
+#             # Log action with no result
+#             try:
+#                 tree.dao.insert_action_history(
+#                     action_uuid=action_uuid,
+#                     action_type=action_type,
+#                     action_data=json.dumps(effective_action) if effective_action else None,
+#                     node_uuid=node_uuid,
+#                     status="completed",
+#                     result=None,
+#                     error_message="No result returned",
+#                     duration_ms=duration_ms
+#                 )
+#             except Exception as log_err:
+#                 print(f"⚠️ Failed to log action history: {log_err}")
+#             
+#             return jsonify({"message": "Action triggered but no result returned"}), 200
+#     except Exception as e:
+#         import traceback
+#         traceback.print_exc()
+#         
+#         # Calculate duration even for failed actions
+#         duration_ms = int((time.perf_counter() - start_time) * 1000)
+#         
+#         # Log failed action to history
+#         try:
+#             tree.dao.insert_action_history(
+#                 action_uuid=action_uuid,
+#                 action_type=action_type,
+#                 action_data=json.dumps(effective_action) if effective_action else None,
+#                 node_uuid=node_uuid,
+#                 status="failed",
+#                 result=None,
+#                 error_message=str(e),
+#                 duration_ms=duration_ms
+#             )
+#         except Exception as log_err:
+#             print(f"⚠️ Failed to log action history: {log_err}")
+#         
+#         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/plan_action", methods=["POST"])
@@ -1538,7 +1540,7 @@ def plan_action_endpoint():
     Research and plan an action using MCP tools - Phases 0+1 of three-phase execution.
     
     This endpoint:
-    1. Takes action text and context from trigger_action
+    1. Takes action text and context from get_action_context (traverses tree, returns node data & parental chain)
     2. RESEARCH: Reads relevant resources to gather additional context
     3. PLANNING: Uses semantic tool routing to find relevant tools
     4. Has agent propose ONE tool call with parameters
@@ -1575,8 +1577,8 @@ def plan_action_endpoint():
         action_override = body.get("action_override")
         skip_research = body.get("skip_research", False)
         
-        # Get action context using existing trigger_action logic
-        action_text, collected_data, _ = tree.trigger_action(action_uuid, action_override=action_override)
+        # Get action context (traverses tree and returns node data with parental chain)
+        action_text, collected_data = tree.get_action_context(action_uuid, action_override=action_override)
         
         if not action_text:
             return jsonify({
