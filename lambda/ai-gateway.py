@@ -18,6 +18,7 @@ Endpoints:
     
     Notion OAuth (protected by Auth0 JWT):
     POST /integrations/notion/exchange - Exchange auth code for tokens
+    POST /integrations/notion/refresh - Refresh access token
 
 Expected request body for /invoke:
 {
@@ -700,6 +701,82 @@ def handle_notion_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
         return create_response(500, {"error": "internal_error", "error_description": str(e)})
 
 
+def handle_notion_refresh(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Refresh Notion access token using the refresh token.
+    
+    Body: {
+        "refresh_token": "the_refresh_token"
+    }
+    
+    Note: Notion uses Basic Auth (base64 of client_id:client_secret) for token refresh,
+    same as token exchange.
+    """
+    if not NOTION_CLIENT_ID or not NOTION_CLIENT_SECRET:
+        return create_response(500, {"error": "Notion OAuth not configured on server (missing client_id or client_secret)"})
+    
+    refresh_token = body.get("refresh_token")
+    
+    if not refresh_token:
+        return create_response(400, {"error": "refresh_token is required"})
+    
+    # Refresh the token
+    # Notion requires Basic Auth: base64(client_id:client_secret)
+    token_data = json.dumps({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+    }).encode("utf-8")
+    
+    credentials = base64.b64encode(f"{NOTION_CLIENT_ID}:{NOTION_CLIENT_SECRET}".encode()).decode()
+    
+    try:
+        req = urllib.request.Request(
+            "https://api.notion.com/v1/oauth/token",
+            data=token_data,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Basic {credentials}",
+            },
+            method="POST",
+        )
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        
+        # Check for error in response
+        if "error" in result:
+            logger.error(f"Notion token refresh error: {result}")
+            return create_response(400, {
+                "error": result.get("error", "refresh_failed"),
+                "error_description": result.get("message", "Token refresh failed"),
+            })
+        
+        logger.info("Notion token refresh successful")
+        return create_response(200, {
+            "access_token": result.get("access_token"),
+            "refresh_token": result.get("refresh_token"),  # Notion may rotate refresh tokens
+            "expires_in": result.get("expires_in"),
+            "token_type": result.get("token_type"),
+            "bot_id": result.get("bot_id"),
+            "workspace_id": result.get("workspace_id"),
+        })
+        
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        logger.error(f"Notion token refresh failed: {e.code} - {error_body}")
+        try:
+            error_json = json.loads(error_body)
+            return create_response(400, {
+                "error": error_json.get("error", "refresh_failed"),
+                "error_description": error_json.get("message", "Token refresh failed"),
+            })
+        except json.JSONDecodeError:
+            return create_response(400, {"error": "refresh_failed", "error_description": error_body})
+    except Exception as e:
+        logger.error(f"Notion token refresh error: {e}")
+        return create_response(500, {"error": "internal_error", "error_description": str(e)})
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Main Lambda handler.
@@ -798,6 +875,20 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 return create_response(400, {"error": "Invalid JSON in request body"})
         
         return handle_notion_exchange(body)
+    
+    # Notion OAuth token refresh
+    if path == "/integrations/notion/refresh" or path.endswith("/integrations/notion/refresh"):
+        if http_method != "POST":
+            return create_response(405, {"error": "Method not allowed. Use POST."})
+        
+        body = event.get("body", "{}")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except json.JSONDecodeError:
+                return create_response(400, {"error": "Invalid JSON in request body"})
+        
+        return handle_notion_refresh(body)
     
     # Default: treat as invoke for backward compatibility
     if http_method == "POST":

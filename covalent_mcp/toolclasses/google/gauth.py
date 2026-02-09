@@ -2,16 +2,23 @@
 Google OAuth 2.0 Authentication.
 
 Provides utilities for Google API authentication:
-- get_credentials_from_db(): Get credentials from the integration_tokens database (preferred)
+- get_credentials_from_db(): Get credentials from the integration_tokens database (preferred).
+  Automatically refreshes expired tokens via the Lambda gateway (which holds the client_secret).
 - GoogleAuth: Legacy installed app flow (for standalone use only)
 
-Token is managed by the server via OAuth flow - MCP just reads from the database.
+Architecture:
+  - Client side (MCP/desktop) NEVER holds the client_secret.
+  - Access tokens + refresh tokens are stored in graph.db (integration_tokens table).
+  - When the access token expires, refresh happens via:
+      gauth.py -> Lambda (has client_secret) -> Google token endpoint
+  - The Lambda call is authenticated with the user's Auth0 JWT (read from user_sessions table).
 """
 import json
 import os
 import sys
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 try:
@@ -39,6 +46,9 @@ DEFAULT_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email",
 ]
 
+# Lambda Gateway URL for secure token operations (client_secret lives here)
+LAMBDA_GATEWAY_URL = os.getenv("LAMBDA_GATEWAY_URL", "https://gtfrn4otol.execute-api.us-east-1.amazonaws.com")
+
 
 def _get_db_path() -> Path:
     """Get path to the graph.db database."""
@@ -59,9 +69,185 @@ def _get_db_path() -> Path:
     )
 
 
+def _is_token_expired(expires_at: Optional[str]) -> bool:
+    """
+    Check if a token is expired (with 5-minute buffer for safety).
+    
+    Returns True if the token is expired or will expire within 5 minutes.
+    Returns False if no expiry info is available (optimistic).
+    """
+    if not expires_at:
+        return False  # No expiry info — assume still valid
+    try:
+        expires = datetime.fromisoformat(expires_at)
+        return datetime.utcnow() > (expires - timedelta(minutes=5))
+    except (ValueError, TypeError):
+        return False
+
+
+def _get_auth0_jwt() -> Optional[str]:
+    """
+    Get the Auth0 access token (JWT) from the user_sessions table.
+    
+    This is a single-user desktop app, so we grab the first available session.
+    The JWT is needed to authenticate calls to the Lambda gateway.
+    """
+    from server.auth_dao import AuthDAO
+    
+    db_path = _get_db_path()
+    auth_dao = AuthDAO(str(db_path))
+    
+    sessions = auth_dao.get_all_sessions()
+    if not sessions:
+        return None
+    
+    # get_all_sessions returns limited fields; use get_session for full data
+    user_id = sessions[0]["user_id"]
+    session = auth_dao.get_session(user_id)
+    if not session:
+        return None
+    
+    return session.get("access_token")
+
+
+def _refresh_google_token_via_lambda(integration_dao=None) -> str:
+    """
+    Refresh the Google access token by calling the Lambda gateway.
+    
+    Flow:
+      1. Read refresh_token from integration_tokens DB
+      2. Read Auth0 JWT from user_sessions DB (to authenticate with Lambda)
+      3. POST to Lambda /integrations/google/refresh (Lambda has the client_secret)
+      4. Lambda calls Google's token endpoint and returns new access_token
+      5. Update integration_tokens DB with the new access_token + expires_at
+    
+    Returns:
+        The new access_token string.
+    
+    Raises:
+        RuntimeError: If refresh fails for any reason.
+    """
+    import requests as http_requests
+    
+    if integration_dao is None:
+        from server.integration_dao import IntegrationDAO
+        db_path = _get_db_path()
+        integration_dao = IntegrationDAO(str(db_path))
+    
+    # 1. Get refresh token from DB
+    token_data = integration_dao.get_token("google")
+    if not token_data:
+        raise RuntimeError("Google not connected. Please authenticate via the server's OAuth flow first.")
+    
+    refresh_token = token_data.get("refresh_token")
+    if not refresh_token:
+        raise RuntimeError(
+            "No Google refresh token available. "
+            "Please disconnect and re-authenticate Google to get a new refresh token."
+        )
+    
+    # 2. Get Auth0 JWT for Lambda authentication
+    auth_jwt = _get_auth0_jwt()
+    if not auth_jwt:
+        raise RuntimeError(
+            "No Auth0 session found. Please log in first so we can "
+            "authenticate the token refresh request."
+        )
+    
+    # 3. Call Lambda to refresh the token (client_secret is in Lambda's env)
+    try:
+        response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/google/refresh",
+            json={"refresh_token": refresh_token},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_jwt}",
+            },
+            timeout=15,
+        )
+        result = response.json()
+    except Exception as e:
+        raise RuntimeError(f"Failed to call Lambda for Google token refresh: {e}")
+    
+    if not response.ok or "error" in result:
+        err = result.get("error", "refresh_failed")
+        err_desc = result.get("error_description", "Token refresh failed")
+        raise RuntimeError(f"Google token refresh failed: {err} - {err_desc}")
+    
+    # 4. Extract new token data
+    new_access_token = result.get("access_token")
+    if not new_access_token:
+        raise RuntimeError("Lambda returned success but no access_token in response")
+    
+    expires_in = result.get("expires_in", 3600)
+    expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+    
+    # 5. Update DB with new access token
+    integration_dao.update_access_token("google", new_access_token, expires_at)
+    print(f"Google access token refreshed successfully (expires in {expires_in}s)")
+    
+    return new_access_token
+
+
+def get_credentials_from_db() -> Credentials:
+    """
+    Get Google credentials from the integration_tokens database.
+    
+    This is the preferred method for MCP tools. The server manages the OAuth flow
+    and stores tokens in the database. If the access token is expired, it is
+    automatically refreshed via the Lambda gateway (which holds the client_secret
+    securely — no secrets are stored client-side).
+    
+    Returns:
+        Credentials object ready for use with Google APIs
+        
+    Raises:
+        RuntimeError: If no Google token found in database or refresh fails
+        FileNotFoundError: If database not found
+    """
+    # Import here to avoid circular imports
+    from server.integration_dao import IntegrationDAO
+    
+    db_path = _get_db_path()
+    dao = IntegrationDAO(str(db_path))
+    
+    # Get token from database
+    token_data = dao.get_token("google")
+    if not token_data:
+        raise RuntimeError(
+            "No Google token found in database. "
+            "Please authenticate via the server's OAuth flow first."
+        )
+    
+    access_token = token_data.get("access_token")
+    
+    if not access_token:
+        raise RuntimeError("Google access_token not found in database")
+    
+    # Check if token is expired and refresh if needed
+    expires_at = token_data.get("expires_at")
+    if _is_token_expired(expires_at):
+        print("Google access token expired or expiring soon, refreshing via Lambda...")
+        access_token = _refresh_google_token_via_lambda(dao)
+    
+    # Create Credentials object with just the access token.
+    # No client_id/client_secret — refresh is handled by our Lambda pipeline,
+    # not by the google-auth library's built-in refresh mechanism.
+    creds = Credentials(token=access_token)
+    
+    return creds
+
+
+# =============================================================================
+# LEGACY: File-based credential helpers (for standalone/local dev use only)
+# =============================================================================
+
 def load_oauth_secrets(secrets_path: Optional[Path] = None) -> Dict[str, Any]:
     """
     Load OAuth secrets from oauth_secrets.json file.
+    
+    LEGACY: Only used by GoogleAuth installed app flow for local development.
+    Production code uses get_credentials_from_db() which never touches secrets.
     
     Args:
         secrets_path: Path to oauth_secrets.json (defaults to oauth_secrets.json in google/ directory)
@@ -97,68 +283,10 @@ def load_oauth_secrets(secrets_path: Optional[Path] = None) -> Dict[str, Any]:
     }
 
 
-def get_credentials_from_db() -> Credentials:
-    """
-    Get Google credentials from the integration_tokens database.
-    
-    This is the preferred method for MCP tools - the server manages the OAuth flow
-    and stores tokens in the database. MCP just reads them.
-    
-    Returns:
-        Credentials object ready for use with Google APIs
-        
-    Raises:
-        RuntimeError: If no Google token found in database
-        FileNotFoundError: If database or oauth_secrets.json not found
-    """
-    # Import here to avoid circular imports
-    from server.integration_dao import IntegrationDAO
-    
-    db_path = _get_db_path()
-    dao = IntegrationDAO(str(db_path))
-    
-    # Get token from database
-    token_data = dao.get_token("google")
-    if not token_data:
-        raise RuntimeError(
-            "No Google token found in database. "
-            "Please authenticate via the server's OAuth flow first."
-        )
-    
-    access_token = token_data.get("access_token")
-    refresh_token = token_data.get("refresh_token")
-    
-    if not access_token:
-        raise RuntimeError("Google access_token not found in database")
-    
-    # Get client credentials from oauth_secrets.json
-    secrets = load_oauth_secrets()
-    client_id = secrets["client_id"]
-    client_secret = secrets["client_secret"]
-    
-    # Create Credentials object
-    creds = Credentials(
-        token=access_token,
-        refresh_token=refresh_token,
-        token_uri=GOOGLE_TOKEN_URI,
-        client_id=client_id,
-        client_secret=client_secret,
-        scopes=DEFAULT_SCOPES,
-    )
-    
-    return creds
-
-
 def get_stored_credentials(user_id: str = "default", credentials_path: Optional[Path] = None) -> Optional[Credentials]:
     """
-    Get stored OAuth credentials for a user.
-    
-    Args:
-        user_id: User identifier (default: "default")
-        credentials_path: Path to store credentials (defaults to google_credentials.json in google/ directory)
-    
-    Returns:
-        Credentials object if found and valid, None otherwise
+    LEGACY: Get stored OAuth credentials from local file.
+    Production code uses get_credentials_from_db() instead.
     """
     if credentials_path is None:
         credentials_path = Path(__file__).parent / "google_credentials.json"
@@ -188,11 +316,8 @@ def get_stored_credentials(user_id: str = "default", credentials_path: Optional[
 
 def store_credentials(creds: Credentials, credentials_path: Optional[Path] = None) -> None:
     """
-    Store OAuth credentials to file.
-    
-    Args:
-        creds: Credentials object to store
-        credentials_path: Path to store credentials (defaults to google_credentials.json in google/ directory)
+    LEGACY: Store OAuth credentials to local file.
+    Production code uses the database (integration_tokens table) instead.
     """
     if credentials_path is None:
         credentials_path = Path(__file__).parent / "google_credentials.json"
