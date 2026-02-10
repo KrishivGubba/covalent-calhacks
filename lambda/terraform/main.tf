@@ -123,9 +123,33 @@ variable "perplexity_api_key" {
   sensitive   = true
 }
 
+variable "default_budget_limit" {
+  description = "Default per-user budget limit in USD"
+  type        = number
+  default     = 10.00
+}
+
 # Data sources
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
+
+# ============================================
+# DynamoDB table for per-user budget tracking
+# ============================================
+resource "aws_dynamodb_table" "user_budgets" {
+  name         = "covalent-user-budgets-${var.environment}"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "user_id"
+
+  attribute {
+    name = "user_id"
+    type = "S"
+  }
+
+  tags = {
+    Name = "covalent-user-budgets-${var.environment}"
+  }
+}
 
 # IAM Role for Lambda
 resource "aws_iam_role" "lambda_role" {
@@ -182,6 +206,28 @@ resource "aws_iam_role_policy" "bedrock_policy" {
   })
 }
 
+# DynamoDB policy for budget tracking (AI Gateway)
+resource "aws_iam_role_policy" "dynamodb_policy" {
+  name = "dynamodb-budget-access"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DynamoDBBudget"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem"
+        ]
+        Resource = aws_dynamodb_table.user_budgets.arn
+      }
+    ]
+  })
+}
+
 # CloudWatch Logs policy
 resource "aws_iam_role_policy_attachment" "lambda_logs" {
   role       = aws_iam_role.lambda_role.name
@@ -218,6 +264,9 @@ resource "aws_lambda_function" "ai_gateway" {
       # Notion OAuth (for secure token exchange)
       NOTION_CLIENT_ID     = var.notion_client_id
       NOTION_CLIENT_SECRET = var.notion_client_secret
+      # Budget tracking
+      BUDGET_TABLE_NAME    = aws_dynamodb_table.user_budgets.name
+      DEFAULT_BUDGET_LIMIT = tostring(var.default_budget_limit)
     }
   }
   
@@ -381,6 +430,28 @@ resource "aws_iam_role" "perplexity_lambda_role" {
   })
 }
 
+# DynamoDB policy for budget tracking (Perplexity Gateway)
+resource "aws_iam_role_policy" "perplexity_dynamodb_policy" {
+  name = "dynamodb-budget-access"
+  role = aws_iam_role.perplexity_lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DynamoDBBudget"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem"
+        ]
+        Resource = aws_dynamodb_table.user_budgets.arn
+      }
+    ]
+  })
+}
+
 # CloudWatch Logs policy for Perplexity Lambda
 resource "aws_iam_role_policy_attachment" "perplexity_lambda_logs" {
   role       = aws_iam_role.perplexity_lambda_role.name
@@ -406,6 +477,9 @@ resource "aws_lambda_function" "perplexity_gateway" {
       # Auth0 JWT verification (same as ai-gateway)
       AUTH0_DOMAIN   = var.auth0_domain
       AUTH0_AUDIENCE = var.auth0_audience
+      # Budget tracking
+      BUDGET_TABLE_NAME    = aws_dynamodb_table.user_budgets.name
+      DEFAULT_BUDGET_LIMIT = tostring(var.default_budget_limit)
     }
   }
   
@@ -557,4 +631,9 @@ output "perplexity_api_gateway_url" {
 output "perplexity_lambda_role_arn" {
   description = "Perplexity Gateway Lambda IAM role ARN"
   value       = aws_iam_role.perplexity_lambda_role.arn
+}
+
+output "budget_table_name" {
+  description = "DynamoDB table name for user budget tracking"
+  value       = aws_dynamodb_table.user_budgets.name
 }
