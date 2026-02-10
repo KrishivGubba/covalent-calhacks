@@ -147,6 +147,7 @@ class Tree:
                 └── Approve Leave Requests
         
         KEY PRINCIPLES FROM THIS EXAMPLE:
+        - Nodes higher up in the tree are more general, while nodes lower down are more specific. For example, "Recruiting", "Academics", "Software Development" are all general categories while "Summer 2026", "Ritesh", "Hemant" are all specific items.
         - When you have a task with subtasks (e.g., "Summer 2026" interns → individual applicants like Ritesh), CREATE CHILD NODES
         - When you have parallel tasks of the same type (e.g., "Summer 2026" and "Fall 2026"), CREATE SIBLING NODES
         - When you have a category that contains multiple specific items (e.g., "Events" → "Online Webinar", "Career Fair"), use PARENT-CHILD relationships
@@ -156,13 +157,14 @@ class Tree:
         string = """this query is part of a traversal algorithm. You will be given the current node's metadata
         and the metadata of its children. You will also be given a user query. Your task is to determine the following:"""
 
-    def trigger_action(self, action_uuid, action_override=None):
+    def get_action_context(self, action_uuid, action_override=None):
         """
-        Trigger an action by its UUID, gathering all relevant context data from the node 
-        and its ancestors into a single concatenated string.
+        Get context for an action by its UUID, gathering all relevant context data from the node 
+        and its ancestors into a single concatenated string. Does NOT execute the action.
         
         Args:
-            action_uuid (str): UUID of the action to trigger
+            action_uuid (str): UUID of the action to get context for
+            action_override (dict, optional): Override values for action_name, action_plan, action_prompt
             
         Returns:
             tuple: (action_text, collected_data_string) - The action description and all collected data as a single string
@@ -252,36 +254,7 @@ class Tree:
         print(f"Total data length: {len(collected_data_string)} characters")
         print(f"{'='*60}\n")
         
-        # ================================================================
-        # SPACE FOR ACTION EXECUTION
-        # ================================================================
-        # TODO: Add your action execution logic here
-        # You can call external functions/modules to perform the actual action
-        # 
-        # Example structure:
-        # if "send email" in action_text.lower():
-        #     from email_handler import send_email
-        #     result = send_email(action_text, collected_data_string)
-        # elif "schedule meeting" in action_text.lower():
-        #     from calendar_handler import schedule_meeting
-        #     result = schedule_meeting(action_text, collected_data_string)
-        # 
-        # For now, just print what would be executed
-        print("ACTION EXECUTION PLACEHOLDER")
-        print(f"🚀 [graph.py] About to call run_graph() with action_text: {action_text[:100]}...")
-        print(f"🚀 [graph.py] Data length being passed: {len(collected_data_string)} characters")
-        
-        # Run the graph and capture the result
-        result = "MCP not set up yet"
-        # result = asyncio.run(run_graph(action_text, collected_data_string))
-        print(f"✅ [graph.py] run_graph() call completed")
-        print(f"📊 [graph.py] Result from run_graph: {result}")
-        
-        print(f"Would execute: {action_text}")
-        print(f"With context data string of length: {len(collected_data_string)}")
-        # ================================================================
-        
-        return action_text, collected_data_string, result
+        return action_text, collected_data_string
 
 
 
@@ -1226,7 +1199,7 @@ IMPORTANT:
         except Exception as e:
             print(f"⚠️ Failed to refresh embedding for node {node.node_uuid}: {e}")
 
-    def _create_child_node(self, parent: 'Node', metadata: str, summary: str = None, data: str = None) -> 'Node':
+    def _create_child_node(self, parent: 'Node', metadata: str, summary: str = None, data: str = None, available_mcps: list = None) -> 'Node':
         """
         Create a new child node under the given parent.
 
@@ -1235,6 +1208,7 @@ IMPORTANT:
             metadata: Name/description for the new node
             summary: Optional - description of data to insert
             data: Optional - actual data to insert into the new node
+            available_mcps: List of available MCP integrations (for action generation context)
 
         Returns:
             The newly created Node object
@@ -1299,7 +1273,7 @@ IMPORTANT:
                 print(f"📝 Inserting initial data into new node...")
                 # Use _learn_into_node for full action processing, or fall back to simple insert
                 if self.action_model:
-                    self._learn_into_node(new_node, summary, data)
+                    self._learn_into_node(new_node, summary, data, available_mcps=available_mcps)
                 else:
                     # No action model - use simple insert
                     self._insert_data_to_node(new_node, summary, data)
@@ -1452,7 +1426,7 @@ IMPORTANT:
             import traceback
             traceback.print_exc()
 
-    def _create_sibling_node(self, sibling_of: 'Node', metadata: str, summary: str = None, data: str = None) -> 'Node':
+    def _create_sibling_node(self, sibling_of: 'Node', metadata: str, summary: str = None, data: str = None, available_mcps: list = None) -> 'Node':
         """
         Create a new node at the same level as the given node (same parent).
 
@@ -1461,6 +1435,7 @@ IMPORTANT:
             metadata: Name/description for the new node
             summary: Optional - description of data to insert
             data: Optional - actual data to insert
+            available_mcps: List of available MCP integrations (for action generation context)
 
         Returns:
             The newly created Node object
@@ -1477,20 +1452,21 @@ IMPORTANT:
         # If no parent (sibling_of is root), create as child of root instead
         if parent is None:
             print(f"⚠️ Node '{sibling_of.metadata}' is root - creating as child of root instead")
-            return self._create_child_node(sibling_of, metadata, summary, data)
+            return self._create_child_node(sibling_of, metadata, summary, data, available_mcps)
 
         print(f"🌿 Creating sibling node '{metadata}' next to '{sibling_of.metadata}'")
 
         # Create as child of the parent
-        return self._create_child_node(parent, metadata, summary, data)
+        return self._create_child_node(parent, metadata, summary, data, available_mcps)
 
-    def _bootstrap_first_node(self, summary: str, data: str) -> 'Node':
+    def _bootstrap_first_node(self, summary: str, data: str, available_mcps: list = None) -> 'Node':
         """
         Create the first real node when graph only has root.
 
         Args:
             summary: Description of what the user is doing
             data: The data to insert
+            available_mcps: List of available MCP integrations (for action generation context)
 
         Returns:
             The newly created first child node of root
@@ -1563,6 +1539,7 @@ Return ONLY a JSON object:
             parent=self.root,
             metadata=node_metadata,
             summary=summary,
+            available_mcps=available_mcps,
             data=data
         )
 
@@ -1848,7 +1825,7 @@ Return ONLY a JSON object:
 
     # ==================== MAIN LEARNING WITH STRUCTURE METHOD ====================
 
-    def learn_with_structure(self, summary: str, data: str) -> dict:
+    def learn_with_structure(self, summary: str, data: str, available_mcps: list = None) -> dict:
         """
         Learn new information, potentially restructuring the graph.
 
@@ -1861,6 +1838,7 @@ Return ONLY a JSON object:
         Args:
             summary: Description of what the user is currently doing
             data: The actual data/information to store
+            available_mcps: List of available MCP integrations (for action generation context)
 
         Returns:
             {
@@ -1915,7 +1893,7 @@ Return ONLY a JSON object:
                 # Check if bootstrap is enabled
                 if self.config and not self.config.is_bootstrap_enabled():
                     print("   Bootstrap disabled - inserting into root")
-                    recent_actions = self.learn(summary, data)
+                    recent_actions = self.learn(summary, data, available_mcps=available_mcps)
                     return {
                         "operation": "insert",
                         "target_node": self.root,
@@ -1926,7 +1904,7 @@ Return ONLY a JSON object:
                     }
 
                 # Bootstrap - create first node
-                new_node = self._bootstrap_first_node(summary, data)
+                new_node = self._bootstrap_first_node(summary, data, available_mcps)
                 recent_actions = self.dao.get_recent_actions_for_node(new_node.node_uuid, limit=4)
                 print(f"✅ Bootstrapped first node: '{new_node.metadata}'")
                 return {
@@ -1959,7 +1937,7 @@ Return ONLY a JSON object:
                 print("   → Inserting directly without LLM validation")
 
                 # Use existing learn() method which handles actions and data
-                recent_actions = self.learn(summary, data)
+                recent_actions = self.learn(summary, data, available_mcps=available_mcps)
                 return {
                     "operation": "insert",
                     "target_node": best_node,
@@ -1980,7 +1958,7 @@ Return ONLY a JSON object:
 
                 if validation["fits"]:
                     print(f"   ✅ LLM validated: {validation['reasoning'][:100]}...")
-                    recent_actions = self.learn(summary, data)
+                    recent_actions = self.learn(summary, data, available_mcps=available_mcps)
                     return {
                         "operation": "insert",
                         "target_node": best_node,
@@ -2041,7 +2019,7 @@ Return ONLY a JSON object:
                 if operation_type == "insert_anyway":
                     print("   📥 INSERT ANYWAY")
                     if is_last_operation:
-                        self._learn_into_node(target_node, summary, data)
+                        self._learn_into_node(target_node, summary, data, available_mcps=available_mcps)
                     final_target_node = target_node
                 
                 # ---------------------------------------------------------
@@ -2055,7 +2033,8 @@ Return ONLY a JSON object:
                         parent=target_node,
                         metadata=new_metadata,
                         summary=op_summary,
-                        data=op_data
+                        data=op_data,
+                        available_mcps=available_mcps
                     )
                     
                     # Store reference for subsequent operations
@@ -2075,7 +2054,8 @@ Return ONLY a JSON object:
                         sibling_of=target_node,
                         metadata=new_metadata,
                         summary=op_summary,
-                        data=op_data
+                        data=op_data,
+                        available_mcps=available_mcps
                     )
                     
                     # Store reference for subsequent operations
@@ -2167,7 +2147,7 @@ Return ONLY a JSON object:
             print(f"🔄 Falling back to simple insert into '{fallback_node.metadata if fallback_node else 'root'}'")
 
             try:
-                recent_actions = self.learn(summary, data)
+                recent_actions = self.learn(summary, data, available_mcps=available_mcps)
             except Exception as learn_error:
                 print(f"❌ Fallback learn() also failed: {learn_error}")
                 recent_actions = []
@@ -2186,7 +2166,7 @@ Return ONLY a JSON object:
             print("LEARN WITH STRUCTURE COMPLETE")
             print(f"{'='*70}\n")
 
-    def _generate_learning_prompt(self, node, summary, existing_actions, existing_categories):
+    def _generate_learning_prompt(self, node, summary, existing_actions, existing_categories, available_mcps=None):
         """
         Generate a prompt for the LLM to decide on action and data insertion.
 
@@ -2195,6 +2175,7 @@ Return ONLY a JSON object:
             summary (str): Description of what the user is doing on screen
             existing_actions (list): List of action tuples from get_actions_for_node()
             existing_categories (list): List of category names from get_categories_for_node()
+            available_mcps (list): List of available MCP integrations (for action generation context)
 
         Returns:
             str: The prompt to send to the LLM
@@ -2222,6 +2203,16 @@ Return ONLY a JSON object:
         else:
             categories_text = "EXISTING DATA CATEGORIES: None - this node has no data categories yet.\n"
 
+        # Format available MCPs
+        mcps_text = ""
+        if available_mcps:
+            mcps_text = "AVAILABLE MCP INTEGRATIONS (only suggest actions using these):\n"
+            for mcp in available_mcps:
+                mcps_text += f"- {mcp['name']}: {mcp['description']}\n"
+            mcps_text += "\n"
+        else:
+            mcps_text = "AVAILABLE MCP INTEGRATIONS: None configured do not suggest any MCP related actions.\n\n"
+
         prompt = f"""{self.BASE_PROMPT}
 
 CURRENT CONTEXT:
@@ -2230,6 +2221,7 @@ Current Node: {node.metadata}
 
 {actions_text}
 {categories_text}
+{mcps_text}
 
 USER'S CURRENT ACTIVITY:
 {summary}
@@ -2237,10 +2229,8 @@ USER'S CURRENT ACTIVITY:
 YOUR TASK:
 You are an AI Desktop Agent that learns from user behavior and suggests proactive actions.
 
-You have access to:
-- User's computer screen (for screen control actions)
-- GSuite (Email, Calendar, Docs, Sheets, etc.)
-- Ability to define series of tasks
+IMPORTANT: When creating or modifying actions, you MUST only suggest actions that use the available MCP integrations listed above.
+Do NOT suggest actions for integrations that are not connected (e.g., don't suggest GitHub actions if GitHub is not in the available list).
 
 Based on the user's current activity, you must:
 
@@ -2285,7 +2275,7 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
 
 IMPORTANT:
 - action_name: Concise UI label (e.g., "Schedule Interview with Ritesh")
-- action_plan: User-facing details (e.g., exact email content, meeting times)
+- action_plan: User-facing details (e.g., exact email content, meeting times and every detail relevant to the action). The user must have full transparency about what the action is going to do
 - action_prompt: Technical execution details (e.g., full instructions for LangGraph/MCP)
 - Output ONLY the JSON object - no explanations, no markdown code blocks
 - Ensure all JSON is properly formatted and valid
@@ -2348,7 +2338,7 @@ IMPORTANT:
 
         return parsed
 
-    def learn(self, summary: str, data: str, key: str = None, data_type: str = "text") -> list:
+    def learn(self, summary: str, data: str, key: str = None, data_type: str = "text", available_mcps: list = None) -> list:
         """
         Learn new information by finding the best node and inserting data.
         This is the simple version that doesn't restructure the graph.
@@ -2360,6 +2350,7 @@ IMPORTANT:
             data: The data to store
             key: Optional key for the data (deprecated - auto-generated)
             data_type: Type of data (default: "text", deprecated)
+            available_mcps: List of available MCP integrations (for action generation context)
 
         Returns:
             List of 4 most recently selected actions for the target node
@@ -2371,7 +2362,7 @@ IMPORTANT:
             best_node = self.root
 
         # Insert into that node
-        return self._learn_into_node(best_node, summary, data, key, data_type)
+        return self._learn_into_node(best_node, summary, data, key, data_type, available_mcps)
 
     def learn_simple(self, summary: str, data: str, node: 'Node' = None, category: str = "general") -> bool:
         """
@@ -2421,7 +2412,7 @@ IMPORTANT:
             traceback.print_exc()
             return False
 
-    def _learn_into_node(self, node: 'Node', summary: str, data: str, key: str = None, data_type: str = "text") -> list:
+    def _learn_into_node(self, node: 'Node', summary: str, data: str, key: str = None, data_type: str = "text", available_mcps: list = None) -> list:
         """
         Internal method: Learn new information into a specific node.
         Handles action creation/modification/selection and data insertion.
@@ -2457,7 +2448,7 @@ IMPORTANT:
             print(f"Existing categories: {existing_categories}")
 
             # 3. Generate and send LLM prompt
-            prompt = self._generate_learning_prompt(node, summary, existing_actions, existing_categories)
+            prompt = self._generate_learning_prompt(node, summary, existing_actions, existing_categories, available_mcps)
 
             if not self.action_model:
                 print("Error: Action model not initialized")

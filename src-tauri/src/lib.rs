@@ -872,6 +872,17 @@ pub fn run() {
             
             Ok(())
         })
+        .on_window_event(|window, event| {
+            // Prevent the dashboard window from being destroyed when closed
+            // Instead, just hide it so it can be reopened later
+            if window.label() == "dashboard" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    println!("🎛️  Hiding dashboard window instead of closing");
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             greet, 
             toggle_profile, 

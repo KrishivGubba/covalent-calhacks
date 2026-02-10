@@ -2,11 +2,19 @@
 Notion MCP Tools - Page, Block, Database, Search, and Comment operations.
 
 Exposes Notion operations as MCP tools and resources for LLM agents.
+
+Token management:
+  - Access tokens + refresh tokens are stored in graph.db (integration_tokens table).
+  - When the access token expires, refresh happens via:
+      notion.py -> Lambda (has client_secret) -> Notion token endpoint
+  - The Lambda call is authenticated with the user's Auth0 JWT (read from user_sessions table).
 """
 import json
 import os
 import sys
 from typing import Optional, List, Dict, Any
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
 from covalent_mcp.toolclasses.base import (
     MCPToolModule,
     ToolDisplaySchema,
@@ -15,14 +23,137 @@ from covalent_mcp.toolclasses.base import (
 from covalent_mcp.toolclasses.notion.notion_client import NotionClient
 from fastmcp import FastMCP
 
+load_dotenv()
+
 # Path to integration DB for reading access token
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 DB_PATH = os.path.join(PROJECT_ROOT, 'context-engine', 'graph.db')
+
+# Lambda Gateway URL for secure token operations (client_secret lives here)
+LAMBDA_GATEWAY_URL = os.getenv("LAMBDA_GATEWAY_URL", "https://gtfrn4otol.execute-api.us-east-1.amazonaws.com")
+
+
+def _is_token_expired(expires_at: Optional[str]) -> bool:
+    """
+    Check if a token is expired (with 5-minute buffer for safety).
+    Returns False if no expiry info is available (optimistic).
+    """
+    if not expires_at:
+        return False
+    try:
+        expires = datetime.fromisoformat(expires_at)
+        return datetime.utcnow() > (expires - timedelta(minutes=5))
+    except (ValueError, TypeError):
+        return False
+
+
+def _get_auth0_jwt() -> Optional[str]:
+    """Get the Auth0 access token (JWT) from the user_sessions table."""
+    try:
+        sys.path.insert(0, PROJECT_ROOT)
+        from server.auth_dao import AuthDAO
+        auth_dao = AuthDAO(DB_PATH)
+        sessions = auth_dao.get_all_sessions()
+        if not sessions:
+            return None
+        user_id = sessions[0]["user_id"]
+        session = auth_dao.get_session(user_id)
+        if not session:
+            return None
+        return session.get("access_token")
+    except Exception:
+        return None
+
+
+def _refresh_notion_token_via_lambda(integration_dao=None) -> str:
+    """
+    Refresh the Notion access token by calling the Lambda gateway.
+    
+    Flow:
+      1. Read refresh_token from integration_tokens DB
+      2. Read Auth0 JWT from user_sessions DB (to authenticate with Lambda)
+      3. POST to Lambda /integrations/notion/refresh (Lambda has the client_secret)
+      4. Lambda calls Notion's token endpoint and returns new access_token
+      5. Update integration_tokens DB with the new access_token + expires_at
+    
+    Returns the new access_token string.
+    """
+    import requests as http_requests
+    
+    if integration_dao is None:
+        sys.path.insert(0, PROJECT_ROOT)
+        from server.integration_dao import IntegrationDAO
+        integration_dao = IntegrationDAO(DB_PATH)
+    
+    # 1. Get refresh token from DB
+    token_data = integration_dao.get_token("notion")
+    if not token_data:
+        raise RuntimeError("Notion not connected. Please authenticate via the server's OAuth flow first.")
+    
+    refresh_token = token_data.get("refresh_token")
+    if not refresh_token:
+        raise RuntimeError(
+            "No Notion refresh token available. "
+            "Please disconnect and re-authenticate Notion to get a new refresh token."
+        )
+    
+    # 2. Get Auth0 JWT for Lambda authentication
+    auth_jwt = _get_auth0_jwt()
+    if not auth_jwt:
+        raise RuntimeError(
+            "No Auth0 session found. Please log in first so we can "
+            "authenticate the token refresh request."
+        )
+    
+    # 3. Call Lambda to refresh the token (client_secret is in Lambda's env)
+    try:
+        response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/notion/refresh",
+            json={"refresh_token": refresh_token},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_jwt}",
+            },
+            timeout=15,
+        )
+        result = response.json()
+    except Exception as e:
+        raise RuntimeError(f"Failed to call Lambda for Notion token refresh: {e}")
+    
+    if not response.ok or "error" in result:
+        err = result.get("error", "refresh_failed")
+        err_desc = result.get("error_description", "Token refresh failed")
+        raise RuntimeError(f"Notion token refresh failed: {err} - {err_desc}")
+    
+    # 4. Extract new token data
+    new_access_token = result.get("access_token")
+    if not new_access_token:
+        raise RuntimeError("Lambda returned success but no access_token in response")
+    
+    new_refresh_token = result.get("refresh_token")
+    expires_in = result.get("expires_in", 3600)
+    expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+    
+    # 5. Update DB with new tokens
+    if new_refresh_token and new_refresh_token != refresh_token:
+        # Notion rotated the refresh token — save both
+        integration_dao.save_token(
+            provider="notion",
+            access_token=new_access_token,
+            refresh_token=new_refresh_token,
+            expires_at=expires_at,
+        )
+    else:
+        integration_dao.update_access_token("notion", new_access_token, expires_at)
+    
+    print(f"Notion access token refreshed successfully (expires in {expires_in}s)")
+    return new_access_token
 
 
 def _get_notion_token() -> Optional[str]:
     """
     Get Notion access token from integration_tokens DB.
+    Automatically refreshes via Lambda if the token is expired.
     Falls back to NOTION_API_KEY env var if DB not available.
     """
     # Try reading from integration_tokens table
@@ -32,6 +163,15 @@ def _get_notion_token() -> Optional[str]:
         dao = IntegrationDAO(DB_PATH)
         token_data = dao.get_token("notion")
         if token_data and token_data.get("access_token"):
+            # Check if token is expired and refresh if needed
+            expires_at = token_data.get("expires_at")
+            if _is_token_expired(expires_at):
+                print("Notion access token expired or expiring soon, refreshing via Lambda...")
+                try:
+                    return _refresh_notion_token_via_lambda(dao)
+                except Exception as e:
+                    print(f"Notion token refresh failed: {e}")
+                    # Fall through to return the existing token (might still work)
             return token_data["access_token"]
     except Exception:
         pass
@@ -61,13 +201,16 @@ class NotionToolModule(MCPToolModule):
         self.client = None
     
     def _ensure_client(self) -> NotionClient:
-        """Ensure Notion client is initialized with token from DB."""
-        if self.client is None:
-            token = _get_notion_token()
-            if not token:
-                raise RuntimeError(
-                    "Notion not connected. Please connect Notion from the Integrations page."
-                )
+        """Ensure Notion client is initialized with a fresh token from DB."""
+        # Always re-fetch the token to ensure we have a valid one
+        # (handles token refresh transparently)
+        token = _get_notion_token()
+        if not token:
+            raise RuntimeError(
+                "Notion not connected. Please connect Notion from the Integrations page."
+            )
+        # Re-create client if token changed
+        if self.client is None or self.client.access_token != token:
             self.client = NotionClient(access_token=token)
         return self.client
     

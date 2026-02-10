@@ -22,15 +22,15 @@ FLASK_URL = "http://localhost:5001"
 # A task that triggers research (skip_research=False) and results in
 # a filesystem write_file tool call — safe to actually execute.
 TASK = {
-    "action_text": "Create a text file called test_timing_output.txt with a summary of today's tech news",
-    "context": "Save the file in the current directory. Keep it short, 2-3 sentences.",
+    "action_text": "can you make a notion page about facts about marsupials",
+    "context": "",
     "skip_research": False,
 }
 
 # Also test with skip_research=True so we can isolate planning time
 TASK_NO_RESEARCH = {
-    "action_text": "Create a text file called test_timing_output.txt with a summary of today's tech news",
-    "context": "Save the file in the current directory. Keep it short, 2-3 sentences.",
+    "action_text": "can you make a notion page about facts about marsupials",
+    "context": "",
     "skip_research": True,
 }
 

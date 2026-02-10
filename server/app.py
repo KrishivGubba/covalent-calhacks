@@ -222,7 +222,47 @@ def screen():
         
         print(f"Enhanced description: {enhanced_description}")
         
+        # Get MCP integration statuses (so LLM knows which actions are available)
+        statuses = integration_dao.get_all_statuses()
         
+        # Build list of available MCPs
+        available_mcps = [
+            {
+                "id": "filesystem",
+                "name": "Filesystem",
+                "description": "Access local files and directories",
+                "connected": True,
+            },
+            {
+                "id": "github",
+                "name": "GitHub",
+                "description": "Access repositories, issues, and pull requests",
+                "connected": statuses.get("github", False),
+            },
+            {
+                "id": "perplexity",
+                "name": "Perplexity Search",
+                "description": "AI-powered web search",
+                "connected": True,
+            },
+            {
+                "id": "notion",
+                "name": "Notion",
+                "description": "Access Notion workspaces and pages",
+                "connected": statuses.get("notion", False),
+            },
+            {
+                "id": "google",
+                "name": "Google Workspace",
+                "description": "Calendar, Drive, Mail",
+                "connected": statuses.get("google", False),
+            },
+        ]
+        
+        # Filter to only connected MCPs
+        connected_mcps = [mcp for mcp in available_mcps if mcp["connected"]]
+        
+        print(f"Available MCPs: {[mcp['name'] for mcp in connected_mcps]}")
         
         # Convert the entire body to JSON string for storage
         import json
@@ -230,7 +270,7 @@ def screen():
         
         # Call learn function - returns dict with structure info and actions
         print(f"\n📍 DEBUG: Calling tree.learn_with_structure()...")
-        result = tree.learn_with_structure(enhanced_description, data_str)
+        result = tree.learn_with_structure(enhanced_description, data_str, available_mcps=connected_mcps)
         print(f"📍 DEBUG: Operation: {result['operation']}, Confidence: {result['confidence']}")
         
         # Extract recent actions from the result
@@ -799,13 +839,24 @@ def google_disconnect():
 def google_refresh_token():
     """
     Refresh Google access token using the refresh token via Lambda.
-    Body: { "auth_token": "..." } - Auth0 token to authenticate with Lambda
+    Body: { "auth_token": "..." } - Auth0 token to authenticate with Lambda.
+    
+    If auth_token is not provided in the body, it will be auto-read from the
+    user_sessions table in the database (single-user desktop app).
     """
     body = request.get_json() or {}
     auth_token = body.get("auth_token")
     
+    # If no auth_token provided, try to read from user sessions DB
     if not auth_token:
-        return jsonify({"error": "auth_token is required"}), 400
+        sessions = auth_dao.get_all_sessions()
+        if sessions:
+            session = auth_dao.get_session(sessions[0]["user_id"])
+            if session:
+                auth_token = session.get("access_token")
+    
+    if not auth_token:
+        return jsonify({"error": "auth_token is required and no active session found"}), 400
     
     token_data = integration_dao.get_token("google")
     if not token_data:
@@ -1227,133 +1278,351 @@ def notion_disconnect():
     return jsonify({"ok": True, "deleted": deleted > 0}), 200
 
 
-@app.route("/trigger_action", methods=["POST"])
-def trigger_action():
-    import json
-    start_time = time.perf_counter()
-    action_uuid = ""
-    action_type = "unknown"
-    effective_action = None
-    node_uuid = None
+@app.route("/integrations/notion/refresh", methods=["POST"])
+def notion_refresh_token():
+    """
+    Refresh Notion access token using the refresh token via Lambda.
+    Body: { "auth_token": "..." } - Auth0 token to authenticate with Lambda.
+    
+    If auth_token is not provided in the body, it will be auto-read from the
+    user_sessions table in the database (single-user desktop app).
+    """
+    body = request.get_json() or {}
+    auth_token = body.get("auth_token")
+    
+    # If no auth_token provided, try to read from user sessions DB
+    if not auth_token:
+        sessions = auth_dao.get_all_sessions()
+        if sessions:
+            session = auth_dao.get_session(sessions[0]["user_id"])
+            if session:
+                auth_token = session.get("access_token")
+    
+    if not auth_token:
+        return jsonify({"error": "auth_token is required and no active session found"}), 400
+    
+    token_data = integration_dao.get_token("notion")
+    if not token_data:
+        return jsonify({"error": "Notion not connected"}), 404
+    
+    refresh_token = token_data.get("refresh_token")
+    if not refresh_token:
+        return jsonify({"error": "No refresh token available"}), 400
     
     try:
-        body = request.get_json()
-        action_uuid = body.get("action_uuid", "")
-        action = body.get("action", "")
-        action_override = body.get("action_override")
+        # Call Lambda to refresh the token (keeps client_secret secure)
+        token_response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/notion/refresh",
+            json={"refresh_token": refresh_token},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
+        )
+        new_token_data = token_response.json()
         
-        # Get action data to determine type and node
-        action_data = tree.dao.get_action_by_id(action_uuid)
-        if action_data:
-            _, action_name, action_plan, action_prompt, fetched_node_uuid = action_data
-            node_uuid = fetched_node_uuid
-            action_type = action_name or "unknown"
-            
-            if action_override:
-                effective_action = {
-                    "action_name": action_override.get("action_name") or action_name,
-                    "action_plan": action_override.get("action_plan") or action_plan,
-                    "action_prompt": action_override.get("action_prompt") or action_prompt
-                }
-                action_type = effective_action.get("action_name", action_type)
-            else:
-                effective_action = {
-                    "action_name": action_name,
-                    "action_plan": action_plan,
-                    "action_prompt": action_prompt
-                }
-        elif action_override:
-            effective_action = action_override
-            action_type = action_override.get("action_name", "unknown")
-
-        result = tree.trigger_action(action_uuid, action_override=action_override)
+        if not token_response.ok or "error" in new_token_data:
+            err = new_token_data.get("error", "refresh_failed")
+            err_desc = new_token_data.get("error_description", "Token refresh failed")
+            print(f"🔷 Notion token refresh failed: {err} - {err_desc}")
+            return jsonify({"error": err, "error_description": err_desc}), 400
         
-        # Calculate duration
-        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        new_access_token = new_token_data.get("access_token")
+        new_refresh_token = new_token_data.get("refresh_token")  # Notion may rotate
+        expires_in = new_token_data.get("expires_in", 3600)
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
         
-        # result is a tuple: (action_text, collected_data_string, graph_output)
-        if result and len(result) >= 3:
-            action_text, collected_data, graph_output = result
-            
-            # Convert graph_output to JSON-serializable format
-            serializable_output = {}
-            if graph_output:
-                for key, value in graph_output.items():
-                    # Handle Pydantic models and other non-serializable objects
-                    if hasattr(value, 'dict'):
-                        serializable_output[key] = value.dict()
-                    elif hasattr(value, '__dict__'):
-                        serializable_output[key] = value.__dict__
-                    elif isinstance(value, list):
-                        serializable_output[key] = [
-                            item.dict() if hasattr(item, 'dict') else 
-                            item.__dict__ if hasattr(item, '__dict__') else 
-                            str(item) for item in value
-                        ]
-                    else:
-                        serializable_output[key] = str(value)
-            
-            # Log successful action to history
-            try:
-                tree.dao.insert_action_history(
-                    action_uuid=action_uuid,
-                    action_type=action_type,
-                    action_data=json.dumps(effective_action) if effective_action else None,
-                    node_uuid=node_uuid,
-                    status="completed",
-                    result=json.dumps(serializable_output) if serializable_output else None,
-                    error_message=None,
-                    duration_ms=duration_ms
-                )
-            except Exception as log_err:
-                print(f"⚠️ Failed to log action history: {log_err}")
-            
-            return jsonify({
-                "message": "Action triggered successfully",
-                "action_text": action_text,
-                "graph_output": serializable_output,
-                "effective_action": effective_action
-            }), 200
-        else:
-            # Log action with no result
-            try:
-                tree.dao.insert_action_history(
-                    action_uuid=action_uuid,
-                    action_type=action_type,
-                    action_data=json.dumps(effective_action) if effective_action else None,
-                    node_uuid=node_uuid,
-                    status="completed",
-                    result=None,
-                    error_message="No result returned",
-                    duration_ms=duration_ms
-                )
-            except Exception as log_err:
-                print(f"⚠️ Failed to log action history: {log_err}")
-            
-            return jsonify({"message": "Action triggered but no result returned"}), 200
+        # Update access token in DB
+        integration_dao.update_access_token("notion", new_access_token, expires_at)
+        
+        # If Notion rotated the refresh token, update that too
+        if new_refresh_token and new_refresh_token != refresh_token:
+            integration_dao.save_token(
+                provider="notion",
+                access_token=new_access_token,
+                refresh_token=new_refresh_token,
+                expires_at=expires_at,
+            )
+        
+        print(f"🔷 Notion access token refreshed")
+        
+        return jsonify({
+            "access_token": new_access_token,
+            "expires_at": expires_at,
+        }), 200
+        
     except Exception as e:
         import traceback
         traceback.print_exc()
-        
-        # Calculate duration even for failed actions
-        duration_ms = int((time.perf_counter() - start_time) * 1000)
-        
-        # Log failed action to history
-        try:
-            tree.dao.insert_action_history(
-                action_uuid=action_uuid,
-                action_type=action_type,
-                action_data=json.dumps(effective_action) if effective_action else None,
-                node_uuid=node_uuid,
-                status="failed",
-                result=None,
-                error_message=str(e),
-                duration_ms=duration_ms
-            )
-        except Exception as log_err:
-            print(f"⚠️ Failed to log action history: {log_err}")
-        
+        return jsonify({"error": "exception", "error_description": str(e)}), 500
+
+
+# ========================
+# Graph Visualization & Reset Endpoints
+# ========================
+
+@app.route("/graph/data", methods=["GET"])
+def graph_data():
+    """
+    Return full graph data (nodes, edges, actions, data entries) for UI visualization.
+    """
+    try:
+        conn = sqlite3.connect(db_path, timeout=10.0)
+        cursor = conn.cursor()
+
+        # Get all nodes
+        cursor.execute("SELECT UUID, Metadata, parent_uuid, children_uuid_arr FROM node_table")
+        raw_nodes = cursor.fetchall()
+
+        # Get all actions
+        cursor.execute("SELECT UUID, Action_name, Node_UUID FROM action_table")
+        raw_actions = cursor.fetchall()
+
+        # Get all data entries
+        cursor.execute("SELECT UUID, Node_UUID, key, type, category FROM data_table")
+        raw_data = cursor.fetchall()
+
+        conn.close()
+
+        # Build actions-per-node lookup
+        from collections import defaultdict
+        actions_per_node = defaultdict(list)
+        for action_uuid, action_name, node_uuid in raw_actions:
+            actions_per_node[node_uuid].append({"uuid": action_uuid, "name": action_name})
+
+        # Build data-per-node lookup
+        data_per_node = defaultdict(list)
+        for data_uuid, node_uuid, key, dtype, category in raw_data:
+            data_per_node[node_uuid].append({
+                "uuid": data_uuid,
+                "key": key,
+                "type": dtype,
+                "category": category,
+            })
+
+        # Build depth lookup
+        node_parent = {}
+        for uuid, metadata, parent_uuid, children_arr in raw_nodes:
+            node_parent[uuid] = parent_uuid
+
+        def get_depth(uuid, depth=0):
+            parent = node_parent.get(uuid)
+            if parent is None:
+                return depth
+            return get_depth(parent, depth + 1)
+
+        # Build node list and edge list
+        nodes = []
+        edges = []
+        for uuid, metadata, parent_uuid, children_arr in raw_nodes:
+            depth = get_depth(uuid)
+            nodes.append({
+                "id": uuid,
+                "label": metadata or "Untitled",
+                "parent_id": parent_uuid,
+                "depth": depth,
+                "actions": actions_per_node.get(uuid, []),
+                "data": data_per_node.get(uuid, []),
+            })
+            if parent_uuid and parent_uuid in node_parent:
+                edges.append({"from": parent_uuid, "to": uuid})
+
+        return jsonify({
+            "nodes": nodes,
+            "edges": edges,
+            "stats": {
+                "total_nodes": len(raw_nodes),
+                "total_actions": len(raw_actions),
+                "total_data": len(raw_data),
+            },
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/graph/reset", methods=["POST"])
+def graph_reset():
+    """
+    Reset only the graph-related tables (node_table, action_table, data_table, node_counters).
+    Preserves auth tables (auth_pending, user_sessions, integration_tokens).
+    """
+    global tree
+    try:
+        # Close the Tree's DAO connection so we can safely modify the tables
+        try:
+            tree.dao.close()
+        except Exception:
+            pass
+
+        # Connect directly and clear only graph-related tables
+        conn = sqlite3.connect(db_path, timeout=10.0)
+        cursor = conn.cursor()
+
+        # Delete all data from graph tables (order matters due to foreign keys)
+        graph_tables = ["data_table", "action_table", "node_counters", "node_table"]
+        for table in graph_tables:
+            cursor.execute(f"DELETE FROM {table}")
+            print(f"🗑️  Cleared table: {table}")
+
+        conn.commit()
+        conn.close()
+
+        print("✅ Graph tables cleared (auth/integration tables preserved)")
+
+        # Re-create the Tree object pointing at the DB
+        tree = Tree(db_path)
+
+        return jsonify({"message": "Graph reset successfully"}), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # Attempt to re-create tree even on error so the server stays functional
+        try:
+            tree = Tree(db_path)
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 500
+
+
+# DEPRECATED: /trigger_action endpoint is no longer used.
+# New flow: frontend calls /plan_action -> user approves/edits -> /execute_action
+# @app.route("/trigger_action", methods=["POST"])
+# def trigger_action():
+#     import json
+#     start_time = time.perf_counter()
+#     action_uuid = ""
+#     action_type = "unknown"
+#     effective_action = None
+#     node_uuid = None
+#     
+#     try:
+#         body = request.get_json()
+#         action_uuid = body.get("action_uuid", "")
+#         action = body.get("action", "")
+#         action_override = body.get("action_override")
+#         
+#         # Get action data to determine type and node
+#         action_data = tree.dao.get_action_by_id(action_uuid)
+#         if action_data:
+#             _, action_name, action_plan, action_prompt, fetched_node_uuid = action_data
+#             node_uuid = fetched_node_uuid
+#             action_type = action_name or "unknown"
+#             
+#             if action_override:
+#                 effective_action = {
+#                     "action_name": action_override.get("action_name") or action_name,
+#                     "action_plan": action_override.get("action_plan") or action_plan,
+#                     "action_prompt": action_override.get("action_prompt") or action_prompt
+#                 }
+#                 action_type = effective_action.get("action_name", action_type)
+#             else:
+#                 effective_action = {
+#                     "action_name": action_name,
+#                     "action_plan": action_plan,
+#                     "action_prompt": action_prompt
+#                 }
+#         elif action_override:
+#             effective_action = action_override
+#             action_type = action_override.get("action_name", "unknown")
+# 
+#         result = tree.trigger_action(action_uuid, action_override=action_override)
+#         
+#         # Calculate duration
+#         duration_ms = int((time.perf_counter() - start_time) * 1000)
+#         
+#         # result is a tuple: (action_text, collected_data_string, graph_output)
+#         if result and len(result) >= 3:
+#             action_text, collected_data, graph_output = result
+#             
+#             # Convert graph_output to JSON-serializable format
+#             # graph_output may be a dict (real run) or a str (placeholder/error message)
+#             serializable_output = {}
+#             if graph_output:
+#                 if isinstance(graph_output, dict):
+#                     for key, value in graph_output.items():
+#                         # Handle Pydantic models and other non-serializable objects
+#                         if hasattr(value, 'dict'):
+#                             serializable_output[key] = value.dict()
+#                         elif hasattr(value, '__dict__'):
+#                             serializable_output[key] = value.__dict__
+#                         elif isinstance(value, list):
+#                             serializable_output[key] = [
+#                                 item.dict() if hasattr(item, 'dict') else 
+#                                 item.__dict__ if hasattr(item, '__dict__') else 
+#                                 str(item) for item in value
+#                             ]
+#                         else:
+#                             serializable_output[key] = str(value)
+#                 else:
+#                     # Placeholder or string result (e.g. "MCP not set up yet")
+#                     serializable_output["message"] = str(graph_output)
+#             
+#             # Log successful action to history
+#             try:
+#                 tree.dao.insert_action_history(
+#                     action_uuid=action_uuid,
+#                     action_type=action_type,
+#                     action_data=json.dumps(effective_action) if effective_action else None,
+#                     node_uuid=node_uuid,
+#                     status="completed",
+#                     result=json.dumps(serializable_output) if serializable_output else None,
+#                     error_message=None,
+#                     duration_ms=duration_ms
+#                 )
+#             except Exception as log_err:
+#                 print(f"⚠️ Failed to log action history: {log_err}")
+#             
+#             return jsonify({
+#                 "message": "Action triggered successfully",
+#                 "action_text": action_text,
+#                 "graph_output": serializable_output,
+#                 "effective_action": effective_action
+#             }), 200
+#         else:
+#             # Log action with no result
+#             try:
+#                 tree.dao.insert_action_history(
+#                     action_uuid=action_uuid,
+#                     action_type=action_type,
+#                     action_data=json.dumps(effective_action) if effective_action else None,
+#                     node_uuid=node_uuid,
+#                     status="completed",
+#                     result=None,
+#                     error_message="No result returned",
+#                     duration_ms=duration_ms
+#                 )
+#             except Exception as log_err:
+#                 print(f"⚠️ Failed to log action history: {log_err}")
+#             
+#             return jsonify({"message": "Action triggered but no result returned"}), 200
+#     except Exception as e:
+#         import traceback
+#         traceback.print_exc()
+#         
+#         # Calculate duration even for failed actions
+#         duration_ms = int((time.perf_counter() - start_time) * 1000)
+#         
+#         # Log failed action to history
+#         try:
+#             tree.dao.insert_action_history(
+#                 action_uuid=action_uuid,
+#                 action_type=action_type,
+#                 action_data=json.dumps(effective_action) if effective_action else None,
+#                 node_uuid=node_uuid,
+#                 status="failed",
+#                 result=None,
+#                 error_message=str(e),
+#                 duration_ms=duration_ms
+#             )
+#         except Exception as log_err:
+#             print(f"⚠️ Failed to log action history: {log_err}")
+#         
+#         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/plan_action", methods=["POST"])
@@ -1362,7 +1631,7 @@ def plan_action_endpoint():
     Research and plan an action using MCP tools - Phases 0+1 of three-phase execution.
     
     This endpoint:
-    1. Takes action text and context from trigger_action
+    1. Takes action text and context from get_action_context (traverses tree, returns node data & parental chain)
     2. RESEARCH: Reads relevant resources to gather additional context
     3. PLANNING: Uses semantic tool routing to find relevant tools
     4. Has agent propose ONE tool call with parameters
@@ -1399,8 +1668,8 @@ def plan_action_endpoint():
         action_override = body.get("action_override")
         skip_research = body.get("skip_research", False)
         
-        # Get action context using existing trigger_action logic
-        action_text, collected_data, _ = tree.trigger_action(action_uuid, action_override=action_override)
+        # Get action context (traverses tree and returns node data with parental chain)
+        action_text, collected_data = tree.get_action_context(action_uuid, action_override=action_override)
         
         if not action_text:
             return jsonify({
@@ -1797,6 +2066,28 @@ def edit_action():
         action_override = body.get("action_override") or {}
         persist = bool(body.get("persist", False))
 
+        # region agent log
+        try:
+            import json, time
+            log_entry = {
+                "sessionId": "debug-session",
+                "runId": "pre-fix",
+                "hypothesisId": "H1",
+                "location": "server/app.py:1384",
+                "message": "edit_action entry",
+                "data": {
+                    "action_uuid": action_uuid,
+                    "has_override": bool(action_override),
+                    "persist": persist
+                },
+                "timestamp": int(time.time() * 1000)
+            }
+            with open("/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log", "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
+        except Exception:
+            pass
+        # endregion
+
         if not action_uuid:
             return jsonify({"error": "action_uuid is required"}), 400
 
@@ -1806,8 +2097,53 @@ def edit_action():
         action_data = tree.dao.get_action_by_id(action_uuid)
         if not action_data:
             return jsonify({"error": "action not found"}), 404
-
+        # region agent log
+        try:
+            import json, time
+            log_entry = {
+                "sessionId": "debug-session",
+                "runId": "pre-fix",
+                "hypothesisId": "H1",
+                "location": "server/app.py:1396",
+                "message": "edit_action fetched action_data",
+                "data": {
+                    "action_uuid": action_uuid,
+                    "action_data_len": len(action_data) if action_data is not None else None,
+                    "action_data_preview": list(action_data) if action_data is not None else None
+                },
+                "timestamp": int(time.time() * 1000)
+            }
+            with open("/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log", "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
+        except Exception:
+            pass
+        # endregion
         _, action_name, action_plan, action_prompt, _ = action_data
+
+        
+
+        # region agent log
+        try:
+            import json, time
+            log_entry = {
+                "sessionId": "debug-session",
+                "runId": "pre-fix",
+                "hypothesisId": "H2",
+                "location": "server/app.py:1400",
+                "message": "edit_action unpacked action_data",
+                "data": {
+                    "action_uuid": action_uuid,
+                    "action_name": action_name,
+                    "action_plan": action_plan,
+                    "has_action_prompt": bool(action_prompt)
+                },
+                "timestamp": int(time.time() * 1000)
+            }
+            with open("/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log", "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
+        except Exception:
+            pass
+        # endregion
 
         effective_action = {
             "action_name": action_override.get("action_name") or action_name,
