@@ -339,6 +339,12 @@ resource "aws_apigatewayv2_route" "notion_exchange" {
   target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
 }
 
+resource "aws_apigatewayv2_route" "embed" {
+  api_id    = aws_apigatewayv2_api.ai_gateway.id
+  route_key = "POST /embed"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+}
+
 resource "aws_apigatewayv2_route" "default" {
   api_id    = aws_apigatewayv2_api.ai_gateway.id
   route_key = "$default"

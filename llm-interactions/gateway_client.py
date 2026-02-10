@@ -53,6 +53,24 @@ class GatewayResponse:
         return self.content
 
 
+@dataclass
+class EmbeddingResponse:
+    """Response from the AI Gateway /embed endpoint (single text)."""
+    embedding: List[float]
+    model: str
+    dimensions: int
+    input_tokens: int
+
+
+@dataclass
+class BatchEmbeddingResponse:
+    """Response from the AI Gateway /embed endpoint (batch texts)."""
+    embeddings: List[List[float]]
+    model: str
+    dimensions: int
+    input_tokens: int
+
+
 # Available models (for reference)
 MODELS = {
     # Claude 4.5 (latest)
@@ -339,6 +357,115 @@ class GatewayClient:
             max_tokens=max_tokens,
             temperature=temperature,
         )
+    
+    # ========================
+    # Embedding Methods
+    # ========================
+    
+    def embed(
+        self,
+        text: str,
+        model: Optional[str] = None,
+        dimensions: int = 1024,
+        normalize: bool = True,
+    ) -> EmbeddingResponse:
+        """
+        Generate an embedding for a single text.
+        
+        Args:
+            text: The text to embed.
+            model: Embedding model ID. Defaults to Titan Embed V2.
+            dimensions: Embedding dimensions (default 1024).
+            normalize: Whether to normalize the embedding (default True).
+            
+        Returns:
+            EmbeddingResponse with embedding vector and metadata.
+            
+        Example:
+            >>> response = client.embed("Hello world")
+            >>> print(len(response.embedding))
+            1024
+        """
+        payload = {
+            "text": text,
+            "dimensions": dimensions,
+            "normalize": normalize,
+        }
+        if model:
+            payload["model"] = model
+        
+        data = self._make_request("/embed", method="POST", json_data=payload)
+        
+        return EmbeddingResponse(
+            embedding=data.get("embedding", []),
+            model=data.get("model", ""),
+            dimensions=data.get("dimensions", dimensions),
+            input_tokens=data.get("input_tokens", 0),
+        )
+    
+    def embed_documents(
+        self,
+        texts: List[str],
+        model: Optional[str] = None,
+        dimensions: int = 1024,
+        normalize: bool = True,
+    ) -> BatchEmbeddingResponse:
+        """
+        Generate embeddings for multiple texts in a single request.
+        
+        Args:
+            texts: List of texts to embed (max 100).
+            model: Embedding model ID. Defaults to Titan Embed V2.
+            dimensions: Embedding dimensions (default 1024).
+            normalize: Whether to normalize embeddings (default True).
+            
+        Returns:
+            BatchEmbeddingResponse with list of embedding vectors.
+            
+        Example:
+            >>> response = client.embed_documents(["Hello", "World"])
+            >>> print(len(response.embeddings))
+            2
+        """
+        payload = {
+            "texts": texts,
+            "dimensions": dimensions,
+            "normalize": normalize,
+        }
+        if model:
+            payload["model"] = model
+        
+        data = self._make_request("/embed", method="POST", json_data=payload)
+        
+        return BatchEmbeddingResponse(
+            embeddings=data.get("embeddings", []),
+            model=data.get("model", ""),
+            dimensions=data.get("dimensions", dimensions),
+            input_tokens=data.get("input_tokens", 0),
+        )
+    
+    def embed_query(
+        self,
+        query: str,
+        model: Optional[str] = None,
+        dimensions: int = 1024,
+    ) -> List[float]:
+        """
+        Embed a single query and return just the vector.
+        
+        Convenience method that returns the raw embedding list,
+        matching the interface expected by the ToolRouter.
+        
+        Args:
+            query: The query text to embed.
+            model: Embedding model ID. Defaults to Titan Embed V2.
+            dimensions: Embedding dimensions (default 1024).
+            
+        Returns:
+            List of floats representing the embedding vector.
+        """
+        response = self.embed(text=query, model=model, dimensions=dimensions)
+        return response.embedding
     
     def __repr__(self) -> str:
         return f"GatewayClient(url='{self.url}', model='{self.default_model}')"
