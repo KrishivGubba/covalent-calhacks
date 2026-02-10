@@ -7,6 +7,7 @@ Bedrock models and exchange OAuth tokens without exposing credentials on the cli
 Endpoints:
     POST /invoke - Invoke a Bedrock model (Claude, etc.)
     POST /converse - Use Bedrock's Converse API for chat
+    POST /embed - Generate text embeddings via Bedrock (Titan Embed V2)
     GET /health - Health check (no auth required)
     
     Google OAuth (protected by Auth0 JWT):
@@ -26,6 +27,15 @@ Expected request body for /invoke:
     "system": "You are a helpful assistant.",  # optional
     "max_tokens": 4096,  # optional
     "temperature": 0.7  # optional
+}
+
+Expected request body for /embed:
+{
+    "text": "single text to embed",            # for single embedding
+    "texts": ["text1", "text2"],               # for batch embeddings (use text OR texts)
+    "model": "amazon.titan-embed-text-v2:0",   # optional, defaults to Titan Embed V2
+    "dimensions": 1024,                         # optional, defaults to 1024
+    "normalize": true                           # optional, defaults to true
 }
 
 Authentication:
@@ -181,6 +191,14 @@ ALLOWED_MODELS = {
     # Amazon Titan
     "amazon.titan-text-express-v1",
     "amazon.titan-text-lite-v1",
+}
+
+# Allowed embedding models
+DEFAULT_EMBEDDING_MODEL = os.environ.get("DEFAULT_EMBEDDING_MODEL", "amazon.titan-embed-text-v2:0")
+DEFAULT_EMBEDDING_DIMENSIONS = int(os.environ.get("DEFAULT_EMBEDDING_DIMENSIONS", "1024"))
+ALLOWED_EMBEDDING_MODELS = {
+    "amazon.titan-embed-text-v2:0",
+    "amazon.titan-embed-text-v1",
 }
 
 # Initialize Bedrock client (reused across invocations)
@@ -407,6 +425,105 @@ def handle_invoke(body: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         return create_response(500, {"error": f"Internal server error: {str(e)}"})
+
+
+# ========================
+# Embedding Handler
+# ========================
+
+def handle_embed(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Handle the /embed endpoint.
+    
+    Supports single text or batch embedding via Bedrock Titan Embed V2.
+    
+    Single: {"text": "hello"} -> {"embedding": [...], ...}
+    Batch:  {"texts": ["hello", "world"]} -> {"embeddings": [[...], [...]], ...}
+    """
+    if not body:
+        return create_response(400, {"error": "Request body is required"})
+    
+    # Determine single vs batch
+    single_text = body.get("text")
+    batch_texts = body.get("texts")
+    
+    if single_text is None and batch_texts is None:
+        return create_response(400, {"error": "Either 'text' (string) or 'texts' (list of strings) is required"})
+    
+    if single_text is not None and batch_texts is not None:
+        return create_response(400, {"error": "Provide either 'text' or 'texts', not both"})
+    
+    model = body.get("model", DEFAULT_EMBEDDING_MODEL)
+    if model not in ALLOWED_EMBEDDING_MODELS:
+        return create_response(400, {
+            "error": f"Embedding model '{model}' is not allowed. Allowed: {list(ALLOWED_EMBEDDING_MODELS)}"
+        })
+    
+    dimensions = body.get("dimensions", DEFAULT_EMBEDDING_DIMENSIONS)
+    normalize = body.get("normalize", True)
+    
+    # Build list of texts to embed
+    if single_text is not None:
+        texts_to_embed = [single_text]
+    else:
+        if not isinstance(batch_texts, list) or not batch_texts:
+            return create_response(400, {"error": "'texts' must be a non-empty list of strings"})
+        if len(batch_texts) > 100:
+            return create_response(400, {"error": "'texts' list cannot exceed 100 items"})
+        texts_to_embed = batch_texts
+    
+    try:
+        all_embeddings = []
+        total_input_tokens = 0
+        
+        for text in texts_to_embed:
+            if not isinstance(text, str) or not text.strip():
+                return create_response(400, {"error": "Each text must be a non-empty string"})
+            
+            payload = {
+                "inputText": text,
+                "dimensions": dimensions,
+                "normalize": normalize,
+            }
+            
+            response = bedrock_runtime.invoke_model(
+                modelId=model,
+                contentType="application/json",
+                accept="application/json",
+                body=json.dumps(payload),
+            )
+            
+            response_body = json.loads(response["body"].read())
+            all_embeddings.append(response_body.get("embedding", []))
+            total_input_tokens += response_body.get("inputTextTokenCount", 0)
+        
+        # Return single vs batch format
+        if single_text is not None:
+            return create_response(200, {
+                "embedding": all_embeddings[0],
+                "model": model,
+                "dimensions": dimensions,
+                "input_tokens": total_input_tokens,
+            })
+        else:
+            return create_response(200, {
+                "embeddings": all_embeddings,
+                "model": model,
+                "dimensions": dimensions,
+                "input_tokens": total_input_tokens,
+            })
+    
+    except bedrock_runtime.exceptions.ValidationException as e:
+        logger.error(f"Bedrock embedding validation error: {e}")
+        return create_response(400, {"error": f"Validation error: {str(e)}"})
+    
+    except bedrock_runtime.exceptions.ThrottlingException as e:
+        logger.error(f"Bedrock embedding throttling: {e}")
+        return create_response(429, {"error": "Rate limit exceeded. Please retry later."})
+    
+    except Exception as e:
+        logger.error(f"Embedding error: {e}")
+        return create_response(500, {"error": f"Embedding error: {str(e)}"})
 
 
 # ========================
@@ -742,6 +859,20 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 return create_response(400, {"error": "Invalid JSON in request body"})
         
         return handle_invoke(body)
+    
+    # Embedding endpoint
+    if path == "/embed" or path.endswith("/embed"):
+        if http_method != "POST":
+            return create_response(405, {"error": "Method not allowed. Use POST."})
+        
+        body = event.get("body", "{}")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except json.JSONDecodeError:
+                return create_response(400, {"error": "Invalid JSON in request body"})
+        
+        return handle_embed(body)
     
     # Google OAuth token exchange
     if path == "/integrations/google/exchange" or path.endswith("/integrations/google/exchange"):
