@@ -51,6 +51,7 @@ import os
 import urllib.request
 import urllib.parse
 import urllib.error
+from decimal import Decimal
 from typing import Any, Dict, Optional
 from functools import lru_cache
 
@@ -73,6 +74,39 @@ DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", "0.7"))
 AUTH0_DOMAIN = os.environ.get("AUTH0_DOMAIN", "")  # e.g., "dev-abc123.us.auth0.com"
 AUTH0_AUDIENCE = os.environ.get("AUTH0_AUDIENCE", "")  # e.g., "https://dev-abc123.us.auth0.com/api/v2/"
 AUTH0_ALGORITHMS = ["RS256"]
+
+# Budget tracking configuration
+BUDGET_TABLE_NAME = os.environ.get("BUDGET_TABLE_NAME", "")
+DEFAULT_BUDGET_LIMIT = float(os.environ.get("DEFAULT_BUDGET_LIMIT", "10.00"))
+
+# Per-token pricing (USD) for each model — used to calculate request cost.
+# Prices are per token (not per 1K). Multiply by token count to get cost.
+# Source: AWS Bedrock pricing as of 2025. Update when pricing changes.
+MODEL_PRICING = {
+    # Claude 4.5 (inference profiles)
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0": {"input": 3.00 / 1_000_000, "output": 15.00 / 1_000_000},
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0":  {"input": 1.00 / 1_000_000, "output": 5.00 / 1_000_000},
+    # Claude 4 (inference profiles)
+    "us.anthropic.claude-sonnet-4-20250514-v1:0":   {"input": 3.00 / 1_000_000, "output": 15.00 / 1_000_000},
+    # Claude 3.5 (inference profiles)
+    "us.anthropic.claude-3-5-sonnet-20241022-v2:0": {"input": 3.00 / 1_000_000, "output": 15.00 / 1_000_000},
+    "us.anthropic.claude-3-5-haiku-20241022-v1:0":  {"input": 1.00 / 1_000_000, "output": 5.00 / 1_000_000},
+    # Claude 3.5 (on-demand)
+    "anthropic.claude-3-5-sonnet-20241022-v2:0":    {"input": 3.00 / 1_000_000, "output": 15.00 / 1_000_000},
+    "anthropic.claude-3-5-haiku-20241022-v1:0":     {"input": 1.00 / 1_000_000, "output": 5.00 / 1_000_000},
+    # Claude 3 models
+    "anthropic.claude-3-opus-20240229-v1:0":        {"input": 15.00 / 1_000_000, "output": 75.00 / 1_000_000},
+    "anthropic.claude-3-sonnet-20240229-v1:0":      {"input": 3.00 / 1_000_000, "output": 15.00 / 1_000_000},
+    "anthropic.claude-3-haiku-20240307-v1:0":       {"input": 0.25 / 1_000_000, "output": 1.25 / 1_000_000},
+    # Claude Instant
+    "anthropic.claude-instant-v1":                  {"input": 0.80 / 1_000_000, "output": 2.40 / 1_000_000},
+    # Amazon Titan (text)
+    "amazon.titan-text-express-v1":                 {"input": 0.20 / 1_000_000, "output": 0.60 / 1_000_000},
+    "amazon.titan-text-lite-v1":                    {"input": 0.15 / 1_000_000, "output": 0.20 / 1_000_000},
+    # Amazon Titan (embeddings) — output is a vector, not tokens, so output cost is 0
+    "amazon.titan-embed-text-v2:0":                 {"input": 0.02 / 1_000_000, "output": 0.0},
+    "amazon.titan-embed-text-v1":                   {"input": 0.10 / 1_000_000, "output": 0.0},
+}
 
 # Google OAuth configuration (for token exchange - secret stored securely here)
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
@@ -208,6 +242,79 @@ bedrock_config = Config(
     retries={"max_attempts": 3, "mode": "adaptive"},
 )
 bedrock_runtime = boto3.client("bedrock-runtime", config=bedrock_config)
+
+# Initialize DynamoDB client for budget tracking
+_dynamodb = None
+
+
+def get_dynamodb_table():
+    """Get the DynamoDB table resource for budget tracking."""
+    global _dynamodb
+    if _dynamodb is None and BUDGET_TABLE_NAME:
+        _dynamodb = boto3.resource("dynamodb").Table(BUDGET_TABLE_NAME)
+    return _dynamodb
+
+
+def calculate_request_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Calculate the USD cost of a Bedrock request from token counts."""
+    pricing = MODEL_PRICING.get(model)
+    if not pricing:
+        logger.warning(f"No pricing info for model {model}, using Sonnet pricing as fallback")
+        pricing = {"input": 3.00 / 1_000_000, "output": 15.00 / 1_000_000}
+    return (input_tokens * pricing["input"]) + (output_tokens * pricing["output"])
+
+
+def get_user_budget(user_id: str) -> Dict[str, Any]:
+    """
+    Fetch the user's budget record from DynamoDB.
+    
+    Returns dict with 'total_spend' and 'budget_limit'.
+    Creates a new record with defaults if the user doesn't exist yet.
+    """
+    table = get_dynamodb_table()
+    if not table:
+        logger.warning("Budget table not configured — skipping budget check")
+        return {"total_spend": 0.0, "budget_limit": float("inf")}
+
+    try:
+        resp = table.get_item(Key={"user_id": user_id})
+        item = resp.get("Item")
+        if item:
+            return {
+                "total_spend": float(item.get("total_spend", 0)),
+                "budget_limit": float(item.get("budget_limit", DEFAULT_BUDGET_LIMIT)),
+            }
+        # First time user — create record with defaults
+        table.put_item(Item={
+            "user_id": user_id,
+            "total_spend": 0,
+            "budget_limit": DEFAULT_BUDGET_LIMIT,
+        })
+        return {"total_spend": 0.0, "budget_limit": DEFAULT_BUDGET_LIMIT}
+    except Exception as e:
+        logger.error(f"DynamoDB get_user_budget error: {e}")
+        # Fail open — don't block requests if DynamoDB is down
+        return {"total_spend": 0.0, "budget_limit": float("inf")}
+
+
+def record_spend(user_id: str, cost: float) -> None:
+    """Atomically increment the user's total_spend in DynamoDB."""
+    table = get_dynamodb_table()
+    if not table or cost <= 0:
+        return
+
+    try:
+        table.update_item(
+            Key={"user_id": user_id},
+            UpdateExpression="SET total_spend = if_not_exists(total_spend, :zero) + :cost",
+            ExpressionAttributeValues={
+                ":cost": Decimal(str(round(cost, 8))),
+                ":zero": Decimal("0"),
+            },
+        )
+        logger.info(f"Recorded ${cost:.6f} spend for user {user_id}")
+    except Exception as e:
+        logger.error(f"DynamoDB record_spend error: {e}")
 
 
 def create_response(status_code: int, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -374,12 +481,24 @@ def invoke_bedrock_raw(
     }
 
 
-def handle_invoke(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle the /invoke endpoint."""
+def handle_invoke(body: Dict[str, Any], user_id: str = "anonymous") -> Dict[str, Any]:
+    """Handle the /invoke endpoint with budget enforcement."""
     # Validate request
     error = validate_request(body)
     if error:
         return create_response(400, {"error": error})
+    
+    # --- Budget pre-check: reject if user is already over budget ---
+    budget = get_user_budget(user_id)
+    remaining = budget["budget_limit"] - budget["total_spend"]
+    if remaining <= 0:
+        logger.warning(f"User {user_id} over budget: spent ${budget['total_spend']:.4f} / ${budget['budget_limit']:.2f}")
+        return create_response(429, {
+            "error": "Budget exceeded",
+            "total_spend": round(budget["total_spend"], 6),
+            "budget_limit": round(budget["budget_limit"], 2),
+            "remaining": 0.0,
+        })
     
     # Extract parameters
     model = body.get("model", DEFAULT_MODEL)
@@ -409,6 +528,20 @@ def handle_invoke(body: Dict[str, Any]) -> Dict[str, Any]:
                 temperature=temperature,
             )
         
+        # --- Budget post-call: calculate actual cost and record spend ---
+        input_tokens = result.get("usage", {}).get("input_tokens", 0)
+        output_tokens = result.get("usage", {}).get("output_tokens", 0)
+        cost = calculate_request_cost(model, input_tokens, output_tokens)
+        record_spend(user_id, cost)
+        
+        # Include cost info in the response so the client can display it
+        result["cost"] = {
+            "request_cost": round(cost, 8),
+            "total_spend": round(budget["total_spend"] + cost, 6),
+            "budget_limit": round(budget["budget_limit"], 2),
+            "remaining": round(max(0, remaining - cost), 6),
+        }
+        
         return create_response(200, result)
     
     except bedrock_runtime.exceptions.ValidationException as e:
@@ -432,9 +565,9 @@ def handle_invoke(body: Dict[str, Any]) -> Dict[str, Any]:
 # Embedding Handler
 # ========================
 
-def handle_embed(body: Dict[str, Any]) -> Dict[str, Any]:
+def handle_embed(body: Dict[str, Any], user_id: str = "anonymous") -> Dict[str, Any]:
     """
-    Handle the /embed endpoint.
+    Handle the /embed endpoint with budget enforcement.
     
     Supports single text or batch embedding via Bedrock Titan Embed V2.
     
@@ -453,6 +586,18 @@ def handle_embed(body: Dict[str, Any]) -> Dict[str, Any]:
     
     if single_text is not None and batch_texts is not None:
         return create_response(400, {"error": "Provide either 'text' or 'texts', not both"})
+    
+    # --- Budget pre-check: reject if user is already over budget ---
+    budget = get_user_budget(user_id)
+    remaining = budget["budget_limit"] - budget["total_spend"]
+    if remaining <= 0:
+        logger.warning(f"User {user_id} over budget: spent ${budget['total_spend']:.4f} / ${budget['budget_limit']:.2f}")
+        return create_response(429, {
+            "error": "Budget exceeded",
+            "total_spend": round(budget["total_spend"], 6),
+            "budget_limit": round(budget["budget_limit"], 2),
+            "remaining": 0.0,
+        })
     
     model = body.get("model", DEFAULT_EMBEDDING_MODEL)
     if model not in ALLOWED_EMBEDDING_MODELS:
@@ -498,6 +643,17 @@ def handle_embed(body: Dict[str, Any]) -> Dict[str, Any]:
             all_embeddings.append(response_body.get("embedding", []))
             total_input_tokens += response_body.get("inputTextTokenCount", 0)
         
+        # --- Budget post-call: calculate actual cost and record spend ---
+        cost = calculate_request_cost(model, total_input_tokens, 0)
+        record_spend(user_id, cost)
+        
+        cost_info = {
+            "request_cost": round(cost, 8),
+            "total_spend": round(budget["total_spend"] + cost, 6),
+            "budget_limit": round(budget["budget_limit"], 2),
+            "remaining": round(max(0, remaining - cost), 6),
+        }
+        
         # Return single vs batch format
         if single_text is not None:
             return create_response(200, {
@@ -505,6 +661,7 @@ def handle_embed(body: Dict[str, Any]) -> Dict[str, Any]:
                 "model": model,
                 "dimensions": dimensions,
                 "input_tokens": total_input_tokens,
+                "cost": cost_info,
             })
         else:
             return create_response(200, {
@@ -512,6 +669,7 @@ def handle_embed(body: Dict[str, Any]) -> Dict[str, Any]:
                 "model": model,
                 "dimensions": dimensions,
                 "input_tokens": total_input_tokens,
+                "cost": cost_info,
             })
     
     except bedrock_runtime.exceptions.ValidationException as e:
@@ -923,6 +1081,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # User is authenticated - user_payload contains JWT claims (sub, email, etc.)
     logger.info(f"Request authenticated for user: {user_payload.get('sub', 'unknown')}")
     
+    user_id = user_payload.get("sub", "anonymous")
+    
     if path == "/invoke" or path.endswith("/invoke"):
         if http_method != "POST":
             return create_response(405, {"error": "Method not allowed. Use POST."})
@@ -935,7 +1095,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             except json.JSONDecodeError:
                 return create_response(400, {"error": "Invalid JSON in request body"})
         
-        return handle_invoke(body)
+        return handle_invoke(body, user_id=user_id)
     
     # Embedding endpoint
     if path == "/embed" or path.endswith("/embed"):
@@ -949,7 +1109,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             except json.JSONDecodeError:
                 return create_response(400, {"error": "Invalid JSON in request body"})
         
-        return handle_embed(body)
+        return handle_embed(body, user_id=user_id)
     
     # Google OAuth token exchange
     if path == "/integrations/google/exchange" or path.endswith("/integrations/google/exchange"):
@@ -1029,7 +1189,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 body = json.loads(body)
             except json.JSONDecodeError:
                 return create_response(400, {"error": "Invalid JSON in request body"})
-        return handle_invoke(body)
+        return handle_invoke(body, user_id=user_id)
     
     return create_response(404, {"error": f"Not found: {path}"})
 
