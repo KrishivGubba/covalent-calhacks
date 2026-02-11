@@ -327,7 +327,16 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
           <div style={styles.modal}>
             <div style={styles.modalHeader}>
               <h3 style={styles.modalTitle}>Edit Action</h3>
-              <button style={styles.modalClose} onClick={() => closeEditModal(true)}>
+              <button 
+                style={styles.modalClose} 
+                onClick={() => closeEditModal(true)}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#27272a';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#1a1a1a';
+                }}
+              >
                 ✕
               </button>
             </div>
@@ -338,6 +347,12 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
                   style={styles.modalInput}
                   value={editTitle}
                   onChange={(e) => setEditTitle(e.target.value)}
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = '#3f3f46';
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = '#27272a';
+                  }}
                 />
               </label>
               <label style={styles.modalLabel}>
@@ -347,6 +362,12 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
                   value={editPlan}
                   onChange={(e) => setEditPlan(e.target.value)}
                   rows={5}
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = '#3f3f46';
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = '#27272a';
+                  }}
                 />
               </label>
               <label style={styles.modalCheckboxLabel}>
@@ -360,10 +381,28 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
               {editError && <div style={styles.modalError}>{editError}</div>}
             </div>
             <div style={styles.modalActions}>
-              <button style={styles.modalCancel} onClick={() => closeEditModal(true)}>
+              <button 
+                style={styles.modalCancel} 
+                onClick={() => closeEditModal(true)}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#27272a';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#1a1a1a';
+                }}
+              >
                 Cancel
               </button>
-              <button style={styles.modalRun} onClick={handleRunEditedAction}>
+              <button 
+                style={styles.modalRun} 
+                onClick={handleRunEditedAction}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.opacity = '0.9';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.opacity = '1';
+                }}
+              >
                 Run now
               </button>
             </div>
@@ -657,7 +696,9 @@ const styles = {
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(15, 23, 42, 0.35)',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backdropFilter: 'blur(8px)',
+    WebkitBackdropFilter: 'blur(8px)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -668,13 +709,11 @@ const styles = {
     width: '640px',
     maxWidth: '94vw',
     maxHeight: '85vh',
-    backgroundColor: 'rgba(255, 255, 255, 0.75)',
-    borderRadius: '24px',
-    padding: '1.25rem 1.25rem 1rem',
-    boxShadow: '0 30px 80px rgba(15, 23, 42, 0.35)',
-    border: '1px solid rgba(255, 255, 255, 0.6)',
-    backdropFilter: 'blur(28px) saturate(160%)',
-    WebkitBackdropFilter: 'blur(28px) saturate(160%)',
+    backgroundColor: '#141414',
+    borderRadius: '16px',
+    padding: '1.5rem',
+    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)',
+    border: '1px solid #27272a',
     display: 'flex',
     flexDirection: 'column' as const,
   },
@@ -682,23 +721,28 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: '0.75rem',
+    marginBottom: '1.25rem',
   },
   modalTitle: {
     margin: 0,
     fontSize: '1.35rem',
     fontWeight: '600',
-    color: '#0f172a',
+    color: '#ffffff',
+    letterSpacing: '-0.01em',
   },
   modalClose: {
     border: 'none',
-    backgroundColor: 'rgba(15, 23, 42, 0.08)',
-    color: '#0f172a',
-    width: '32px',
-    height: '32px',
-    borderRadius: '12px',
+    backgroundColor: '#1a1a1a',
+    color: '#a1a1aa',
+    width: '36px',
+    height: '36px',
+    borderRadius: '10px',
     cursor: 'pointer',
-    fontSize: '0.9rem',
+    fontSize: '1rem',
+    transition: 'all 0.2s ease',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   modalBody: {
     overflowY: 'auto' as const,
@@ -707,61 +751,79 @@ const styles = {
   modalLabel: {
     display: 'flex',
     flexDirection: 'column' as const,
-    gap: '0.4rem',
-    marginBottom: '0.8rem',
-    fontSize: '0.85rem',
-    color: '#0f172a',
+    gap: '0.5rem',
+    marginBottom: '1rem',
+    fontSize: '0.9rem',
+    fontWeight: '500',
+    color: '#ffffff',
   },
   modalInput: {
-    padding: '0.5rem 0.6rem',
-    borderRadius: '12px',
-    border: '1px solid rgba(148, 163, 184, 0.5)',
+    padding: '10px 14px',
+    borderRadius: '8px',
+    border: '1px solid #27272a',
     fontSize: '0.9rem',
-    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    backgroundColor: '#111111',
+    color: '#ffffff',
+    outline: 'none',
+    transition: 'border-color 0.2s ease',
   },
   modalTextarea: {
-    padding: '0.5rem 0.6rem',
-    borderRadius: '12px',
-    border: '1px solid rgba(148, 163, 184, 0.5)',
+    padding: '10px 14px',
+    borderRadius: '8px',
+    border: '1px solid #27272a',
     fontSize: '0.9rem',
     resize: 'vertical' as const,
-    backgroundColor: 'rgba(255, 255, 255, 0.7)',
-    minHeight: '90px',
+    backgroundColor: '#111111',
+    color: '#ffffff',
+    minHeight: '120px',
+    outline: 'none',
+    lineHeight: '1.5',
+    fontFamily: 'inherit',
+    transition: 'border-color 0.2s ease',
   },
   modalCheckboxLabel: {
     display: 'flex',
     alignItems: 'center',
-    gap: '0.5rem',
-    fontSize: '0.85rem',
-    color: '#0f172a',
+    gap: '0.6rem',
+    fontSize: '0.9rem',
+    color: '#a1a1aa',
     marginBottom: '0.8rem',
+    cursor: 'pointer',
   },
   modalActions: {
     display: 'flex',
     justifyContent: 'flex-end',
     gap: '0.75rem',
-    marginTop: '0.8rem',
-    paddingTop: '0.5rem',
-    borderTop: '1px solid rgba(148, 163, 184, 0.25)',
+    marginTop: '1.25rem',
+    paddingTop: '1rem',
+    borderTop: '1px solid #27272a',
   },
   modalCancel: {
-    padding: '0.5rem 0.9rem',
-    borderRadius: '999px',
-    border: '1px solid rgba(148, 163, 184, 0.6)',
-    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    padding: '10px 20px',
+    borderRadius: '8px',
+    border: '1px solid #27272a',
+    backgroundColor: '#1a1a1a',
+    color: '#a1a1aa',
+    fontSize: '0.9rem',
+    fontWeight: '500',
     cursor: 'pointer',
+    transition: 'all 0.2s ease',
   },
   modalRun: {
-    padding: '0.5rem 0.9rem',
-    borderRadius: '999px',
-    border: '1px solid rgba(15, 23, 42, 0.25)',
-    backgroundColor: 'rgba(15, 23, 42, 0.9)',
-    color: '#f8fafc',
+    padding: '10px 20px',
+    borderRadius: '8px',
+    border: 'none',
+    backgroundColor: '#C5F467',
+    color: '#0a0a0a',
+    fontSize: '0.9rem',
+    fontWeight: '600',
     cursor: 'pointer',
+    transition: 'all 0.2s ease',
   },
   modalError: {
-    color: '#b91c1c',
+    color: '#ef4444',
     fontSize: '0.85rem',
+    marginTop: '0.5rem',
   },
   // Action Plan Confirmation Modal styles
   planModal: {
