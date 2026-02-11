@@ -97,8 +97,7 @@ def _resolve_tool_display(proposed_action: dict, loop=None) -> dict:
 app = Flask(__name__)
 CORS(app)
 print("Starting Flask app")
-print("hello krishvi gubba")
-print("random startup log")
+
 
 @app.before_request
 def start_timer():
@@ -200,14 +199,31 @@ integration_dao.ensure_table()  # Create integration_tokens table if needed
 def screen():
     try:
         body = request.get_json()
+        print("🔍 DEBUG: Screen endpoint called with body:", body)
         
-        # The body is already parsed JSON from the Rust code
-        # Extract fields directly from the JSON object
-        description = body.get("description", "")
-        app_name = body.get("app_name", "Unknown")
-        context_type = body.get("context_type", {})
-        activity_level = body.get("activity_level", "Unknown")
-        workflow_stage = body.get("workflow_stage", "Unknown")
+        # Import json for parsing
+        import json
+        
+        # Parse the comprehensive data from the 'data' field (which contains all context)
+        full_context_data = {}
+        if "data" in body and body["data"]:
+            try:
+                if isinstance(body["data"], str):
+                    full_context_data = json.loads(body["data"])
+                else:
+                    full_context_data = body["data"]
+            except json.JSONDecodeError:
+                print("⚠️ Warning: Could not parse 'data' field, using top-level fields")
+                full_context_data = body
+        else:
+            full_context_data = body
+        
+        # Extract key fields for enhanced description
+        description = full_context_data.get("description", body.get("description", ""))
+        app_name = full_context_data.get("app_name", body.get("app_name", "Unknown"))
+        context_type = full_context_data.get("context_type", body.get("context_type", {}))
+        activity_level = full_context_data.get("activity_level", body.get("activity_level", "Unknown"))
+        workflow_stage = full_context_data.get("workflow_stage", body.get("workflow_stage", "Unknown"))
         
         # Format context_type properly (it's a nested object like {"Development": "DevOps"})
         context_type_str = "Unknown"
@@ -217,10 +233,34 @@ def screen():
                 context_type_str = f"{key}({value})" if value else key
                 break
         
-        # Enhance description with app context for better action generation
-        enhanced_description = f"Current App: {app_name} | Context: {context_type_str} | Activity: {activity_level} | Stage: {workflow_stage} | {description}"
+        # Extract OCR text if available
+        raw_ocr_text = full_context_data.get("raw_ocr_text", "")
+        ocr_section = ""
+        if raw_ocr_text:
+            ocr_section = f"""
+RAW OCR TEXT FROM SCREEN (ALL TEXT VISIBLE TO USER):
+{raw_ocr_text}
+"""
         
-        print(f"Enhanced description: {enhanced_description}")
+        # Create a comprehensive string representation of ALL context data
+        # This includes all metadata, OCR data, visual data, app info, etc.
+        comprehensive_context_str = f"""=== COMPREHENSIVE CONTEXT DATA ===
+
+APPLICATION INFO:
+- App Name: {app_name}
+- Context Type: {context_type_str}
+- Activity Level: {activity_level}
+- Workflow Stage: {workflow_stage}
+
+USER ACTIVITY DESCRIPTION:
+{description}
+{ocr_section}
+FULL CONTEXT DATA (JSON):
+{json.dumps(full_context_data, indent=2, ensure_ascii=False)}
+
+=== END CONTEXT DATA ==="""
+        
+        print(f"📊 Comprehensive context length: {len(comprehensive_context_str)} chars")
         
         # Get MCP integration statuses (so LLM knows which actions are available)
         statuses = integration_dao.get_all_statuses()
@@ -264,13 +304,12 @@ def screen():
         
         print(f"Available MCPs: {[mcp['name'] for mcp in connected_mcps]}")
         
-        # Convert the entire body to JSON string for storage
-        import json
-        data_str = json.dumps(body)
+        # Convert the entire body to JSON string for storage in the data parameter
+        data_str = json.dumps(body, ensure_ascii=False)
         
-        # Call learn function - returns dict with structure info and actions
-        print(f"\n📍 DEBUG: Calling tree.learn_with_structure()...")
-        result = tree.learn_with_structure(enhanced_description, data_str, available_mcps=connected_mcps)
+        # Call learn function with comprehensive context - returns dict with structure info and actions
+        print(f"\n📍 DEBUG: Calling tree.learn_with_structure() with comprehensive context...")
+        result = tree.learn_with_structure(comprehensive_context_str, data_str, available_mcps=connected_mcps)
         print(f"📍 DEBUG: Operation: {result['operation']}, Confidence: {result['confidence']}")
         
         # Extract recent actions from the result
@@ -278,14 +317,14 @@ def screen():
         print(f"📍 DEBUG: Got {len(recent_actions)} recent actions")
 
         # Format actions for frontend
+        # Tuple format: (UUID, Action_name, Action_plan, Node_UUID, last_selected)
         actions_list = []
         for action in recent_actions:
-            uuid, name, plan, prompt, node_uuid, last_selected = action
+            uuid, name, plan, node_uuid, last_selected = action
             actions_list.append({
                 "action_uuid": str(uuid),
                 "action_name": name,
                 "action_plan": plan,
-                "action_prompt": prompt,
                 "last_selected": last_selected
             })
 
@@ -300,7 +339,6 @@ def screen():
             # Legacy fields for backward compatibility
             "action_name": primary_action["action_name"] if primary_action else None,
             "action_plan": primary_action["action_plan"] if primary_action else None,
-            "action_prompt": primary_action["action_prompt"] if primary_action else None,
             "action_uuid": primary_action["action_uuid"] if primary_action else None
         }), 200
     except Exception as e:
@@ -2091,9 +2129,6 @@ def edit_action():
         if not action_uuid:
             return jsonify({"error": "action_uuid is required"}), 400
 
-        if "action_prompt" in action_override and not action_override.get("action_prompt"):
-            return jsonify({"error": "action_prompt cannot be empty"}), 400
-
         action_data = tree.dao.get_action_by_id(action_uuid)
         if not action_data:
             return jsonify({"error": "action not found"}), 404
@@ -2118,9 +2153,8 @@ def edit_action():
         except Exception:
             pass
         # endregion
-        _, action_name, action_plan, action_prompt, _ = action_data
-
-        
+        # Unpack action_data - 5-tuple with None placeholder for deprecated action_prompt
+        _, action_name, action_plan, _, _ = action_data
 
         # region agent log
         try:
@@ -2134,8 +2168,7 @@ def edit_action():
                 "data": {
                     "action_uuid": action_uuid,
                     "action_name": action_name,
-                    "action_plan": action_plan,
-                    "has_action_prompt": bool(action_prompt)
+                    "action_plan": action_plan
                 },
                 "timestamp": int(time.time() * 1000)
             }
@@ -2147,16 +2180,14 @@ def edit_action():
 
         effective_action = {
             "action_name": action_override.get("action_name") or action_name,
-            "action_plan": action_override.get("action_plan") or action_plan,
-            "action_prompt": action_override.get("action_prompt") or action_prompt
+            "action_plan": action_override.get("action_plan") or action_plan
         }
 
         if persist:
             tree.dao.update_action(
                 action_uuid,
                 effective_action["action_name"],
-                effective_action["action_plan"],
-                effective_action["action_prompt"]
+                effective_action["action_plan"]
             )
 
         return jsonify({

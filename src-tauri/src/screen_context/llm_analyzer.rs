@@ -36,6 +36,7 @@ pub struct ContextAnalysisOutput {
     pub automation_opportunities: Vec<String>,
     pub timestamp: DateTime<Utc>,
     pub metadata: AnalysisMetadata,
+    pub raw_ocr_text: Option<String>, // Raw OCR text for action generation
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +124,14 @@ impl LLMAnalyzer {
         // Get data sources used
         let data_sources_used = self.get_data_sources_used(raw_context);
         
+        // Extract raw OCR text for action generation
+        let raw_ocr_text = raw_context.ocr_data.as_ref().map(|ocr| {
+            ocr.results.iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<&str>>()
+                .join("\n")
+        });
+        
         let output = ContextAnalysisOutput {
             app_name: raw_context.app_info.name.clone(),
             description,
@@ -144,6 +153,7 @@ impl LLMAnalyzer {
                 focus_areas,
                 context_switches: raw_context.activity_metrics.context_switches,
             },
+            raw_ocr_text,
         };
         
         self.last_analysis = Some(output.clone());
@@ -184,12 +194,15 @@ impl LLMAnalyzer {
         let metadata = self.build_metadata_for_claude(raw_context, context_type, dom_changes, region_changes);
         
         let system_prompt = "You are an AI assistant that analyzes user activity and context. \
-            Generate a concise, natural description (max 200 words) of what the user is currently doing. \
-            Focus on the task, workflow stage, and key activities. Be specific but concise.";
+            Generate a concise, natural description of what the user is currently doing. \
+            Focus on the task, workflow stage, and key activities. Be specific but concise.
+            (max 250 words)
+            ";
         
         let user_prompt = format!(
             "Analyze this user context and generate a description:\n\n{}\n\n\
-            Generate a concise description of what the user is doing.",
+            Generate a concise description of what the user is doing.
+            ",
             metadata
         );
 
@@ -254,9 +267,10 @@ impl LLMAnalyzer {
         // Encode to base64
         let screenshot_base64 = ClaudeProvider::encode_image_to_base64(&png_bytes);
         
-        let system_prompt = "You are an AI assistant that analyzes user activity from screenshots and metadata. \
-            Generate a concise, natural description (max 200 words) of what the user is currently doing. \
-            Analyze the screenshot AND the provided metadata. Be specific but concise.";
+        let system_prompt = "You are an AI assistant that analyzes user activity and context. \
+            Generate a concise, natural description of what the user is currently doing. \
+            Focus on the task, workflow stage, and key activities. Be specific but concise.
+            (max 250 words)";
         
         let user_prompt = format!(
             "Here is the user's screen. Analyze both the screenshot and this metadata:\n\n{}\n\n\

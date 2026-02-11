@@ -477,39 +477,6 @@ const GraphVisualization: React.FC<{
   );
 };
 
-// ── Legend ──────────────────────────────────────────────────────────────────────
-
-const Legend: React.FC = () => {
-  const items = [
-    { color: COLORS.root, label: 'Root' },
-    { color: COLORS.level1, label: 'Level 1' },
-    { color: COLORS.level2, label: 'Level 2' },
-    { color: COLORS.leaf, label: 'Leaf' },
-    { color: COLORS.withActions, label: 'Has Actions' },
-  ];
-  return (
-    <div style={{
-      display: 'flex',
-      gap: 16,
-      padding: '10px 16px',
-      backgroundColor: 'rgba(20, 20, 20, 0.6)',
-      borderRadius: 8,
-      border: '1px solid #27272a',
-      flexWrap: 'wrap',
-    }}>
-      {items.map((item) => (
-        <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{
-            width: 10, height: 10, borderRadius: '50%',
-            backgroundColor: item.color, flexShrink: 0,
-          }} />
-          <span style={{ fontSize: '0.75rem', color: '#a1a1aa' }}>{item.label}</span>
-        </div>
-      ))}
-    </div>
-  );
-};
-
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 const MemoryPage: React.FC = () => {
@@ -577,7 +544,7 @@ const MemoryPage: React.FC = () => {
         <div>
           <h1 style={styles.title}>Memory Graph</h1>
           <p style={styles.subtitle}>
-            Visualize your knowledge graph and memory structure
+            Visualize and edit what Covalent knows about you
           </p>
         </div>
       </div>
@@ -595,12 +562,7 @@ const MemoryPage: React.FC = () => {
         <div style={styles.statsBar}>
           <div style={styles.statItem}>
             <span style={styles.statValue}>{graphData.stats.total_nodes}</span>
-            <span style={styles.statLabel}>Nodes</span>
-          </div>
-          <div style={styles.statDivider} />
-          <div style={styles.statItem}>
-            <span style={styles.statValue}>{graphData.edges.length}</span>
-            <span style={styles.statLabel}>Edges</span>
+            <span style={styles.statLabel}>Items</span>
           </div>
           <div style={styles.statDivider} />
           <div style={styles.statItem}>
@@ -637,9 +599,8 @@ const MemoryPage: React.FC = () => {
         </div>
       )}
 
-      {/* Legend + Actions */}
+      {/* Actions */}
       <div style={styles.footer}>
-        {hasData && <Legend />}
         <div style={styles.actionButtons}>
           <button style={styles.refreshButton} onClick={loadGraphData} disabled={loading}>
             {loading ? 'Loading...' : 'Refresh'}

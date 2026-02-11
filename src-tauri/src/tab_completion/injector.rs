@@ -39,7 +39,7 @@ pub fn inject_with_backspace(text: String, chars_to_erase: usize) -> Result<(), 
 fn send_backspaces(count: usize) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        use core_graphics::event::{CGEvent, CGKeyCode};
+        use core_graphics::event::{CGEvent, CGKeyCode, CGEventFlags};
         use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
         const kVK_Delete: CGKeyCode = 0x33; // Backspace key
@@ -48,9 +48,11 @@ fn send_backspaces(count: usize) -> Result<()> {
             .map_err(|_| anyhow::anyhow!("Failed to create event source"))?;
 
         for i in 0..count {
-            // Key down
+            // Key down — explicitly clear modifier flags so Option being held
+            // doesn't turn this into Option+Delete (word deletion)
             let key_down = CGEvent::new_keyboard_event(source.clone(), kVK_Delete, true)
                 .map_err(|_| anyhow::anyhow!("Failed to create backspace key down event"))?;
+            key_down.set_flags(CGEventFlags::empty());
             key_down.post(core_graphics::event::CGEventTapLocation::HID);
 
             // Small delay between key events
@@ -59,6 +61,7 @@ fn send_backspaces(count: usize) -> Result<()> {
             // Key up
             let key_up = CGEvent::new_keyboard_event(source.clone(), kVK_Delete, false)
                 .map_err(|_| anyhow::anyhow!("Failed to create backspace key up event"))?;
+            key_up.set_flags(CGEventFlags::empty());
             key_up.post(core_graphics::event::CGEventTapLocation::HID);
 
             // Small delay between backspaces
@@ -122,7 +125,7 @@ fn send_paste_command() -> Result<()> {
             keystroke "v" using command down
         end tell
     "#;
-    
+
     execute_applescript(script)
 }
 

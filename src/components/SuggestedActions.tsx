@@ -1,15 +1,44 @@
 import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { disableContextCollection, enableContextCollection } from '../utils/contextControl';
+import { disableContextCollection, enableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
 
 export interface Action {
   id: string;
   uuid: string;           // Action UUID from database
   title: string;          // action_name from backend
-  description: string;    // action_plan from backend
-  action_prompt: string;  // action_prompt from backend (sent when triggering)
+  description: string;    // action_plan from backend (contains full context for execution)
   node_uuid?: string;     // Optional: node this action belongs to
   node_metadata?: string; // Optional: metadata of the node
+}
+
+// Action plan returned from /plan_action endpoint
+export interface ActionPlan {
+  status: string;
+  action_text: string;
+  context_data: string;
+  proposed_action?: {
+    tool_name: string;
+    parameters: Record<string, unknown>;
+    reasoning?: string;
+  };
+  display?: {
+    display_name: string;
+    description: string;
+    fields: Array<{
+      key: string;
+      label: string;
+      source: string;
+      editable: boolean;
+      widget: string;
+      required: boolean;
+      value: unknown;
+    }>;
+    has_schema: boolean;
+  };
+  research?: {
+    resources_read: string[];
+    context_gathered: string;
+  };
 }
 
 interface SuggestedActionsProps {
@@ -23,31 +52,52 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
   const [editingAction, setEditingAction] = useState<Action | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editPlan, setEditPlan] = useState('');
-  const [editPrompt, setEditPrompt] = useState('');
   const [editPersist, setEditPersist] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  
+  // New action plan confirmation state
+  const [planningAction, setPlanningAction] = useState<Action | null>(null);
+  const [actionPlan, setActionPlan] = useState<ActionPlan | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [editableParams, setEditableParams] = useState<Record<string, unknown>>({});
+  const [isExecuting, setIsExecuting] = useState(false);
 
   const handleActionClick = async (action: Action) => {
     const currentStatus = actionStatuses[action.id] || 'idle';
     
     if (currentStatus === 'idle') {
-      // Start playing - trigger the action via Tauri
+      // Start planning - call plan_action to get the action plan
       setActionStatuses({ ...actionStatuses, [action.id]: 'playing' });
+      setPlanningAction(action);
+      setPlanError(null);
+      setActionPlan(null);
       
       try {
-        console.log(`🎬 Triggering action: ${action.title} (${action.uuid})`);
+        console.log(`📋 Planning action: ${action.title} (${action.uuid})`);
         
-        // Call the Tauri command to trigger the action with action_prompt
-        await invoke('trigger_action', {
+        // Call the Tauri command to plan the action
+        const plan = await invoke<ActionPlan>('plan_action', {
           actionUuid: action.uuid,
-          actionPrompt: action.action_prompt,
+          actionOverride: null,
         });
         
-        console.log(`✅ Action completed successfully`);
-        setActionStatuses(prev => ({ ...prev, [action.id]: 'done' }));
+        console.log(`✅ Action plan received:`, plan);
+        setActionPlan(plan);
+        
+        // Initialize editable params from the plan
+        if (plan.proposed_action?.parameters) {
+          setEditableParams({ ...plan.proposed_action.parameters });
+        }
+        
+        // Keep status as 'playing' until user confirms or cancels
       } catch (error) {
-        console.error(`❌ Action failed:`, error);
+        console.error(`❌ Action planning failed:`, error);
+        setPlanError(String(error));
         setActionStatuses(prev => ({ ...prev, [action.id]: 'error' }));
+        setPlanningAction(null);
+        
+        // Re-enable context collection on error (only if not user-paused)
+        await enableContextCollectionIfNotUserPaused();
         
         // Reset to idle after 3 seconds on error
         setTimeout(() => {
@@ -63,11 +113,58 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
     }
   };
 
+  const handleExecuteAction = async () => {
+    if (!planningAction || !actionPlan?.proposed_action) {
+      return;
+    }
+    
+    setIsExecuting(true);
+    setPlanError(null);
+    
+    try {
+      console.log(`🚀 Executing action: ${planningAction.title}`);
+      console.log(`   Tool: ${actionPlan.proposed_action.tool_name}`);
+      console.log(`   Parameters:`, editableParams);
+      
+      await invoke('execute_action', {
+        actionUuid: planningAction.uuid,
+        toolName: actionPlan.proposed_action.tool_name,
+        parameters: editableParams,
+      });
+      
+      console.log(`✅ Action executed successfully`);
+      setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+    } catch (error) {
+      console.error(`❌ Action execution failed:`, error);
+      setPlanError(String(error));
+      setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'error' }));
+    } finally {
+      setIsExecuting(false);
+      setPlanningAction(null);
+      setActionPlan(null);
+      setEditableParams({});
+    }
+  };
+
+  const handleCancelPlan = async () => {
+    if (planningAction) {
+      setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'idle' }));
+    }
+    setPlanningAction(null);
+    setActionPlan(null);
+    setPlanError(null);
+    setEditableParams({});
+    await enableContextCollectionIfNotUserPaused();
+  };
+
+  const handleParamChange = (key: string, value: unknown) => {
+    setEditableParams(prev => ({ ...prev, [key]: value }));
+  };
+
   const openEditModal = async (action: Action) => {
     setEditingAction(action);
     setEditTitle(action.title);
     setEditPlan(action.description);
-    setEditPrompt(action.action_prompt);
     setEditPersist(false);
     setEditError(null);
     await disableContextCollection();
@@ -77,7 +174,7 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
     setEditingAction(null);
     setEditError(null);
     if (shouldResume) {
-      await enableContextCollection();
+      await enableContextCollectionIfNotUserPaused();
     }
   };
 
@@ -85,31 +182,49 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
     if (!editingAction) {
       return;
     }
-    if (!editPrompt.trim()) {
-      setEditError('Prompt is required.');
+    if (!editPlan.trim()) {
+      setEditError('Plan is required.');
       return;
     }
 
     try {
-      await invoke('edit_action', {
-        actionUuid: editingAction.uuid,
-        actionName: editTitle,
-        actionPlan: editPlan,
-        actionPrompt: editPrompt,
-        persist: editPersist,
-      });
+      // Save the edit if persist is enabled
+      if (editPersist) {
+        await invoke('edit_action', {
+          actionUuid: editingAction.uuid,
+          actionName: editTitle,
+          actionPlan: editPlan,
+          persist: editPersist,
+        });
+      }
 
-      await invoke('trigger_action_with_override', {
-        actionUuid: editingAction.uuid,
-        actionName: editTitle,
-        actionPlan: editPlan,
-        actionPrompt: editPrompt,
-      });
-
+      // Close the edit modal and open the plan flow
       await closeEditModal(false);
+      
+      // Trigger the action with the edited plan
+      const updatedAction = { ...editingAction, title: editTitle, description: editPlan };
+      setActionStatuses(prev => ({ ...prev, [editingAction.id]: 'playing' }));
+      setPlanningAction(updatedAction);
+      setPlanError(null);
+      setActionPlan(null);
+      
+      // Plan the action with override
+      const plan = await invoke<ActionPlan>('plan_action', {
+        actionUuid: editingAction.uuid,
+        actionOverride: {
+          action_name: editTitle,
+          action_plan: editPlan,
+        },
+      });
+      
+      setActionPlan(plan);
+      if (plan.proposed_action?.parameters) {
+        setEditableParams({ ...plan.proposed_action.parameters });
+      }
     } catch (error) {
       console.error('Failed to run edited action:', error);
       setEditError('Failed to run edited action. Please try again.');
+      await enableContextCollectionIfNotUserPaused();
     }
   };
 
@@ -206,6 +321,7 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
         )}
       </div>
 
+      {/* Edit Action Modal */}
       {editingAction && (
         <div style={styles.modalOverlay}>
           <div style={styles.modal}>
@@ -230,15 +346,6 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
                   style={styles.modalTextarea}
                   value={editPlan}
                   onChange={(e) => setEditPlan(e.target.value)}
-                  rows={3}
-                />
-              </label>
-              <label style={styles.modalLabel}>
-                Prompt
-                <textarea
-                  style={styles.modalTextarea}
-                  value={editPrompt}
-                  onChange={(e) => setEditPrompt(e.target.value)}
                   rows={5}
                 />
               </label>
@@ -260,6 +367,116 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
                 Run now
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Action Plan Confirmation Modal */}
+      {planningAction && actionPlan && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.planModal}>
+            <div style={styles.modalHeader}>
+              <h3 style={styles.modalTitle}>
+                {actionPlan.display?.display_name || actionPlan.proposed_action?.tool_name || 'Confirm Action'}
+              </h3>
+              <button style={styles.modalClose} onClick={handleCancelPlan}>
+                ✕
+              </button>
+            </div>
+            <div style={styles.planModalBody}>
+              {/* Tool description */}
+              {actionPlan.display?.description && (
+                <p style={styles.planDescription}>{actionPlan.display.description}</p>
+              )}
+              
+              {/* Reasoning from the agent */}
+              {actionPlan.proposed_action?.reasoning && (
+                <div style={styles.reasoningBox}>
+                  <strong>Action Plan:</strong> {actionPlan.proposed_action.reasoning}
+                </div>
+              )}
+
+              {/* Editable parameters */}
+              <div style={styles.paramsSection}>
+                <h4 style={styles.paramsSectionTitle}>Parameters</h4>
+                {actionPlan.display?.fields ? (
+                  actionPlan.display.fields.map((field) => (
+                    <label key={field.key} style={styles.modalLabel}>
+                      {field.label} {field.required && <span style={{ color: '#ef4444' }}></span>}
+                      {field.widget === 'textarea' || (typeof editableParams[field.key] === 'string' && String(editableParams[field.key]).length > 100) ? (
+                        <textarea
+                          style={styles.modalTextarea}
+                          value={String(editableParams[field.key] ?? field.value ?? '')}
+                          onChange={(e) => handleParamChange(field.key, e.target.value)}
+                          disabled={!field.editable}
+                          rows={4}
+                        />
+                      ) : (
+                        <input
+                          style={styles.modalInput}
+                          value={String(editableParams[field.key] ?? field.value ?? '')}
+                          onChange={(e) => handleParamChange(field.key, e.target.value)}
+                          disabled={!field.editable}
+                        />
+                      )}
+                    </label>
+                  ))
+                ) : (
+                  // Fallback: render all parameters as editable fields
+                  Object.entries(editableParams).map(([key, value]) => (
+                    <label key={key} style={styles.modalLabel}>
+                      {key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                      {typeof value === 'string' && value.length > 100 ? (
+                        <textarea
+                          style={styles.modalTextarea}
+                          value={String(value)}
+                          onChange={(e) => handleParamChange(key, e.target.value)}
+                          rows={4}
+                        />
+                      ) : (
+                        <input
+                          style={styles.modalInput}
+                          value={String(value ?? '')}
+                          onChange={(e) => handleParamChange(key, e.target.value)}
+                        />
+                      )}
+                    </label>
+                  ))
+                )}
+              </div>
+
+              {planError && <div style={styles.modalError}>{planError}</div>}
+            </div>
+            <div style={styles.planModalActions}>
+              <button 
+                style={styles.exitButton} 
+                onClick={handleCancelPlan}
+                disabled={isExecuting}
+              >
+                Exit
+              </button>
+              <button 
+                style={styles.executeButton} 
+                onClick={handleExecuteAction}
+                disabled={isExecuting}
+              >
+                {isExecuting ? 'Executing...' : 'Execute'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Loading state while planning */}
+      {planningAction && !actionPlan && !planError && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.loadingModal}>
+            <div style={styles.loadingSpinner}>
+              <span style={styles.dot1}>.</span>
+              <span style={styles.dot2}>.</span>
+              <span style={styles.dot3}>.</span>
+            </div>
+            <p style={styles.loadingText}>Planning action...</p>
           </div>
         </div>
       )}
@@ -545,6 +762,102 @@ const styles = {
   modalError: {
     color: '#b91c1c',
     fontSize: '0.85rem',
+  },
+  // Action Plan Confirmation Modal styles
+  planModal: {
+    width: '700px',
+    maxWidth: '94vw',
+    maxHeight: '85vh',
+    backgroundColor: 'rgba(255, 255, 255, 0.85)',
+    borderRadius: '24px',
+    padding: '1.25rem 1.25rem 1rem',
+    boxShadow: '0 30px 80px rgba(15, 23, 42, 0.35)',
+    border: '1px solid rgba(255, 255, 255, 0.6)',
+    backdropFilter: 'blur(28px) saturate(160%)',
+    WebkitBackdropFilter: 'blur(28px) saturate(160%)',
+    display: 'flex',
+    flexDirection: 'column' as const,
+  },
+  planModalBody: {
+    overflowY: 'auto' as const,
+    paddingRight: '0.25rem',
+    flex: 1,
+  },
+  planDescription: {
+    fontSize: '0.9rem',
+    color: '#475569',
+    marginBottom: '1rem',
+    lineHeight: '1.5',
+  },
+  reasoningBox: {
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    border: '1px solid rgba(255, 255, 255, 0.4)',
+    borderRadius: '12px',
+    padding: '0.75rem 1rem',
+    marginBottom: '1rem',
+    fontSize: '0.85rem',
+    color: '#0f172a',
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
+  },
+  paramsSection: {
+    marginTop: '0.5rem',
+  },
+  paramsSectionTitle: {
+    fontSize: '0.95rem',
+    fontWeight: '600',
+    color: '#0f172a',
+    marginBottom: '0.75rem',
+  },
+  planModalActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: '0.75rem',
+    marginTop: '1rem',
+    paddingTop: '0.75rem',
+    borderTop: '1px solid rgba(148, 163, 184, 0.25)',
+  },
+  exitButton: {
+    padding: '0.6rem 1.5rem',
+    borderRadius: '999px',
+    border: '2px solid rgba(239, 68, 68, 0.6)',
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    color: '#dc2626',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+  },
+  executeButton: {
+    padding: '0.6rem 1.5rem',
+    borderRadius: '999px',
+    border: '2px solid rgba(34, 197, 94, 0.6)',
+    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+    color: '#16a34a',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+  },
+  loadingModal: {
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: '20px',
+    padding: '2rem 3rem',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    boxShadow: '0 20px 60px rgba(15, 23, 42, 0.25)',
+    border: '1px solid rgba(255, 255, 255, 0.6)',
+    backdropFilter: 'blur(28px)',
+    WebkitBackdropFilter: 'blur(28px)',
+  },
+  loadingSpinner: {
+    fontSize: '2rem',
+    color: '#9333ea',
+    marginBottom: '0.5rem',
+  },
+  loadingText: {
+    fontSize: '0.95rem',
+    color: '#475569',
   },
 };
 

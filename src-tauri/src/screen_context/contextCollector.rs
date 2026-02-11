@@ -59,6 +59,7 @@ impl ContextCollector {
             ide_type: None,
             current_file_path: None,
             workspace_path: None,
+            display_id: None,
         }
     }
     

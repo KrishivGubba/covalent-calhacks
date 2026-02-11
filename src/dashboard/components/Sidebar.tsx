@@ -46,7 +46,7 @@ const UserIcon = () => (
 );
 
 const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange }) => {
-  const menuItems: { id: PageType; label: string; icon: () => JSX.Element }[] = [
+  const menuItems: { id: PageType; label: string; icon: () => React.JSX.Element }[] = [
     { id: 'settings', label: 'Settings', icon: SettingsIcon },
     { id: 'mcp', label: 'Integrations', icon: MCPIcon },
     { id: 'memory', label: 'Memory Graph', icon: MemoryIcon },

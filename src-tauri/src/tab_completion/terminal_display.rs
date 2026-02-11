@@ -68,8 +68,9 @@ impl TerminalDisplay {
         let mut handle = stdout.lock();
 
         // Truncate prediction to reasonable length
-        let display_text = if prediction.len() > 60 {
-            format!("{}...", &prediction[..57])
+        let display_text = if prediction.chars().count() > 60 {
+            let truncated: String = prediction.chars().take(57).collect();
+            format!("{}...", truncated)
         } else {
             prediction.to_string()
         };
@@ -107,11 +108,12 @@ impl TerminalDisplay {
 
         // Clear line and show prediction
         write!(handle, "\x1b[2K")?;
+        let status_preview: String = prediction.chars().take(80).collect();
         write!(
             handle,
             "\x1b[7m Suggestion [{}]: {} \x1b[0m",
             cache_level,
-            &prediction[..prediction.len().min(80)]
+            status_preview
         )?;
 
         // Restore cursor position

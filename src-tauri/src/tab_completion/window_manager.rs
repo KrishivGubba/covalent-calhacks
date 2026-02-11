@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tauri::{AppHandle, Manager, WebviewWindow, LogicalPosition, LogicalSize, Emitter, WebviewWindowBuilder, WebviewUrl};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow, LogicalPosition, LogicalSize};
 use serde::Serialize;
 
 use super::cursor_position::CursorPosition;
@@ -47,8 +47,9 @@ impl CompletionWindowManager {
         }
         
         // Truncate very long suggestions to prevent UI issues
-        let final_text = if sanitized_text.len() > 500 {
-            format!("{}...", &sanitized_text[..497])
+        let final_text = if sanitized_text.chars().count() > 500 {
+            let truncated: String = sanitized_text.chars().take(497).collect();
+            format!("{}...", truncated)
         } else {
             sanitized_text
         };
@@ -62,7 +63,8 @@ impl CompletionWindowManager {
             confidence: suggestion.confidence,
         };
         
-        println!("🎯 Attempting to show suggestion: {}", &safe_suggestion.text[..safe_suggestion.text.len().min(50)]);
+        let preview: String = safe_suggestion.text.chars().take(50).collect();
+        println!("🎯 Attempting to show suggestion: {}", preview);
         
         // Try tiered cursor detection
         let cursor_pos = self.get_cursor_position_tiered();
@@ -153,6 +155,21 @@ impl CompletionWindowManager {
             return Err(anyhow::anyhow!("Failed to show ghost window: {}", e));
         }
         
+        // Ensure the window is visible on all workspaces (macOS Spaces)
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa::appkit::{NSWindow, NSWindowCollectionBehavior};
+            use cocoa::base::id;
+            
+            if let Ok(ns_window) = window.ns_window() {
+                unsafe {
+                    let ns_window = ns_window as id;
+                    let behavior = NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces;
+                    ns_window.setCollectionBehavior_(behavior);
+                }
+            }
+        }
+        
         Ok(())
     }
     
@@ -164,11 +181,16 @@ impl CompletionWindowManager {
         // Calculate position
         let popup_width = 500.0;
         let popup_height = 200.0;
-        let (screen_width, screen_height) = self.get_screen_dimensions();
 
         let (final_x, final_y) = if let Some(cursor) = cursor_pos {
-            self.calculate_smart_position(cursor, popup_width, popup_height, screen_width, screen_height)
+            // Get the screen bounds for the screen containing the cursor
+            let (screen_x, screen_y, screen_width, screen_height) = self.get_screen_for_point(cursor.x, cursor.y);
+            println!("📍 Cursor at ({:.0}, {:.0}) on screen at ({:.0}, {:.0}) size ({:.0}x{:.0})", 
+                     cursor.x, cursor.y, screen_x, screen_y, screen_width, screen_height);
+            self.calculate_smart_position(cursor, popup_width, popup_height, screen_x, screen_y, screen_width, screen_height)
         } else {
+            // Fallback: use main screen dimensions
+            let (screen_width, screen_height) = self.get_screen_dimensions();
             self.get_frontmost_window_corner_position(popup_width, popup_height, screen_width, screen_height)
         };
 
@@ -209,11 +231,40 @@ impl CompletionWindowManager {
             eprintln!("⚠️  Failed to set always on top: {}", e);
         }
 
+        // Ensure the popup is visible without stealing focus from the active app.
+        // orderFrontRegardless MUST NOT be used here — it activates the Covalent
+        // app, which causes the clipboard paste (Cmd+V) in the accept handler to
+        // go to Covalent instead of the user's terminal.
+        // Instead, configure the window as a non-activating panel so it floats
+        // above all windows without stealing focus.
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa::appkit::{NSWindow, NSWindowCollectionBehavior};
+            use cocoa::base::id;
+            use objc::{msg_send, sel, sel_impl};
+
+            if let Ok(ns_window) = window.ns_window() {
+                unsafe {
+                    let ns_window = ns_window as id;
+                    // Use NSStatusWindowLevel (25) to ensure popup stays above
+                    // other always-on-top windows after a hide/show cycle.
+                    // This is higher than NSFloatingWindowLevel (3) which Tauri
+                    // uses for alwaysOnTop, and ensures visibility after orderOut/orderFront.
+                    ns_window.setLevel_(25); // NSStatusWindowLevel
+                    let behavior = NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
+                        | NSWindowCollectionBehavior::NSWindowCollectionBehaviorStationary;
+                    ns_window.setCollectionBehavior_(behavior);
+                    // orderFront without activating (nil sender = don't activate app)
+                    let _: () = msg_send![ns_window, orderFront: cocoa::base::nil];
+                }
+            }
+        }
+
         println!("✅ Showed popup window at ({:.0}, {:.0})", final_x, final_y);
         Ok(())
     }
     
-    /// Get screen dimensions for bounds checking
+    /// Get screen dimensions for bounds checking (deprecated - use get_screen_for_point instead)
     fn get_screen_dimensions(&self) -> (f64, f64) {
         // Try to get primary monitor dimensions
         #[cfg(target_os = "macos")]
@@ -235,47 +286,109 @@ impl CompletionWindowManager {
         // Fallback to reasonable defaults
         (1920.0, 1080.0)
     }
+    
+    /// Get screen bounds for the screen containing the given point
+    /// Returns (screen_x, screen_y, screen_width, screen_height)
+    #[cfg(target_os = "macos")]
+    fn get_screen_for_point(&self, x: f64, y: f64) -> (f64, f64, f64, f64) {
+        use cocoa::base::{id, nil};
+        use cocoa::foundation::NSRect;
+        use objc::{class, msg_send, sel, sel_impl};
+        
+        unsafe {
+            // Get all screens
+            let screens: id = msg_send![class!(NSScreen), screens];
+            if screens == nil {
+                // Fallback to main screen
+                let main_screen: id = msg_send![class!(NSScreen), mainScreen];
+                if main_screen != nil {
+                    let frame: NSRect = msg_send![main_screen, frame];
+                    return (frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
+                }
+                return (0.0, 0.0, 1920.0, 1080.0); // Final fallback
+            }
+            
+            let count: usize = msg_send![screens, count];
+            
+            // Check each screen to see if the point is within its bounds
+            for i in 0..count {
+                let screen: id = msg_send![screens, objectAtIndex: i];
+                if screen == nil {
+                    continue;
+                }
+                
+                let frame: NSRect = msg_send![screen, frame];
+                
+                // Check if point is within this screen's bounds
+                if x >= frame.origin.x && x < frame.origin.x + frame.size.width &&
+                   y >= frame.origin.y && y < frame.origin.y + frame.size.height {
+                    return (frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
+                }
+            }
+            
+            // If no screen contains the point, return the main screen
+            let main_screen: id = msg_send![class!(NSScreen), mainScreen];
+            if main_screen != nil {
+                let frame: NSRect = msg_send![main_screen, frame];
+                return (frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
+            }
+            
+            (0.0, 0.0, 1920.0, 1080.0) // Final fallback
+        }
+    }
+    
+    #[cfg(not(target_os = "macos"))]
+    fn get_screen_for_point(&self, _x: f64, _y: f64) -> (f64, f64, f64, f64) {
+        (0.0, 0.0, 1920.0, 1080.0)
+    }
 
     /// Calculate smart position near cursor with bounds handling
     /// If popup would go off screen, flip it to the other side of the cursor
+    /// Takes screen origin (x, y) and dimensions for multi-monitor support
     fn calculate_smart_position(
         &self,
         cursor: CursorPosition,
         popup_width: f64,
         popup_height: f64,
+        screen_x: f64,
+        screen_y: f64,
         screen_width: f64,
         screen_height: f64,
     ) -> (f64, f64) {
         let offset = 20.0; // Offset from cursor
         let margin = 10.0; // Margin from screen edge
 
+        // Calculate screen bounds
+        let screen_right = screen_x + screen_width;
+        let screen_bottom = screen_y + screen_height;
+
         // Try positioning below and to the right of cursor first
         let mut final_x = cursor.x + offset;
         let mut final_y = cursor.y + offset;
 
         // Check if popup would go off the right edge
-        if final_x + popup_width > screen_width - margin {
+        if final_x + popup_width > screen_right - margin {
             // Flip to left side of cursor
             final_x = cursor.x - popup_width - offset;
             // If still off screen (cursor near left edge), clamp to left margin
-            if final_x < margin {
-                final_x = margin;
+            if final_x < screen_x + margin {
+                final_x = screen_x + margin;
             }
         }
 
         // Check if popup would go off the bottom edge
-        if final_y + popup_height > screen_height - margin {
+        if final_y + popup_height > screen_bottom - margin {
             // Flip to above cursor
             final_y = cursor.y - popup_height - offset;
             // If still off screen (cursor near top), clamp to top margin
-            if final_y < margin {
-                final_y = margin;
+            if final_y < screen_y + margin {
+                final_y = screen_y + margin;
             }
         }
 
-        // Final safety clamp
-        final_x = final_x.max(margin).min(screen_width - popup_width - margin);
-        final_y = final_y.max(margin).min(screen_height - popup_height - margin);
+        // Final safety clamp to screen bounds
+        final_x = final_x.max(screen_x + margin).min(screen_right - popup_width - margin);
+        final_y = final_y.max(screen_y + margin).min(screen_bottom - popup_height - margin);
 
         (final_x, final_y)
     }

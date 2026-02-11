@@ -100,7 +100,7 @@ function CompletionPopup() {
         </div>
         
         <div style={styles.hint}>
-          <kbd style={styles.kbd}>⌘</kbd>+<kbd style={styles.kbd}>Tab</kbd> to accept · <kbd style={styles.kbd}>Esc</kbd> to dismiss
+          <kbd style={styles.kbd}>⌥</kbd>+<kbd style={styles.kbd}>Tab</kbd> to accept · <kbd style={styles.kbd}>Esc</kbd> to dismiss
         </div>
       </div>
     </div>

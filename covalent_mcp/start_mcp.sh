@@ -37,7 +37,7 @@ fi
 
 # Start MCP server in the background
 echo "Starting FastMCP server on port $MCP_PORT..."
-python3 -c "
+python -c "
 from covalent_mcp.server import mcp
 mcp.run(transport='streamable-http', host='0.0.0.0', port=$MCP_PORT)
 " > "$SCRIPT_DIR/mcp_server.log" 2>&1 &

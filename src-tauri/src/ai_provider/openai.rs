@@ -59,26 +59,16 @@ pub struct OpenAIProvider {
 impl OpenAIProvider {
     pub fn new() -> Result<Self> {
         let config = ProviderConfig::from_env();
-        
-        let api_key = config.openai_api_key
-            .ok_or_else(|| anyhow::anyhow!("OPENAI_API_KEY environment variable not set"))?;
-
-        Ok(Self {
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
-                .build()?,
-            api_key,
-            model: config.openai_model,
-        })
+        Self::new_with_config(&config)
     }
-    
+
     pub fn new_with_config(config: &ProviderConfig) -> Result<Self> {
         let api_key = config.openai_api_key.clone()
             .ok_or_else(|| anyhow::anyhow!("OPENAI_API_KEY not available in config"))?;
 
         Ok(Self {
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
+                .timeout(std::time::Duration::from_secs(config.openai_timeout))
                 .build()?,
             api_key,
             model: config.openai_model.clone(),

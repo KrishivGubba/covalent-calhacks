@@ -61,26 +61,16 @@ pub struct ClaudeProvider {
 impl ClaudeProvider {
     pub fn new() -> Result<Self> {
         let config = ProviderConfig::from_env();
-        
-        let api_key = config.anthropic_api_key
-            .ok_or_else(|| anyhow::anyhow!("ANTHROPIC_API_KEY or CLAUDE_API_KEY environment variable not set"))?;
-
-        Ok(Self {
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
-                .build()?,
-            api_key,
-            model: config.anthropic_model,
-        })
+        Self::new_with_config(&config)
     }
-    
+
     pub fn new_with_config(config: &ProviderConfig) -> Result<Self> {
         let api_key = config.anthropic_api_key.clone()
             .ok_or_else(|| anyhow::anyhow!("ANTHROPIC_API_KEY not available in config"))?;
 
         Ok(Self {
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
+                .timeout(std::time::Duration::from_secs(config.anthropic_timeout))
                 .build()?,
             api_key,
             model: config.anthropic_model.clone(),

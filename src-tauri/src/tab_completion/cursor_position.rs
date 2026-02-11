@@ -117,7 +117,8 @@ pub fn get_text_cursor_position() -> Result<CursorPosition> {
             }
             
             // Convert from Cocoa coordinates (bottom-left origin) to screen coordinates (top-left origin)
-            let screen_height = get_main_screen_height();
+            // Use the height of the screen containing this point for proper multi-monitor support
+            let screen_height = get_screen_height_for_point(rect.origin.x, rect.origin.y);
             let cursor_x = rect.origin.x;
             let cursor_y = screen_height - rect.origin.y - rect.size.height;
             
@@ -158,6 +159,61 @@ fn get_main_screen_height() -> f64 {
         let frame: NSRect = msg_send![screen, frame];
         frame.size.height
     }
+}
+
+/// Get the screen frame (origin and height) for a specific point in Cocoa coordinates
+/// Returns (screen_origin_y, screen_height) for proper coordinate conversion
+#[cfg(target_os = "macos")]
+fn get_screen_frame_for_point(x: f64, y_cocoa: f64) -> (f64, f64) {
+    
+    unsafe {
+        // Get all screens
+        let screens: id = msg_send![class!(NSScreen), screens];
+        if screens == nil {
+            let main_screen: id = msg_send![class!(NSScreen), mainScreen];
+            if main_screen != nil {
+                let frame: NSRect = msg_send![main_screen, frame];
+                return (frame.origin.y, frame.size.height);
+            }
+            return (0.0, 1080.0);
+        }
+        
+        let count: usize = msg_send![screens, count];
+        
+        // In Cocoa coordinates, Y increases upward from bottom-left of the main screen
+        // We need to find which screen contains this point
+        for i in 0..count {
+            let screen: id = msg_send![screens, objectAtIndex: i];
+            if screen == nil {
+                continue;
+            }
+            
+            let frame: NSRect = msg_send![screen, frame];
+            
+            // Check if point is within this screen's bounds (Cocoa coordinates)
+            if x >= frame.origin.x && x < frame.origin.x + frame.size.width &&
+               y_cocoa >= frame.origin.y && y_cocoa < frame.origin.y + frame.size.height {
+                return (frame.origin.y, frame.size.height);
+            }
+        }
+        
+        // If no screen found, use main screen
+        let main_screen: id = msg_send![class!(NSScreen), mainScreen];
+        if main_screen != nil {
+            let frame: NSRect = msg_send![main_screen, frame];
+            return (frame.origin.y, frame.size.height);
+        }
+        
+        (0.0, 1080.0)
+    }
+}
+
+/// Get the screen height for a specific point (for multi-monitor coordinate conversion)
+/// This finds which screen contains the point and returns its height
+#[cfg(target_os = "macos")]
+fn get_screen_height_for_point(x: f64, y_cocoa: f64) -> f64 {
+    let (_origin_y, height) = get_screen_frame_for_point(x, y_cocoa);
+    height
 }
 
 /// Fallback: Get mouse cursor position (not text cursor, but better than nothing)

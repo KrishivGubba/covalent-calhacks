@@ -59,6 +59,7 @@ colored = "2.0"
 base64 = "0.21"
 screenshots = "0.7"
 dotenvy = "0.15"
+serde_yaml = "0.9"
 arboard = "3.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 lazy_static = "1.4"

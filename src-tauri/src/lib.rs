@@ -31,8 +31,7 @@ pub struct SuggestedAction {
     pub id: String,
     pub uuid: String,
     pub title: String,           // action_name from Flask
-    pub description: String,     // action_plan from Flask
-    pub action_prompt: String,   // action_prompt from Flask
+    pub description: String,     // action_plan from Flask (contains full context for execution)
 }
 
 // Context collection state - controls whether context is being collected and sent
@@ -41,6 +40,9 @@ pub struct ContextState {
     // Controls whether context collection is active
     // Set to false to pause context collection (e.g., when actions are running, app is in focus, or user toggles)
     pub is_enabled: Arc<AtomicBool>,
+    // Tracks if user manually paused (vs automatic pause for action execution)
+    // When true, we should NOT auto-resume after actions complete
+    pub user_paused: Arc<AtomicBool>,
 }
 
 // Store for suggested actions
@@ -79,12 +81,11 @@ impl ActionsStore {
         }
     }
 
-    pub fn update_action(&self, action_uuid: &str, title: String, description: String, action_prompt: String) {
+    pub fn update_action(&self, action_uuid: &str, title: String, description: String) {
         if let Ok(mut actions) = self.actions.lock() {
             if let Some(action) = actions.iter_mut().find(|a| a.uuid == action_uuid) {
                 action.title = title;
                 action.description = description;
-                action.action_prompt = action_prompt;
                 println!("✏️  Updated action in store: {}", action_uuid);
             }
         }
@@ -95,11 +96,16 @@ impl ContextState {
     fn new() -> Self {
         Self {
             is_enabled: Arc::new(AtomicBool::new(true)), // Enabled by default
+            user_paused: Arc::new(AtomicBool::new(false)), // Not manually paused by default
         }
     }
 
     pub fn is_enabled(&self) -> bool {
         self.is_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn is_user_paused(&self) -> bool {
+        self.user_paused.load(Ordering::Relaxed)
     }
 
     pub fn enable(&self) {
@@ -110,6 +116,16 @@ impl ContextState {
     pub fn disable(&self) {
         println!("🔴 Context collection DISABLED");
         self.is_enabled.store(false, Ordering::Relaxed);
+    }
+    
+    // Enable only if user hasn't manually paused
+    pub fn enable_if_not_user_paused(&self) {
+        if !self.user_paused.load(Ordering::Relaxed) {
+            println!("🟢 Context collection ENABLED (auto-resume)");
+            self.is_enabled.store(true, Ordering::Relaxed);
+        } else {
+            println!("⏸️  Context collection remains PAUSED (user manually paused)");
+        }
     }
 
     pub fn toggle(&self) -> bool {
@@ -137,8 +153,7 @@ impl FlaskServer {
     }
 
     fn start(&self, app_dir: PathBuf) -> Result<(), String> {
-        let server_dir = app_dir.join("server");
-        let start_script = server_dir.join("start_server.sh");
+        let start_script = app_dir.join("start.sh");
         
         if !start_script.exists() {
             return Err(format!("Flask start script not found at {:?}", start_script));
@@ -148,7 +163,7 @@ impl FlaskServer {
         
         match Command::new("bash")
             .arg(&start_script)
-            .current_dir(&server_dir)
+            .current_dir(&app_dir)
             .spawn()
         {
             Ok(child) => {
@@ -284,11 +299,15 @@ fn toggle_context_collection(state: tauri::State<ContextState>) -> bool {
 
 #[tauri::command]
 fn enable_context_collection(state: tauri::State<ContextState>) {
+    // Clear user_paused flag when user explicitly resumes
+    state.user_paused.store(false, Ordering::Relaxed);
     state.enable();
 }
 
 #[tauri::command]
 fn disable_context_collection(state: tauri::State<ContextState>) {
+    // Set user_paused flag when user explicitly pauses
+    state.user_paused.store(true, Ordering::Relaxed);
     state.disable();
 }
 
@@ -297,24 +316,71 @@ fn get_context_collection_status(state: tauri::State<ContextState>) -> bool {
     state.is_enabled()
 }
 
-// Trigger action command
 #[tauri::command]
-async fn trigger_action(action_uuid: String, action_prompt: String, state: tauri::State<'_, ContextState>) -> Result<serde_json::Value, String> {
+fn enable_context_collection_if_not_user_paused(state: tauri::State<ContextState>) {
+    state.enable_if_not_user_paused();
+}
+
+// Plan action command - Phase 1 of new action flow
+// Returns action plan for user approval/editing before execution
+#[tauri::command]
+async fn plan_action(
+    action_uuid: String,
+    action_override: Option<serde_json::Value>,
+    state: tauri::State<'_, ContextState>
+) -> Result<serde_json::Value, String> {
     use screen_context::ContextApiClient;
     
-    println!("🎬 Triggering action: {} ({})", action_prompt, action_uuid);
+    println!("📋 Planning action: {}", action_uuid);
     
-    // Disable context collection during action execution to prevent feedback loops
+    // Disable context collection during planning
     state.disable();
     
     let api_client = ContextApiClient::new();
     
     let result = api_client
-        .trigger_action(action_uuid, action_prompt)
+        .plan_action(action_uuid, action_override)
         .await
-        .map_err(|e| format!("Failed to trigger action: {}", e));
+        .map_err(|e| format!("Failed to plan action: {}", e));
     
-    // Print the result from Flask/Composio
+    match &result {
+        Ok(response) => {
+            println!("✅ Action plan response:");
+            println!("{}", serde_json::to_string_pretty(response).unwrap_or_else(|_| format!("{:?}", response)));
+        }
+        Err(e) => {
+            println!("❌ Action planning failed: {}", e);
+            // Re-enable on error only if user hasn't manually paused
+            state.enable_if_not_user_paused();
+        }
+    }
+    
+    // Keep context collection disabled until action is executed or cancelled
+    // Frontend will call enable_context_collection when done
+    
+    result
+}
+
+// Execute action command - Phase 2 of new action flow
+// Called after user approves/edits the action plan
+#[tauri::command]
+async fn execute_action(
+    action_uuid: String,
+    tool_name: String,
+    parameters: serde_json::Value,
+    state: tauri::State<'_, ContextState>
+) -> Result<serde_json::Value, String> {
+    use screen_context::ContextApiClient;
+    
+    println!("🚀 Executing action: {} with tool {}", action_uuid, tool_name);
+    
+    let api_client = ContextApiClient::new();
+    
+    let result = api_client
+        .execute_action(action_uuid, tool_name, parameters)
+        .await
+        .map_err(|e| format!("Failed to execute action: {}", e));
+    
     match &result {
         Ok(response) => {
             println!("✅ Action execution response:");
@@ -325,10 +391,9 @@ async fn trigger_action(action_uuid: String, action_prompt: String, state: tauri
         }
     }
     
-    // Re-enable context collection after action completes
-    // Note: You may want to add a delay here to avoid immediate re-collection
+    // Re-enable context collection after action completes, but only if user hasn't manually paused
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    state.enable();
+    state.enable_if_not_user_paused();
     
     result
 }
@@ -339,7 +404,6 @@ async fn edit_action(
     action_uuid: String,
     action_name: String,
     action_plan: String,
-    action_prompt: String,
     persist: bool,
     store: tauri::State<'_, ActionsStore>
 ) -> Result<serde_json::Value, String> {
@@ -349,51 +413,13 @@ async fn edit_action(
 
     let api_client = ContextApiClient::new();
     let result = api_client
-        .edit_action(action_uuid.clone(), action_name.clone(), action_plan.clone(), action_prompt.clone(), persist)
+        .edit_action(action_uuid.clone(), action_name.clone(), action_plan.clone(), persist)
         .await
         .map_err(|e| format!("Failed to edit action: {}", e));
 
     if persist {
-        store.update_action(&action_uuid, action_name, action_plan, action_prompt);
+        store.update_action(&action_uuid, action_name, action_plan);
     }
-
-    result
-}
-
-// Trigger action with override command
-#[tauri::command]
-async fn trigger_action_with_override(
-    action_uuid: String,
-    action_name: String,
-    action_plan: String,
-    action_prompt: String,
-    state: tauri::State<'_, ContextState>
-) -> Result<serde_json::Value, String> {
-    use screen_context::ContextApiClient;
-
-    println!("🎬 Triggering action with override: {} ({})", action_name, action_uuid);
-
-    // Disable context collection during action execution to prevent feedback loops
-    state.disable();
-
-    let api_client = ContextApiClient::new();
-    let result = api_client
-        .trigger_action_with_override(action_uuid, action_name, action_plan, action_prompt)
-        .await
-        .map_err(|e| format!("Failed to trigger action: {}", e));
-
-    match &result {
-        Ok(response) => {
-            println!("✅ Action execution response:");
-            println!("{}", serde_json::to_string_pretty(response).unwrap_or_else(|_| format!("{:?}", response)));
-        }
-        Err(e) => {
-            println!("❌ Action execution failed: {}", e);
-        }
-    }
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    state.enable();
 
     result
 }
@@ -676,27 +702,38 @@ pub fn run() {
                     let hotkey_handler_clone = hotkey_handler.clone();
                     let app_handle_for_callback = app.handle().clone();
                     trigger.set_suggestion_callback(move |suggestion| {
-                        println!("📤 Showing completion suggestion");
+                        // Wrap in catch_unwind to prevent silent thread death.
+                        // A panic here (e.g. from byte-slicing non-ASCII) would kill the
+                        // spawned prediction thread, silently breaking the popup forever.
+                        let hh = hotkey_handler_clone.clone();
+                        let wm = window_manager_clone.clone();
+                        let ah = app_handle_for_callback.clone();
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                            // Use eprintln (stderr) for diagnostics — stdout is garbled by
+                            // TerminalDisplay ANSI cursor save/restore escape sequences.
+                            eprintln!("📤 [popup] Suggestion callback fired");
 
-                        // Update hotkey handler with new suggestion (this is thread-safe via parking_lot::Mutex)
-                        hotkey_handler_clone.set_suggestion(Some(suggestion.text.clone()));
+                            // Update hotkey handler with new suggestion (thread-safe via parking_lot::Mutex)
+                            hh.set_suggestion(Some(suggestion.text.clone()));
+                            eprintln!("📤 [popup 1/3] set_suggestion done");
 
-                        // Dispatch UI operations to main thread to prevent crashes
-                        let window_manager = window_manager_clone.clone();
-                        let suggestion_clone = suggestion.clone();
-                        let suggestion_text_for_log = suggestion.text.clone();
-                        println!("📤 Dispatching show_suggestion to main thread for: {}...",
-                                 &suggestion_text_for_log[..suggestion_text_for_log.len().min(30)]);
-                        if let Err(e) = app_handle_for_callback.run_on_main_thread(move || {
-                            println!("🔄 Main thread executing show_suggestion");
-                            // Show suggestion using window manager (ghost text or popup)
-                            if let Err(e) = window_manager.show_suggestion(&suggestion_clone) {
-                                eprintln!("⚠️  Failed to show completion: {}", e);
+                            // Dispatch UI operations to main thread to prevent crashes
+                            let window_manager = wm.clone();
+                            let suggestion_clone = suggestion.clone();
+                            let preview: String = suggestion.text.chars().take(30).collect();
+                            eprintln!("📤 [popup 2/3] Dispatching show_suggestion for: {}...", preview);
+                            if let Err(e) = ah.run_on_main_thread(move || {
+                                eprintln!("📤 [popup 3/3] Main thread executing show_suggestion");
+                                if let Err(e) = window_manager.show_suggestion(&suggestion_clone) {
+                                    eprintln!("⚠️  Failed to show completion: {}", e);
+                                }
+                            }) {
+                                eprintln!("⚠️  Failed to dispatch to main thread: {}", e);
                             }
-                        }) {
-                            eprintln!("⚠️  Failed to dispatch to main thread: {}", e);
-                        } else {
-                            println!("✅ Dispatch queued successfully");
+                        }));
+
+                        if let Err(panic_info) = result {
+                            eprintln!("🔴 PANIC in suggestion callback: {:?}", panic_info);
                         }
                     });
                     
@@ -731,6 +768,12 @@ pub fn run() {
                         std::thread::spawn(move || {
                             println!("🧵 Accept thread started");
 
+                            // Wait for user to release Option key before injecting.
+                            // Option+Tab accept fires while Option is still physically held;
+                            // if we inject immediately, AppleScript's Cmd+V paste could be
+                            // interpreted as Cmd+Option+V in some apps.
+                            std::thread::sleep(std::time::Duration::from_millis(150));
+
                             // Inject the text with backspace for overlap + grace period chars
                             println!("🧵 Injecting text...");
                             if let Err(e) = tab_completion::injector::inject_with_backspace(text.clone(), total_erase) {
@@ -750,6 +793,12 @@ pub fn run() {
 
                             // Small delay to ensure hide completes before new prediction cycle
                             std::thread::sleep(std::time::Duration::from_millis(50));
+
+                            // Erase overlap + grace chars from buffer to keep it in sync with terminal.
+                            // The injector already erased these chars from the terminal via backspaces;
+                            // without this, the buffer accumulates duplicate chars (e.g. "git aadd"
+                            // instead of "git add") and all subsequent predictions are garbage.
+                            trigger.erase_from_buffer(total_erase);
 
                             // Update the trigger's buffer with the accepted text and re-trigger prediction
                             // NOTE: This spawns a thread with 300ms delay, then shows popup if prediction found
@@ -776,7 +825,8 @@ pub fn run() {
                     let app_handle_for_dismiss_enhanced = app.handle().clone();
                     hotkey_handler.set_dismiss_with_info_callback(move |dismiss_info| {
                         println!("🔄 Dismiss with info - triggering retry prediction");
-                        println!("   Dismissed: {}...", &dismiss_info.dismissed_text[..dismiss_info.dismissed_text.len().min(30)]);
+                        let dismissed_preview: String = dismiss_info.dismissed_text.chars().take(30).collect();
+                        println!("   Dismissed: {}...", dismissed_preview);
                         println!("   Chars typed after: '{}'", dismiss_info.chars_typed_after);
                         println!("   Time shown: {}ms", dismiss_info.time_shown_ms);
 
@@ -891,9 +941,10 @@ pub fn run() {
             enable_context_collection,
             disable_context_collection,
             get_context_collection_status,
-            trigger_action,
+            enable_context_collection_if_not_user_paused,
+            plan_action,
+            execute_action,
             edit_action,
-            trigger_action_with_override,
             get_suggested_actions,
             clear_suggested_actions,
             tab_completion::injector::inject_completion_text,

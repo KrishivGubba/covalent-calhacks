@@ -5,7 +5,7 @@ use rdev::{listen, Event, EventType, Key};
 #[cfg(target_os = "macos")]
 use super::macos_keyboard::{MacOSKeyboardListener, KeyboardEvent};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sha2::{Sha256, Digest};
 use tokio::runtime::Runtime;
 
@@ -21,7 +21,7 @@ pub struct CompletionTrigger {
     text_buffer: Arc<Mutex<TextBuffer>>,
     cache: Arc<MultiTierCache>,
     current_app: Arc<Mutex<String>>,
-    suggestion_callback: Arc<Mutex<Option<Box<dyn Fn(CompletionSuggestion) + Send + Sync>>>>,
+    suggestion_callback: Arc<Mutex<Option<Arc<dyn Fn(CompletionSuggestion) + Send + Sync>>>>,
     api_client: Arc<TabCompletionApiClient>,
     runtime: Arc<Runtime>,
     last_prediction_time: Arc<Mutex<Instant>>,
@@ -73,6 +73,13 @@ impl TextBuffer {
         }
         self.last_update = Some(Instant::now());
     }
+
+    fn backspace(&mut self) {
+        if self.buffer.pop().is_some() {
+            self.chars_since_prediction = self.chars_since_prediction.saturating_sub(1);
+        }
+        self.last_update = Some(Instant::now());
+    }
     
     fn get_last_n(&self, n: usize) -> String {
         self.buffer.chars().rev().take(n).collect::<String>()
@@ -105,6 +112,15 @@ impl TextBuffer {
         self.buffer.clear();
         self.last_update = None;
         self.chars_since_prediction = 0;
+    }
+
+    /// Remove the last n characters from the buffer.
+    /// Used to keep the buffer in sync with the terminal after the injector
+    /// erases overlap/grace-period chars.
+    fn erase_last_n(&mut self, n: usize) {
+        let char_count = self.buffer.chars().count();
+        let keep = char_count.saturating_sub(n);
+        self.buffer = self.buffer.chars().take(keep).collect();
     }
 }
 
@@ -141,7 +157,7 @@ impl CompletionTrigger {
     where
         F: Fn(CompletionSuggestion) + Send + Sync + 'static,
     {
-        *self.suggestion_callback.lock() = Some(Box::new(callback));
+        *self.suggestion_callback.lock() = Some(Arc::new(callback));
     }
 
     /// Set callback to get current recommended actions for enhanced predictions
@@ -250,7 +266,12 @@ impl CompletionTrigger {
     
     pub fn start_listening(self: Arc<Self>) {
         println!("⌨️  Starting proactive tab completion listener...");
-        
+
+        // Start background app detector — periodically updates current_app
+        // so trigger_completion() never needs to call detect_current_app()
+        // (which is far too heavy for the keyboard listener thread).
+        self.start_app_detector();
+
         // Start background context updater
         self.start_context_updater();
         
@@ -297,8 +318,9 @@ impl CompletionTrigger {
     #[cfg(target_os = "macos")]
     fn process_macos_keyboard_events(&self) {
         let mut event_count: u64 = 0;
+        let mut last_event_time = Instant::now();
+        let mut seen_any_event = false;
         loop {
-            // Get the keyboard listener
             let listener_guard = self.keyboard_listener.lock();
             let listener = match listener_guard.as_ref() {
                 Some(l) => l,
@@ -308,15 +330,33 @@ impl CompletionTrigger {
                 }
             };
 
-            // Try to receive keyboard events (non-blocking with small sleep)
             match listener.try_recv() {
                 Ok(event) => {
                     event_count += 1;
+                    last_event_time = Instant::now(); // Reset watchdog
+                    seen_any_event = true;
+                    // Drop lock before processing
+                    drop(listener_guard);
+
                     // Process the keyboard event
+                    if event.is_special_key && (event.keycode == 0x33 || event.keycode == 0x75) {
+                        // Backspace/delete should update the buffer to avoid desync.
+                        self.handle_backspace();
+                        if tab_debug_enabled() {
+                            tab_debug_log("handled backspace/delete");
+                        }
+                        continue;
+                    }
                     if let Some(ch) = event.character {
                         // Log every 10th event to avoid spam
                         if event_count % 10 == 0 {
                             println!("⌨️  Keyboard event #{}: char='{}'", event_count, ch);
+                        }
+                        if tab_debug_enabled() {
+                            tab_debug_log(&format!(
+                                "keyboard event received: #{} char='{}'",
+                                event_count, ch
+                            ));
                         }
 
                         // Add character to text buffer
@@ -326,6 +366,9 @@ impl CompletionTrigger {
 
                             // Check if we should trigger prediction
                             if !buffer.should_trigger_prediction() {
+                                if tab_debug_enabled() {
+                                    tab_debug_log("prediction skipped: should_trigger_prediction=false");
+                                }
                                 continue;
                             }
 
@@ -336,6 +379,9 @@ impl CompletionTrigger {
                         let now = Instant::now();
                         let last_prediction = *self.last_prediction_time.lock();
                         if now.duration_since(last_prediction) < self.prediction_debounce {
+                            if tab_debug_enabled() {
+                                tab_debug_log("prediction skipped: debounce");
+                            }
                             continue; // Too soon, skip
                         }
 
@@ -347,13 +393,34 @@ impl CompletionTrigger {
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    // No events available, sleep briefly
+                    // Drop lock before sleeping
+                    drop(listener_guard);
+
+                    // Watchdog: if no events for 30s, assume tap is dead.
+                    // Only after we've seen at least one real event.
+                    if seen_any_event && last_event_time.elapsed() > Duration::from_secs(30) {
+                        eprintln!("⚠️  No keyboard events for 30s — recreating listener");
+                        tab_debug_log("watchdog: no keyboard events for 30s, recreating listener");
+                        *self.keyboard_listener.lock() = None;
+                        match MacOSKeyboardListener::new() {
+                            Ok(new_listener) => {
+                                eprintln!("✅ Keyboard listener recreated via watchdog");
+                                tab_debug_log("watchdog: keyboard listener recreated");
+                                *self.keyboard_listener.lock() = Some(new_listener);
+                                last_event_time = Instant::now(); // Reset watchdog
+                            }
+                            Err(e) => {
+                                eprintln!("❌ Watchdog recovery failed: {}", e);
+                                tab_debug_log("watchdog: keyboard listener recovery failed");
+                            }
+                        }
+                    }
+
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     eprintln!("⚠️  Keyboard event channel disconnected, attempting recovery...");
-
-                    // Drop the lock before trying to recreate
+                    // Drop lock before recovery
                     drop(listener_guard);
 
                     // Clear the old listener
@@ -364,6 +431,7 @@ impl CompletionTrigger {
                         Ok(new_listener) => {
                             eprintln!("✅ Keyboard listener recovered!");
                             *self.keyboard_listener.lock() = Some(new_listener);
+                            last_event_time = Instant::now(); // Reset watchdog
                             // Small delay before retrying
                             std::thread::sleep(Duration::from_millis(100));
                             continue; // Try again with new listener
@@ -379,6 +447,25 @@ impl CompletionTrigger {
         }
     }
     
+    /// Background thread to periodically detect the current app.
+    /// Runs every 2 seconds on its own thread so that a slow or hanging
+    /// MacOSAppDetector call never blocks the keyboard listener thread.
+    fn start_app_detector(&self) {
+        let current_app = self.current_app.clone();
+
+        std::thread::spawn(move || {
+            loop {
+                #[cfg(target_os = "macos")]
+                {
+                    if let Some(app) = Self::detect_current_app() {
+                        *current_app.lock() = app;
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        });
+    }
+
     /// Background thread to continuously update context in graph.db
     fn start_context_updater(&self) {
         let cache = self.cache.clone();
@@ -507,14 +594,11 @@ impl CompletionTrigger {
     fn trigger_completion(&self) {
         let text = self.text_buffer.lock().get_last_n(100); // Get more context
 
-        // Detect the current active app (updates current_app)
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(detected_app) = Self::detect_current_app() {
-                *self.current_app.lock() = detected_app;
-            }
-        }
-
+        // Use cached app name — updated by the background app detector thread.
+        // Do NOT call detect_current_app() here: it creates a MacOSAppDetector,
+        // runs `mdls` as a subprocess, and calls CGWindowListCopyWindowInfo on
+        // every invocation. That is far too heavy for a function called every
+        // 3 keystrokes and can hang after window operations (accept/hide).
         let app = self.current_app.lock().clone();
         let cache = self.cache.clone();
         let api_client = self.api_client.clone();
@@ -534,8 +618,9 @@ impl CompletionTrigger {
             return; // Silent skip for empty buffer
         }
 
+        let trig_preview: String = text.chars().take(20).collect();
         println!("🔮 trigger_completion: app={}, text='{}...' has_callback={}",
-                 app, &text[..text.len().min(20)], has_callback);
+                 app, trig_preview, has_callback);
 
         // Spawn thread to avoid blocking key listener
         std::thread::spawn(move || {
@@ -576,7 +661,7 @@ impl CompletionTrigger {
         cache: Arc<MultiTierCache>,
         app: &str,
         text: &str,
-        callback_ref: Arc<Mutex<Option<Box<dyn Fn(CompletionSuggestion) + Send + Sync>>>>,
+        callback_ref: Arc<Mutex<Option<Arc<dyn Fn(CompletionSuggestion) + Send + Sync>>>>,
         has_callback: bool,
         api_client: Arc<TabCompletionApiClient>,
         runtime: Arc<Runtime>,
@@ -710,7 +795,7 @@ impl CompletionTrigger {
         cache: Arc<MultiTierCache>,
         app: &str,
         text: &str,
-        callback_ref: Arc<Mutex<Option<Box<dyn Fn(CompletionSuggestion) + Send + Sync>>>>,
+        callback_ref: Arc<Mutex<Option<Arc<dyn Fn(CompletionSuggestion) + Send + Sync>>>>,
         has_callback: bool,
         api_client: Arc<TabCompletionApiClient>,
         runtime: Arc<Runtime>,
@@ -985,14 +1070,14 @@ impl CompletionTrigger {
         latency_ms: u128,
         context_type: &str,
         confidence: f32,
-        callback_ref: &Arc<Mutex<Option<Box<dyn Fn(CompletionSuggestion) + Send + Sync>>>>,
+        callback_ref: &Arc<Mutex<Option<Arc<dyn Fn(CompletionSuggestion) + Send + Sync>>>>,
         has_callback: bool,
     ) {
         use std::fs::OpenOptions;
         use std::io::Write;
         use super::terminal_display::TerminalDisplay;
 
-        let preview = &prediction[..prediction.len().min(50)];
+        let preview: String = prediction.chars().take(50).collect();
 
         // Compact logging for proactive system
         let log_message = if latency_ms < 10 {
@@ -1004,13 +1089,6 @@ impl CompletionTrigger {
         };
 
         println!("{}", log_message);
-
-        // Show inline ghost text in terminal (ANSI escape sequences)
-        // This will appear dimmed in the terminal if the user is typing
-        if let Err(e) = TerminalDisplay::show_inline_suggestion(prediction, cache_level, latency_ms) {
-            // Silently fail if terminal doesn't support ANSI
-            eprintln!("⚠️  Failed to show terminal ghost text: {}", e);
-        }
 
         // Log to file for monitoring
         if let Ok(mut file) = OpenOptions::new()
@@ -1028,9 +1106,16 @@ impl CompletionTrigger {
             let _ = file.write_all(full_log.as_bytes());
         }
 
-        // Emit to UI callback for ghost text display
+        // Emit to UI callback for popup display BEFORE ANSI inline text.
+        // show_inline_suggestion uses \x1b[s / \x1b[u (cursor save/restore)
+        // which corrupts the terminal cursor position for any println! that
+        // runs after it on the same thread. By calling the callback first,
+        // the popup dispatch happens with clean stdout state.
         if has_callback {
-            if let Some(ref cb) = *callback_ref.lock() {
+            let cb_clone = callback_ref.lock().as_ref().cloned();
+            // Lock is released here ^^^
+
+            if let Some(cb) = cb_clone {
                 let suggestion = CompletionSuggestion {
                     text: prediction.to_string(),
                     cache_level: cache_level.to_string(),
@@ -1041,17 +1126,43 @@ impl CompletionTrigger {
                 cb(suggestion);
             }
         }
+
+        // Show inline ghost text in terminal (ANSI escape sequences)
+        // This runs AFTER the popup callback so cursor save/restore doesn't
+        // interfere with the callback's println/dispatch operations.
+        if let Err(e) = TerminalDisplay::show_inline_suggestion(prediction, cache_level, latency_ms) {
+            // Silently fail if terminal doesn't support ANSI
+            eprintln!("⚠️  Failed to show terminal ghost text: {}", e);
+        }
     }
     
     pub fn set_current_app(&self, app_name: String) {
         *self.current_app.lock() = app_name;
     }
 
+    /// Erase the last n characters from the buffer.
+    /// Called before append_to_buffer to remove overlap/grace-period chars
+    /// that were erased from the terminal by the injector, keeping the
+    /// internal buffer in sync with what's actually on screen.
+    pub fn erase_from_buffer(&self, n: usize) {
+        if n > 0 {
+            let mut buffer = self.text_buffer.lock();
+            println!("📝 erase_from_buffer: removing {} chars from end", n);
+            buffer.erase_last_n(n);
+        }
+    }
+
+    fn handle_backspace(&self) {
+        let mut buffer = self.text_buffer.lock();
+        buffer.backspace();
+    }
+
     /// Append text to the buffer (called after accepting a suggestion)
     /// This updates the internal state so predictions can continue from the new position
     pub fn append_to_buffer(&self, text: String) {
+        let text_preview: String = text.chars().take(30).collect();
         println!("📝 append_to_buffer: adding '{}' ({} chars)",
-                 &text[..text.len().min(30)], text.len());
+                 text_preview, text.len());
 
         {
             let mut buffer = self.text_buffer.lock();
@@ -1088,8 +1199,9 @@ impl CompletionTrigger {
                 return;
             }
 
+            let buf_preview: String = text.chars().take(30).collect();
             println!("🔮 append_to_buffer thread: generating prediction for '{}...'",
-                     &text[..text.len().min(30)]);
+                     buf_preview);
 
             Self::get_and_show_prediction(
                 self_clone,
@@ -1124,6 +1236,27 @@ impl CompletionTrigger {
     }
 }
 
+fn tab_debug_enabled() -> bool {
+    match std::env::var("TAB_DEBUG") {
+        Ok(v) => {
+            let v = v.to_lowercase();
+            v == "1" || v == "true" || v == "yes"
+        }
+        Err(_) => false,
+    }
+}
+
+fn tab_debug_log(msg: &str) {
+    if !tab_debug_enabled() {
+        return;
+    }
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    println!("[TAB_DEBUG {}] {}", ts, msg);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1144,4 +1277,3 @@ mod tests {
         assert!(trigger.is_ok());
     }
 }
-

@@ -40,20 +40,13 @@ pub struct OllamaProvider {
 impl OllamaProvider {
     pub fn new() -> Result<Self> {
         let config = ProviderConfig::from_env();
-
-        Ok(Self {
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()?,
-            base_url: config.ollama_base_url,
-            model: config.ollama_model,
-        })
+        Self::new_with_config(&config)
     }
-    
+
     pub fn new_with_config(config: &ProviderConfig) -> Result<Self> {
         Ok(Self {
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(config.ollama_timeout))
                 .build()?,
             base_url: config.ollama_base_url.clone(),
             model: config.ollama_model.clone(),

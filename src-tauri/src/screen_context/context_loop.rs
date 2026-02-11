@@ -269,7 +269,6 @@ impl ContextLoop {
                                     uuid: action_item.action_uuid.clone(),
                                     title,
                                     description: action_item.action_plan.clone(),
-                                    action_prompt: action_item.action_prompt.clone(),
                                 };
 
                                 store.add_action(suggested_action);

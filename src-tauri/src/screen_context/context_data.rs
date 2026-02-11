@@ -75,6 +75,7 @@ pub struct AppInfo {
     pub ide_type: Option<IDEType>,
     pub current_file_path: Option<String>,
     pub workspace_path: Option<String>,
+    pub display_id: Option<u32>, // ID of the display containing this app's window
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

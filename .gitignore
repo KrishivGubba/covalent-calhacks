@@ -28,6 +28,8 @@ CLAUDE.md
 
 # ignore the database
 *.db
+*.db-shm
+*.db-wal
 *.pyc
 
 

@@ -187,6 +187,9 @@ impl MacOSAppDetector {
         // Get version if possible
         let version = self.get_app_version(&bundle_id_str).ok();
         
+        // Get display ID for the app's window
+        let display_id = self.get_display_for_app(pid);
+        
         Ok(AppInfo {
             name,
             bundle_id: bundle_id_str,
@@ -201,6 +204,7 @@ impl MacOSAppDetector {
             ide_type,
             current_file_path: None, // Will be set separately
             workspace_path: None,    // Will be set separately
+            display_id,              // Display containing the app's window
         })
     }
     
@@ -402,6 +406,114 @@ impl MacOSAppDetector {
         }
     }
     
+    /// Get the display ID containing the app's main window
+    fn get_display_for_app(&self, pid: i32) -> Option<u32> {
+        use core_graphics::display::{CGGetActiveDisplayList, CGDisplayBounds, CGMainDisplayID};
+        use core_graphics::window::{kCGWindowListOptionOnScreenOnly, kCGWindowListExcludeDesktopElements, 
+                                     CGWindowListCopyWindowInfo, kCGNullWindowID};
+        use core_foundation::array::CFArray;
+        use core_foundation::dictionary::CFDictionary;
+        use core_foundation::string::CFString;
+        use core_foundation::number::CFNumber;
+        use core_foundation::base::{CFTypeRef, TCFType};
+        
+        unsafe {
+            // Get the window list for this app
+            let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+            let window_list_ref = CGWindowListCopyWindowInfo(options, kCGNullWindowID);
+            
+            if window_list_ref.is_null() {
+                return None;
+            }
+            
+            let window_list: CFArray<CFDictionary<CFString, CFTypeRef>> =
+                TCFType::wrap_under_create_rule(window_list_ref as *const _);
+            
+            // Find the first window belonging to this PID
+            let mut window_bounds: Option<(f64, f64, f64, f64)> = None;
+            
+            for i in 0..window_list.len() {
+                if let Some(window_dict) = window_list.get(i) {
+                    // Check if this window belongs to our PID
+                    let pid_key = CFString::new("kCGWindowOwnerPID");
+                    if let Some(pid_ref) = window_dict.find(&pid_key) {
+                        let window_pid: CFNumber = TCFType::wrap_under_get_rule(*pid_ref as *const _);
+                        if let Some(window_pid_val) = window_pid.to_i32() {
+                            if window_pid_val == pid {
+                                // Get the window bounds
+                                let bounds_key = CFString::new("kCGWindowBounds");
+                                if let Some(bounds_ref) = window_dict.find(&bounds_key) {
+                                    let bounds_dict: CFDictionary<CFString, CFTypeRef> = 
+                                        TCFType::wrap_under_get_rule(*bounds_ref as *const _);
+                                    
+                                    let x_key = CFString::new("X");
+                                    let y_key = CFString::new("Y");
+                                    let width_key = CFString::new("Width");
+                                    let height_key = CFString::new("Height");
+                                    
+                                    let x = bounds_dict.find(&x_key)
+                                        .map(|r| CFNumber::wrap_under_get_rule(*r as *const _))
+                                        .and_then(|n| n.to_f64());
+                                    let y = bounds_dict.find(&y_key)
+                                        .map(|r| CFNumber::wrap_under_get_rule(*r as *const _))
+                                        .and_then(|n| n.to_f64());
+                                    let width = bounds_dict.find(&width_key)
+                                        .map(|r| CFNumber::wrap_under_get_rule(*r as *const _))
+                                        .and_then(|n| n.to_f64());
+                                    let height = bounds_dict.find(&height_key)
+                                        .map(|r| CFNumber::wrap_under_get_rule(*r as *const _))
+                                        .and_then(|n| n.to_f64());
+                                    
+                                    if let (Some(x), Some(y), Some(width), Some(height)) = (x, y, width, height) {
+                                        window_bounds = Some((x, y, width, height));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // If we found window bounds, determine which display contains it
+            if let Some((x, y, width, height)) = window_bounds {
+                // Get all displays
+                let max_displays = 32;
+                let mut display_count = 0u32;
+                let mut display_list = vec![0u32; max_displays];
+                
+                let result = CGGetActiveDisplayList(
+                    max_displays as u32,
+                    display_list.as_mut_ptr(),
+                    &mut display_count,
+                );
+                
+                if result == 0 {
+                    display_list.truncate(display_count as usize);
+                    
+                    // Calculate window center
+                    let center_x = x + width / 2.0;
+                    let center_y = y + height / 2.0;
+                    
+                    // Find which display contains the window center
+                    for &display_id in &display_list {
+                        let bounds = CGDisplayBounds(display_id);
+                        
+                        if center_x >= bounds.origin.x && center_x < bounds.origin.x + bounds.size.width &&
+                           center_y >= bounds.origin.y && center_y < bounds.origin.y + bounds.size.height {
+                            return Some(display_id);
+                        }
+                    }
+                    
+                    // If not found, return main display
+                    return Some(CGMainDisplayID());
+                }
+            }
+            
+            None
+        }
+    }
+    
     /// Fallback method to get app info using process list and bundle IDs
     fn get_app_info_from_process_list(&self, _app_name: &str, process_id: u32) -> Result<AppInfo> {
         // Use ps to get the process command line, which often contains bundle info
@@ -434,6 +546,8 @@ impl MacOSAppDetector {
                             format!("com.app.{}", app_name.to_lowercase().replace(" ", ""))
                         };
                         
+                        let display_id = self.get_display_for_app(process_id as i32);
+                        
                         return Ok(AppInfo {
                             name: app_name.to_string(),
                             bundle_id,
@@ -448,6 +562,7 @@ impl MacOSAppDetector {
                             ide_type: None,
                             current_file_path: None,
                             workspace_path: None,
+                            display_id,
                         });
                     }
                 }

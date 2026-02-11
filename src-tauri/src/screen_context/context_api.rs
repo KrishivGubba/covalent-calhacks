@@ -16,7 +16,6 @@ pub struct ActionItem {
     pub action_uuid: String,
     pub action_name: String,
     pub action_plan: String,
-    pub action_prompt: String,
     pub last_selected: Option<String>,
 }
 
@@ -25,7 +24,6 @@ pub struct ContextResponse {
     pub message: String,
     pub action_name: Option<String>,
     pub action_plan: Option<String>,
-    pub action_prompt: Option<String>,
     pub action_uuid: Option<String>,
     pub recent_actions: Option<Vec<ActionItem>>,
 }
@@ -110,13 +108,53 @@ impl ContextApiClient {
         self.send_context(description, data).await
     }
 
-    /// Trigger an action by UUID via Flask API
-    pub async fn trigger_action(&self, action_uuid: String, action_prompt: String) -> Result<serde_json::Value> {
-        let url = format!("{}/trigger_action", self.base_url);
+    /// Plan an action by UUID via Flask API (new flow - Phase 1)
+    /// Returns the action plan for user approval/editing before execution
+    pub async fn plan_action(&self, action_uuid: String, action_override: Option<serde_json::Value>) -> Result<serde_json::Value> {
+        let url = format!("{}/plan_action", self.base_url);
+        
+        let mut payload = serde_json::json!({
+            "action_uuid": action_uuid
+        });
+        
+        if let Some(override_val) = action_override {
+            payload["action_override"] = override_val;
+        }
+        
+        let response = self.client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .context("Failed to send plan_action request to Flask API")?;
+
+        if response.status().is_success() {
+            let json_response: serde_json::Value = response
+                .json()
+                .await
+                .context("Failed to parse plan_action response from Flask API")?;
+            
+            Ok(json_response)
+        } else {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            Err(anyhow::anyhow!(
+                "Flask API plan_action returned error status {}: {}",
+                status,
+                error_text
+            ))
+        }
+    }
+
+    /// Execute an approved action via Flask API (new flow - Phase 2)
+    /// Called after user approves/edits the action plan from plan_action
+    pub async fn execute_action(&self, action_uuid: String, tool_name: String, parameters: serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}/execute_action", self.base_url);
         
         let payload = serde_json::json!({
             "action_uuid": action_uuid,
-            "action": action_prompt
+            "tool_name": tool_name,
+            "parameters": parameters
         });
         
         let response = self.client
@@ -124,20 +162,20 @@ impl ContextApiClient {
             .json(&payload)
             .send()
             .await
-            .context("Failed to send trigger_action request to Flask API")?;
+            .context("Failed to send execute_action request to Flask API")?;
 
         if response.status().is_success() {
             let json_response: serde_json::Value = response
                 .json()
                 .await
-                .context("Failed to parse trigger_action response from Flask API")?;
+                .context("Failed to parse execute_action response from Flask API")?;
             
             Ok(json_response)
         } else {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             Err(anyhow::anyhow!(
-                "Flask API trigger_action returned error status {}: {}",
+                "Flask API execute_action returned error status {}: {}",
                 status,
                 error_text
             ))
@@ -150,7 +188,6 @@ impl ContextApiClient {
         action_uuid: String,
         action_name: String,
         action_plan: String,
-        action_prompt: String,
         persist: bool
     ) -> Result<serde_json::Value> {
         let url = format!("{}/edit_action", self.base_url);
@@ -159,8 +196,7 @@ impl ContextApiClient {
             "action_uuid": action_uuid,
             "action_override": {
                 "action_name": action_name,
-                "action_plan": action_plan,
-                "action_prompt": action_prompt
+                "action_plan": action_plan
             },
             "persist": persist
         });
@@ -184,50 +220,6 @@ impl ContextApiClient {
             let error_text = response.text().await.unwrap_or_default();
             Err(anyhow::anyhow!(
                 "Flask API edit_action returned error status {}: {}",
-                status,
-                error_text
-            ))
-        }
-    }
-
-    /// Trigger an action by UUID with optional override via Flask API
-    pub async fn trigger_action_with_override(
-        &self,
-        action_uuid: String,
-        action_name: String,
-        action_plan: String,
-        action_prompt: String
-    ) -> Result<serde_json::Value> {
-        let url = format!("{}/trigger_action", self.base_url);
-
-        let payload = serde_json::json!({
-            "action_uuid": action_uuid,
-            "action_override": {
-                "action_name": action_name,
-                "action_plan": action_plan,
-                "action_prompt": action_prompt
-            }
-        });
-
-        let response = self.client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await
-            .context("Failed to send trigger_action request to Flask API")?;
-
-        if response.status().is_success() {
-            let json_response: serde_json::Value = response
-                .json()
-                .await
-                .context("Failed to parse trigger_action response from Flask API")?;
-
-            Ok(json_response)
-        } else {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            Err(anyhow::anyhow!(
-                "Flask API trigger_action returned error status {}: {}",
                 status,
                 error_text
             ))

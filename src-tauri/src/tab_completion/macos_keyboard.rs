@@ -5,8 +5,11 @@ use core_graphics::event::{
     CGEventType, EventField,
 };
 use objc::rc::autoreleasepool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::sync::Arc;
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Represents a keyboard event with the character typed
 #[derive(Debug, Clone)]
@@ -23,6 +26,10 @@ pub struct KeyboardEvent {
 /// and handle permission issues gracefully.
 pub struct MacOSKeyboardListener {
     receiver: Receiver<KeyboardEvent>,
+    /// Held to keep the Arc alive; the sender thread's clone of this flag
+    /// gets set to true when send() fails (receiver dropped), causing the
+    /// sender thread to exit its run loop cleanly.
+    _should_stop: Arc<AtomicBool>,
 }
 
 impl MacOSKeyboardListener {
@@ -40,16 +47,18 @@ impl MacOSKeyboardListener {
         }
 
         let (tx, rx) = channel();
+        let should_stop = Arc::new(AtomicBool::new(false));
+        let should_stop_clone = should_stop.clone();
 
         // Start event tap in a dedicated thread
         thread::spawn(move || {
-            if let Err(e) = Self::run_event_tap(tx) {
+            if let Err(e) = Self::run_event_tap(tx, should_stop_clone) {
                 eprintln!("❌ CGEventTap error: {}", e);
                 eprintln!("   Tab completion will fall back to API-only mode");
             }
         });
 
-        Ok(Self { receiver: rx })
+        Ok(Self { receiver: rx, _should_stop: should_stop })
     }
 
     /// Check if accessibility permissions are granted
@@ -68,22 +77,33 @@ impl MacOSKeyboardListener {
     }
 
     /// Run the CGEventTap event loop
-    fn run_event_tap(sender: Sender<KeyboardEvent>) -> Result<()> {
+    fn run_event_tap(sender: Sender<KeyboardEvent>, should_stop: Arc<AtomicBool>) -> Result<()> {
         let sender_clone = sender.clone();
-        
+        let should_stop_clone = should_stop.clone();
+
         // Create event tap for keyboard events only
         let event_tap = CGEventTap::new(
             CGEventTapLocation::HID, // Listen at HID level (system-wide)
             CGEventTapPlacement::HeadInsertEventTap,
             CGEventTapOptions::ListenOnly, // Don't modify events
-            vec![CGEventType::KeyDown].into(), // Only key presses
-            move |_proxy, _event_type, event| {
+            // NOTE: TapDisabled* are sentinel values and must NOT be included
+            // in the mask, or core-graphics will panic on overflow.
+            vec![CGEventType::KeyDown].into(), // Key presses only
+            move |_proxy, event_type, event| {
+                if matches!(
+                    event_type,
+                    CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput
+                ) {
+                    tab_debug_log("keyboard tap disabled (timeout/user input)");
+                    return Some(event.clone());
+                }
                 autoreleasepool(|| {
                     // Extract keyboard event data (only process KeyDown)
                     if let Some(keyboard_event) = Self::extract_keyboard_event(event) {
-                        // Send to receiver (non-blocking with timeout)
-                        if let Err(e) = sender_clone.send(keyboard_event) {
-                            eprintln!("⚠️  Failed to send keyboard event: {}", e);
+                        // Send to receiver; if it fails the receiver was dropped
+                        if sender_clone.send(keyboard_event).is_err() {
+                            // Signal the run loop to exit so this thread terminates
+                            should_stop_clone.store(true, Ordering::Relaxed);
                         }
                     }
                 });
@@ -94,13 +114,25 @@ impl MacOSKeyboardListener {
 
         // Enable the event tap
         event_tap.enable();
+        tab_debug_log("keyboard tap enabled");
 
         println!("✅ CGEventTap keyboard listener started");
 
-        // Run the event loop (this blocks until the thread is terminated)
+        // Run the event loop with periodic tap re-enable.
+        // macOS can auto-disable event taps from the same process when another tap
+        // (e.g. the hotkey filter in hotkey.rs) suppresses system shortcuts like Cmd+Tab.
+        // By periodically re-enabling, we recover automatically without app restart.
         unsafe {
-            use core_foundation::runloop::{CFRunLoopRun, CFRunLoopGetCurrent, CFRunLoopAddSource};
+            use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoopGetCurrent, CFRunLoopAddSource};
             use core_foundation::base::TCFType;
+
+            extern "C" {
+                fn CFRunLoopRunInMode(
+                    mode: core_foundation::string::CFStringRef,
+                    seconds: f64,
+                    returnAfterSourceHandled: u8,
+                ) -> i32;
+            }
 
             let run_loop = CFRunLoopGetCurrent();
             let source = match event_tap.mach_port.create_runloop_source(0) {
@@ -110,7 +142,26 @@ impl MacOSKeyboardListener {
                 }
             };
             CFRunLoopAddSource(run_loop, source.as_concrete_TypeRef(), kCFRunLoopCommonModes);
-            CFRunLoopRun();
+
+            let mut reenable_count: u64 = 0;
+            loop {
+                // Process events for 2 seconds, then check tap status
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 2.0, 0);
+
+                // If the receiver was dropped (listener recreated), exit this thread cleanly
+                if should_stop.load(Ordering::Relaxed) {
+                    eprintln!("🛑 Keyboard listener tap stopping (channel closed)");
+                    break;
+                }
+
+                // Re-enable the event tap in case macOS disabled it.
+                // CGEventTapEnable is idempotent — no-op if already enabled.
+                event_tap.enable();
+                reenable_count += 1;
+                if tab_debug_enabled() && reenable_count % 5 == 0 {
+                    tab_debug_log("keyboard tap re-enabled");
+                }
+            }
         }
 
         Ok(())
@@ -128,8 +179,9 @@ impl MacOSKeyboardListener {
         let command_pressed = flags.contains(core_graphics::event::CGEventFlags::CGEventFlagCommand);
         let control_pressed = flags.contains(core_graphics::event::CGEventFlags::CGEventFlagControl);
         
-        // Skip command and control key combinations (system shortcuts)
-        if command_pressed || control_pressed {
+        // Skip command and control key combinations (system shortcuts),
+        // except for delete/backspace keys which we need to track for buffer sync.
+        if (command_pressed || control_pressed) && !matches!(keycode, 0x33 | 0x75) {
             return None;
         }
 
@@ -259,6 +311,27 @@ impl MacOSKeyboardListener {
     }
 }
 
+fn tab_debug_enabled() -> bool {
+    match std::env::var("TAB_DEBUG") {
+        Ok(v) => {
+            let v = v.to_lowercase();
+            v == "1" || v == "true" || v == "yes"
+        }
+        Err(_) => false,
+    }
+}
+
+fn tab_debug_log(msg: &str) {
+    if !tab_debug_enabled() {
+        return;
+    }
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    println!("[TAB_DEBUG {}] {}", ts, msg);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,4 +373,3 @@ mod tests {
         // We can't assert the result as it depends on system settings
     }
 }
-

@@ -2,15 +2,18 @@ use anyhow::Result;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "macos")]
 use core_graphics::event::{
     CGEvent, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
-    CGEventType, EventField, CGEventFlags,
+    CGEventType, EventField, CGEventFlags, CGKeyCode,
 };
+#[cfg(target_os = "macos")]
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
 /// Grace period in milliseconds - popup stays visible even if user keeps typing
-const SUGGESTION_GRACE_PERIOD_MS: u64 = 300;
+const SUGGESTION_GRACE_PERIOD_MS: u64 = 1000;
 
 /// Information about a dismissed suggestion for enhanced retry
 #[derive(Debug, Clone)]
@@ -54,11 +57,18 @@ impl HotkeyHandler {
     /// Set the current suggestion text and record when it was shown
     pub fn set_suggestion(&self, text: Option<String>) {
         if text.is_some() {
+            if tab_debug_enabled() {
+                let snippet = text.as_ref().map(|t| t.chars().take(30).collect::<String>()).unwrap_or_default();
+                tab_debug_log(&format!("set_suggestion: Some('{}...')", snippet));
+            }
             // Record timestamp and reset char counter when new suggestion appears
             *self.suggestion_shown_at.lock() = Some(Instant::now());
             *self.chars_typed_since_suggestion.lock() = 0;
             *self.chars_buffer_since_suggestion.lock() = String::new();
         } else {
+            if tab_debug_enabled() {
+                tab_debug_log("set_suggestion: None");
+            }
             // Clear timestamp when suggestion is cleared
             *self.suggestion_shown_at.lock() = None;
             *self.chars_typed_since_suggestion.lock() = 0;
@@ -130,7 +140,7 @@ impl HotkeyHandler {
     #[cfg(target_os = "macos")]
     fn run_hotkey_listener(handler: Arc<Self>) -> Result<()> {
         use objc::rc::autoreleasepool;
-        use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoopRun, CFRunLoopGetCurrent, CFRunLoopAddSource};
+        use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoopGetCurrent, CFRunLoopAddSource};
         use core_foundation::base::TCFType;
         
         // Create event tap for Tab and Escape keys
@@ -138,43 +148,76 @@ impl HotkeyHandler {
             CGEventTapLocation::HID,
             CGEventTapPlacement::HeadInsertEventTap,
             CGEventTapOptions::Default, // Use Default to intercept events
+            // NOTE: TapDisabled* are sentinel values and must NOT be included
+            // in the mask, or core-graphics will panic on overflow.
             vec![CGEventType::KeyDown].into(),
-            move |_proxy, _event_type, event| {
+            move |_proxy, event_type, event| {
+                if matches!(
+                    event_type,
+                    CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput
+                ) {
+                    tab_debug_log("hotkey tap disabled (timeout/user input)");
+                    return Some(event.clone());
+                }
                 // Use autoreleasepool and return its result
                 autoreleasepool(|| {
                     let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
                     let _flags = event.get_flags();
                     
+                    // Check for Option+Tab (keycode 0x30 with Option/Alt flag)
+                    // We use Option+Tab instead of Cmd+Tab because Cmd+Tab is a
+                    // macOS protected system shortcut. Intercepting it causes macOS
+                    // to flag the entire process and auto-disable ALL event taps
+                    // (both hotkey and keyboard listener), permanently breaking
+                    // tab completion until app restart.
+                    let flags = event.get_flags();
+                    let option_pressed = flags.contains(CGEventFlags::CGEventFlagAlternate);
+                    let is_opt_tab = keycode == 0x30 && option_pressed;
+
+                    if is_opt_tab {
+                        if let Some(suggestion) = handler.current_suggestion.lock().clone() {
+                            let chars_to_erase = *handler.chars_typed_since_suggestion.lock();
+                            println!("✅ Option+Tab pressed - accepting suggestion (erasing {} chars)", chars_to_erase);
+
+                            // Call accept callback with suggestion and char count
+                            if let Some(ref callback) = *handler.accept_callback.lock() {
+                                callback(suggestion, chars_to_erase);
+                            }
+
+                            // Clear suggestion state
+                            *handler.current_suggestion.lock() = None;
+                            *handler.suggestion_shown_at.lock() = None;
+                            *handler.chars_typed_since_suggestion.lock() = 0;
+                            *handler.chars_buffer_since_suggestion.lock() = String::new();
+
+                            // Suppress Option+Tab by returning a synthetic event.
+                            // This avoids macOS interpreting the tap as suppressing input.
+                            if let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+                                if let Ok(new_event) = CGEvent::new_keyboard_event(source, 0x69 as CGKeyCode, true) {
+                                    new_event.set_flags(CGEventFlags::empty());
+                                    return Some(new_event);
+                                }
+                            }
+                            // Fallback: pass through original event unmodified
+                            return Some(event.clone());
+                        } else if tab_debug_enabled() {
+                            tab_debug_log("Option+Tab pressed with no active suggestion");
+                        }
+                    }
+
                     // Check if we have an active suggestion
                     let has_suggestion = handler.current_suggestion.lock().is_some();
 
                     if has_suggestion {
-                        // Check for Cmd+Tab (keycode 0x30 with Command flag)
-                        let flags = event.get_flags();
-                        let cmd_pressed = flags.contains(CGEventFlags::CGEventFlagCommand);
-
-                        if keycode == 0x30 && cmd_pressed {
-                            if let Some(suggestion) = handler.current_suggestion.lock().clone() {
-                                let chars_to_erase = *handler.chars_typed_since_suggestion.lock();
-                                println!("✅ Cmd+Tab pressed - accepting suggestion (erasing {} chars)", chars_to_erase);
-
-                                // Call accept callback with suggestion and char count
-                                if let Some(ref callback) = *handler.accept_callback.lock() {
-                                    callback(suggestion, chars_to_erase);
-                                }
-
-                                // Clear suggestion state
-                                *handler.current_suggestion.lock() = None;
-                                *handler.suggestion_shown_at.lock() = None;
-                                *handler.chars_typed_since_suggestion.lock() = 0;
-                                *handler.chars_buffer_since_suggestion.lock() = String::new();
-
-                                // Suppress the Cmd+Tab key event by returning None
-                                return None;
-                            }
+                        if tab_debug_enabled() {
+                            tab_debug_log(&format!(
+                                "hotkey keydown: keycode=0x{:X} flags=0x{:X} has_suggestion=true",
+                                keycode,
+                                flags.bits()
+                            ));
                         }
                         // Check for Escape key (keycode 0x35)
-                        else if keycode == 0x35 {
+                        if keycode == 0x35 {
                             println!("❌ Escape pressed - dismissing suggestion");
 
                             // Build dismiss info before clearing state
@@ -229,28 +272,10 @@ impl HotkeyHandler {
                                     println!("⏳ Key pressed during grace period ({} chars typed)", chars_typed);
                                     // Don't dismiss - let the key pass through
                                 } else {
-                                    println!("⏭️  Grace period expired - auto-dismissing suggestion");
-
-                                    // Build dismiss info before clearing state
-                                    let dismiss_info = handler.build_dismiss_info();
-
-                                    // Call enhanced dismiss callback with info (for retry predictions)
-                                    if let Some(info) = dismiss_info {
-                                        if let Some(ref callback) = *handler.dismiss_with_info_callback.lock() {
-                                            callback(info);
-                                        }
+                                    // Keep suggestion active even after grace period so user can still accept.
+                                    if tab_debug_enabled() {
+                                        tab_debug_log("grace expired: keeping suggestion active");
                                     }
-
-                                    // Call legacy dismiss callback
-                                    if let Some(ref callback) = *handler.dismiss_callback.lock() {
-                                        callback();
-                                    }
-
-                                    // Clear suggestion state
-                                    *handler.current_suggestion.lock() = None;
-                                    *handler.suggestion_shown_at.lock() = None;
-                                    *handler.chars_typed_since_suggestion.lock() = 0;
-                                    *handler.chars_buffer_since_suggestion.lock() = String::new();
                                 }
                             }
                         }
@@ -264,11 +289,25 @@ impl HotkeyHandler {
         
         // Enable the event tap
         event_tap.enable();
-        
-        println!("✅ Hotkey listener started (⌘+Tab to accept, Esc to dismiss)");
-        
-        // Run the event loop
+
+        println!("✅ Hotkey listener started (⌥+Tab to accept, Esc to dismiss)");
+
+        // Run the event loop with periodic tap re-enable.
+        // macOS automatically disables active filter event taps that suppress system
+        // shortcuts (like Cmd+Tab) or take too long to process events. Once disabled,
+        // the tap silently stops receiving events — accept/dismiss stop working.
+        // By periodically re-enabling, we recover automatically without app restart.
         unsafe {
+            use core_foundation::runloop::kCFRunLoopDefaultMode;
+
+            extern "C" {
+                fn CFRunLoopRunInMode(
+                    mode: core_foundation::string::CFStringRef,
+                    seconds: f64,
+                    returnAfterSourceHandled: u8,
+                ) -> i32;
+            }
+
             let run_loop = CFRunLoopGetCurrent();
             let source = match event_tap.mach_port.create_runloop_source(0) {
                 Ok(s) => s,
@@ -277,10 +316,15 @@ impl HotkeyHandler {
                 }
             };
             CFRunLoopAddSource(run_loop, source.as_concrete_TypeRef(), kCFRunLoopCommonModes);
-            CFRunLoopRun();
-        }
 
-        Ok(())
+            loop {
+                // Process events for 2 seconds, then check tap status
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 2.0, 0);
+                // Re-enable the event tap in case macOS disabled it.
+                // CGEventTapEnable is idempotent — no-op if already enabled.
+                event_tap.enable();
+            }
+        }
     }
 }
 
@@ -344,5 +388,23 @@ impl Default for HotkeyHandler {
     }
 }
 
+fn tab_debug_enabled() -> bool {
+    match std::env::var("TAB_DEBUG") {
+        Ok(v) => {
+            let v = v.to_lowercase();
+            v == "1" || v == "true" || v == "yes"
+        }
+        Err(_) => false,
+    }
+}
 
-
+fn tab_debug_log(msg: &str) {
+    if !tab_debug_enabled() {
+        return;
+    }
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    println!("[TAB_DEBUG {}] {}", ts, msg);
+}

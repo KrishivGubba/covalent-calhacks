@@ -1,7 +1,7 @@
 import React, { useState, useEffect, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { Action } from './SuggestedActions';
-import { disableContextCollection, enableContextCollection } from '../utils/contextControl';
+import type { Action, ActionPlan } from './SuggestedActions';
+import { disableContextCollection, enableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
 
 interface FloatingAssistantProps {
   actions: Action[];
@@ -26,9 +26,15 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
   const [editingAction, setEditingAction] = useState<Action | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editPlan, setEditPlan] = useState('');
-  const [editPrompt, setEditPrompt] = useState('');
   const [editPersist, setEditPersist] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  
+  // New action plan confirmation state
+  const [planningAction, setPlanningAction] = useState<Action | null>(null);
+  const [actionPlan, setActionPlan] = useState<ActionPlan | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [editableParams, setEditableParams] = useState<Record<string, unknown>>({});
+  const [isExecuting, setIsExecuting] = useState(false);
 
   // Simulate action detection - expand to prompt
   useEffect(() => {
@@ -80,27 +86,82 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
     
     if (currentStatus === 'idle') {
       setActionStatuses({ ...actionStatuses, [action.id]: 'playing' });
+      setPlanningAction(action);
+      setPlanError(null);
+      setActionPlan(null);
       
       try {
-        console.log(`🎬 Triggering action: ${action.title} (${action.uuid})`);
+        console.log(`📋 Planning action: ${action.title} (${action.uuid})`);
         
-        await invoke('trigger_action', {
+        const plan = await invoke<ActionPlan>('plan_action', {
           actionUuid: action.uuid,
-          actionPrompt: action.action_prompt,
+          actionOverride: null,
         });
         
-        console.log(`✅ Action completed successfully`);
-        setActionStatuses(prev => ({ ...prev, [action.id]: 'done' }));
+        console.log(`✅ Action plan received:`, plan);
+        setActionPlan(plan);
+        
+        if (plan.proposed_action?.parameters) {
+          setEditableParams({ ...plan.proposed_action.parameters });
+        }
       } catch (error) {
-        console.error(`❌ Action failed:`, error);
+        console.error(`❌ Action planning failed:`, error);
+        setPlanError(String(error));
         setActionStatuses(prev => ({ ...prev, [action.id]: 'idle' }));
+        setPlanningAction(null);
+        await enableContextCollectionIfNotUserPaused();
       }
     } else if (currentStatus === 'playing') {
-      // Can't cancel while playing
       console.log('⏸️  Action is already executing');
     } else if (currentStatus === 'done') {
       setActionStatuses({ ...actionStatuses, [action.id]: 'idle' });
     }
+  };
+
+  const handleExecuteAction = async () => {
+    if (!planningAction || !actionPlan?.proposed_action) {
+      return;
+    }
+    
+    setIsExecuting(true);
+    setPlanError(null);
+    
+    try {
+      console.log(`🚀 Executing action: ${planningAction.title}`);
+      
+      await invoke('execute_action', {
+        actionUuid: planningAction.uuid,
+        toolName: actionPlan.proposed_action.tool_name,
+        parameters: editableParams,
+      });
+      
+      console.log(`✅ Action executed successfully`);
+      setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+    } catch (error) {
+      console.error(`❌ Action execution failed:`, error);
+      setPlanError(String(error));
+      setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'idle' }));
+    } finally {
+      setIsExecuting(false);
+      setPlanningAction(null);
+      setActionPlan(null);
+      setEditableParams({});
+    }
+  };
+
+  const handleCancelPlan = async () => {
+    if (planningAction) {
+      setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'idle' }));
+    }
+    setPlanningAction(null);
+    setActionPlan(null);
+    setPlanError(null);
+    setEditableParams({});
+    await enableContextCollectionIfNotUserPaused();
+  };
+
+  const handleParamChange = (key: string, value: unknown) => {
+    setEditableParams(prev => ({ ...prev, [key]: value }));
   };
 
   const renderActionButton = (action: Action) => {
@@ -175,7 +236,6 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
     setEditingAction(action);
     setEditTitle(action.title);
     setEditPlan(action.description);
-    setEditPrompt(action.action_prompt);
     setEditPersist(false);
     setEditError(null);
     await disableContextCollection();
@@ -185,7 +245,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
     setEditingAction(null);
     setEditError(null);
     if (shouldResume) {
-      await enableContextCollection();
+      await enableContextCollectionIfNotUserPaused();
     }
   };
 
@@ -193,31 +253,46 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
     if (!editingAction) {
       return;
     }
-    if (!editPrompt.trim()) {
-      setEditError('Prompt is required.');
+    if (!editPlan.trim()) {
+      setEditError('Plan is required.');
       return;
     }
 
     try {
-      await invoke('edit_action', {
-        actionUuid: editingAction.uuid,
-        actionName: editTitle,
-        actionPlan: editPlan,
-        actionPrompt: editPrompt,
-        persist: editPersist,
-      });
-
-      await invoke('trigger_action_with_override', {
-        actionUuid: editingAction.uuid,
-        actionName: editTitle,
-        actionPlan: editPlan,
-        actionPrompt: editPrompt,
-      });
+      if (editPersist) {
+        await invoke('edit_action', {
+          actionUuid: editingAction.uuid,
+          actionName: editTitle,
+          actionPlan: editPlan,
+          persist: editPersist,
+        });
+      }
 
       await closeEditModal(false);
+      
+      // Trigger the action with the edited plan
+      const updatedAction = { ...editingAction, title: editTitle, description: editPlan };
+      setActionStatuses(prev => ({ ...prev, [editingAction.id]: 'playing' }));
+      setPlanningAction(updatedAction);
+      setPlanError(null);
+      setActionPlan(null);
+      
+      const plan = await invoke<ActionPlan>('plan_action', {
+        actionUuid: editingAction.uuid,
+        actionOverride: {
+          action_name: editTitle,
+          action_plan: editPlan,
+        },
+      });
+      
+      setActionPlan(plan);
+      if (plan.proposed_action?.parameters) {
+        setEditableParams({ ...plan.proposed_action.parameters });
+      }
     } catch (error) {
       console.error('Failed to run edited action:', error);
       setEditError('Failed to run edited action. Please try again.');
+      await enableContextCollectionIfNotUserPaused();
     }
   };
 
@@ -346,6 +421,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
         </div>
       )}
 
+      {/* Edit Action Modal */}
       {editingAction && (
         <div style={styles.modalOverlay}>
           <div style={styles.modal}>
@@ -370,15 +446,6 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
                   style={styles.modalTextarea}
                   value={editPlan}
                   onChange={(e) => setEditPlan(e.target.value)}
-                  rows={3}
-                />
-              </label>
-              <label style={styles.modalLabel}>
-                Prompt
-                <textarea
-                  style={styles.modalTextarea}
-                  value={editPrompt}
-                  onChange={(e) => setEditPrompt(e.target.value)}
                   rows={5}
                 />
               </label>
@@ -400,6 +467,112 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
                 Run now
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Action Plan Confirmation Modal */}
+      {planningAction && actionPlan && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.planModal}>
+            <div style={styles.modalHeader}>
+              <h3 style={styles.modalTitle}>
+                {actionPlan.display?.display_name || actionPlan.proposed_action?.tool_name || 'Confirm Action'}
+              </h3>
+              <button style={styles.modalClose} onClick={handleCancelPlan}>
+                ✕
+              </button>
+            </div>
+            <div style={styles.planModalBody}>
+              {actionPlan.display?.description && (
+                <p style={styles.planDescription}>{actionPlan.display.description}</p>
+              )}
+              
+              {actionPlan.proposed_action?.reasoning && (
+                <div style={styles.reasoningBox}>
+                  <strong>Reasoning:</strong> {actionPlan.proposed_action.reasoning}
+                </div>
+              )}
+
+              <div style={styles.paramsSection}>
+                <h4 style={styles.paramsSectionTitle}>Parameters</h4>
+                {actionPlan.display?.fields ? (
+                  actionPlan.display.fields.map((field) => (
+                    <label key={field.key} style={styles.modalLabel}>
+                      {field.label} {field.required && <span style={{ color: '#ef4444' }}>*</span>}
+                      {field.widget === 'textarea' || (typeof editableParams[field.key] === 'string' && String(editableParams[field.key]).length > 100) ? (
+                        <textarea
+                          style={styles.modalTextarea}
+                          value={String(editableParams[field.key] ?? field.value ?? '')}
+                          onChange={(e) => handleParamChange(field.key, e.target.value)}
+                          disabled={!field.editable}
+                          rows={4}
+                        />
+                      ) : (
+                        <input
+                          style={styles.modalInput}
+                          value={String(editableParams[field.key] ?? field.value ?? '')}
+                          onChange={(e) => handleParamChange(field.key, e.target.value)}
+                          disabled={!field.editable}
+                        />
+                      )}
+                    </label>
+                  ))
+                ) : (
+                  Object.entries(editableParams).map(([key, value]) => (
+                    <label key={key} style={styles.modalLabel}>
+                      {key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                      {typeof value === 'string' && value.length > 100 ? (
+                        <textarea
+                          style={styles.modalTextarea}
+                          value={String(value)}
+                          onChange={(e) => handleParamChange(key, e.target.value)}
+                          rows={4}
+                        />
+                      ) : (
+                        <input
+                          style={styles.modalInput}
+                          value={String(value ?? '')}
+                          onChange={(e) => handleParamChange(key, e.target.value)}
+                        />
+                      )}
+                    </label>
+                  ))
+                )}
+              </div>
+
+              {planError && <div style={styles.modalError}>{planError}</div>}
+            </div>
+            <div style={styles.planModalActions}>
+              <button 
+                style={styles.exitButton} 
+                onClick={handleCancelPlan}
+                disabled={isExecuting}
+              >
+                Exit
+              </button>
+              <button 
+                style={styles.executeButton} 
+                onClick={handleExecuteAction}
+                disabled={isExecuting}
+              >
+                {isExecuting ? 'Executing...' : 'Execute'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Loading state while planning */}
+      {planningAction && !actionPlan && !planError && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.loadingModal}>
+            <div style={styles.loadingSpinner}>
+              <span style={styles.dot1}>.</span>
+              <span style={styles.dot2}>.</span>
+              <span style={styles.dot3}>.</span>
+            </div>
+            <p style={styles.loadingText}>Planning action...</p>
           </div>
         </div>
       )}
@@ -743,6 +916,100 @@ const styles = {
   modalError: {
     color: '#b91c1c',
     fontSize: '0.85rem',
+  },
+  // Action Plan Confirmation Modal styles
+  planModal: {
+    width: '700px',
+    maxWidth: '94vw',
+    maxHeight: '85vh',
+    backgroundColor: 'rgba(255, 255, 255, 0.85)',
+    borderRadius: '24px',
+    padding: '1.25rem 1.25rem 1rem',
+    boxShadow: '0 30px 80px rgba(15, 23, 42, 0.35)',
+    border: '1px solid rgba(255, 255, 255, 0.6)',
+    backdropFilter: 'blur(28px) saturate(160%)',
+    WebkitBackdropFilter: 'blur(28px) saturate(160%)',
+    display: 'flex',
+    flexDirection: 'column' as const,
+  },
+  planModalBody: {
+    overflowY: 'auto' as const,
+    paddingRight: '0.25rem',
+    flex: 1,
+  },
+  planDescription: {
+    fontSize: '0.9rem',
+    color: '#475569',
+    marginBottom: '1rem',
+    lineHeight: '1.5',
+  },
+  reasoningBox: {
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    border: '1px solid rgba(59, 130, 246, 0.3)',
+    borderRadius: '12px',
+    padding: '0.75rem 1rem',
+    marginBottom: '1rem',
+    fontSize: '0.85rem',
+    color: '#1e40af',
+  },
+  paramsSection: {
+    marginTop: '0.5rem',
+  },
+  paramsSectionTitle: {
+    fontSize: '0.95rem',
+    fontWeight: '600' as const,
+    color: '#0f172a',
+    marginBottom: '0.75rem',
+  },
+  planModalActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: '0.75rem',
+    marginTop: '1rem',
+    paddingTop: '0.75rem',
+    borderTop: '1px solid rgba(148, 163, 184, 0.25)',
+  },
+  exitButton: {
+    padding: '0.6rem 1.5rem',
+    borderRadius: '999px',
+    border: '2px solid rgba(239, 68, 68, 0.6)',
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    color: '#dc2626',
+    fontWeight: '600' as const,
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+  },
+  executeButton: {
+    padding: '0.6rem 1.5rem',
+    borderRadius: '999px',
+    border: '2px solid rgba(34, 197, 94, 0.6)',
+    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+    color: '#16a34a',
+    fontWeight: '600' as const,
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+  },
+  loadingModal: {
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: '20px',
+    padding: '2rem 3rem',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    boxShadow: '0 20px 60px rgba(15, 23, 42, 0.25)',
+    border: '1px solid rgba(255, 255, 255, 0.6)',
+    backdropFilter: 'blur(28px)',
+    WebkitBackdropFilter: 'blur(28px)',
+  },
+  loadingSpinner: {
+    fontSize: '2rem',
+    color: '#9333ea',
+    marginBottom: '0.5rem',
+  },
+  loadingText: {
+    fontSize: '0.95rem',
+    color: '#475569',
   },
 };
 

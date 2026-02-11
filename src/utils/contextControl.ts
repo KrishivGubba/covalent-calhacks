@@ -24,7 +24,8 @@ export async function toggleContextCollection(): Promise<boolean> {
 }
 
 /**
- * Enable context collection
+ * Enable context collection (unconditional)
+ * Use this when user explicitly clicks "Resume" button
  */
 export async function enableContextCollection(): Promise<void> {
   try {
@@ -32,6 +33,20 @@ export async function enableContextCollection(): Promise<void> {
     console.log('Context collection enabled');
   } catch (error) {
     console.error('Failed to enable context collection:', error);
+    throw error;
+  }
+}
+
+/**
+ * Enable context collection only if user hasn't manually paused
+ * Use this when canceling actions or on errors to restore pre-action state
+ */
+export async function enableContextCollectionIfNotUserPaused(): Promise<void> {
+  try {
+    await invoke('enable_context_collection_if_not_user_paused');
+    console.log('Context collection conditionally enabled (respects user pause)');
+  } catch (error) {
+    console.error('Failed to conditionally enable context collection:', error);
     throw error;
   }
 }
@@ -64,29 +79,56 @@ export async function getContextCollectionStatus(): Promise<boolean> {
 }
 
 /**
- * Trigger an action by UUID
- * @param actionUuid The UUID of the action to trigger
- * @param actionDescription Description of the action being triggered
- * @returns Response from the Flask server
+ * Plan an action by UUID - Phase 1 of new action flow
+ * @param actionUuid The UUID of the action to plan
+ * @param actionOverride Optional override for action parameters
+ * @returns Action plan from the Flask server (for user approval/editing)
  */
-export async function triggerAction(
+export async function planAction(
   actionUuid: string,
-  actionDescription: string
+  actionOverride?: { action_name?: string; action_plan?: string } | null
 ): Promise<any> {
   try {
-    console.log(`Triggering action: ${actionDescription} (${actionUuid})`);
+    console.log(`Planning action: ${actionUuid}`);
     
-    // This will automatically disable context collection during execution
-    // and re-enable it after 2 seconds
-    const response = await invoke('trigger_action', {
+    const response = await invoke('plan_action', {
       actionUuid,
-      actionDescription,
+      actionOverride: actionOverride || null,
     });
     
-    console.log('Action triggered successfully:', response);
+    console.log('Action plan received:', response);
     return response;
   } catch (error) {
-    console.error('Failed to trigger action:', error);
+    console.error('Failed to plan action:', error);
+    throw error;
+  }
+}
+
+/**
+ * Execute an approved action - Phase 2 of new action flow
+ * @param actionUuid The UUID of the action
+ * @param toolName The MCP tool to execute
+ * @param parameters The parameters for the tool call
+ * @returns Response from the Flask server
+ */
+export async function executeAction(
+  actionUuid: string,
+  toolName: string,
+  parameters: Record<string, unknown>
+): Promise<any> {
+  try {
+    console.log(`Executing action: ${actionUuid} with tool ${toolName}`);
+    
+    const response = await invoke('execute_action', {
+      actionUuid,
+      toolName,
+      parameters,
+    });
+    
+    console.log('Action executed successfully:', response);
+    return response;
+  } catch (error) {
+    console.error('Failed to execute action:', error);
     throw error;
   }
 }

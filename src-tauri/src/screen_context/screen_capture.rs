@@ -151,9 +151,9 @@ impl ScreenCapture {
         }
     }
     
-    /// Capture full screen from the main display
+    /// Capture full screen from the active display
     /// First tries to capture the frontmost window (works for fullscreen apps),
-    /// then falls back to the screenshots crate if that fails.
+    /// then captures the display containing the active window for multi-monitor support.
     pub fn capture_full_screen(&self) -> Result<DynamicImage> {
         // First, try to capture the frontmost window directly
         // This works for fullscreen apps which exist in their own Space
@@ -163,7 +163,13 @@ impl ScreenCapture {
             }
         }
 
-        // Fall back to the screenshots crate for regular screen capture
+        // Try to capture the display containing the active window
+        // This ensures we capture the correct monitor in multi-monitor setups
+        if let Ok(image) = self.capture_active_display() {
+            return Ok(image);
+        }
+
+        // Final fallback to the screenshots crate for the primary screen
         self.capture_full_screen_fallback()
     }
 
@@ -323,6 +329,93 @@ impl ScreenCapture {
         displays
     }
     
+    /// Find which display contains the given point (in global screen coordinates)
+    pub fn get_display_for_point(&self, x: f64, y: f64) -> Option<DisplayInfo> {
+        let displays = self.get_display_info();
+        displays.into_iter().find(|d| {
+            x >= d.bounds.x as f64 &&
+            x < (d.bounds.x + d.bounds.width) as f64 &&
+            y >= d.bounds.y as f64 &&
+            y < (d.bounds.y + d.bounds.height) as f64
+        })
+    }
+    
+    /// Get the display containing the active window
+    /// Returns the display where the frontmost window is located
+    pub fn get_active_window_display(&self) -> Option<DisplayInfo> {
+        // Get the frontmost window bounds
+        let window_bounds = self.get_frontmost_window_bounds()?;
+        
+        // Calculate the center point of the window
+        let center_x = window_bounds.0 + (window_bounds.2 / 2.0);
+        let center_y = window_bounds.1 + (window_bounds.3 / 2.0);
+        
+        // Find the display containing the window center
+        self.get_display_for_point(center_x, center_y)
+    }
+    
+    /// Get the bounds of the frontmost window (x, y, width, height)
+    fn get_frontmost_window_bounds(&self) -> Option<(f64, f64, f64, f64)> {
+        unsafe {
+            // Get list of on-screen windows, excluding desktop elements
+            let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+
+            let window_list_ref = CGWindowListCopyWindowInfo(options, kCGNullWindowID);
+
+            if window_list_ref.is_null() {
+                return None;
+            }
+
+            let window_list: CFArray<CFDictionary<CFString, CFTypeRef>> =
+                CFArray::wrap_under_create_rule(window_list_ref as *const _);
+
+            // Iterate through windows to find the frontmost one (layer 0)
+            for i in 0..window_list.len() {
+                if let Some(window_dict) = window_list.get(i) {
+                    // Get the window layer - layer 0 is the normal window layer
+                    let layer_key = CFString::new("kCGWindowLayer");
+                    if let Some(layer_ref) = window_dict.find(&layer_key) {
+                        let layer: CFNumber = CFNumber::wrap_under_get_rule(*layer_ref as *const _);
+                        if let Some(layer_val) = layer.to_i32() {
+                            // Skip windows not in the normal layer (0)
+                            if layer_val != 0 {
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Get the window bounds
+                    let bounds_key = CFString::new("kCGWindowBounds");
+                    if let Some(bounds_ref) = window_dict.find(&bounds_key) {
+                        let bounds_dict: CFDictionary<CFString, CFTypeRef> = 
+                            CFDictionary::wrap_under_get_rule(*bounds_ref as *const _);
+                        
+                        // Extract x, y, width, height from the bounds dictionary
+                        let x_key = CFString::new("X");
+                        let y_key = CFString::new("Y");
+                        let width_key = CFString::new("Width");
+                        let height_key = CFString::new("Height");
+                        
+                        let x = bounds_dict.find(&x_key)
+                            .and_then(|r| CFNumber::wrap_under_get_rule(*r as *const _).to_f64());
+                        let y = bounds_dict.find(&y_key)
+                            .and_then(|r| CFNumber::wrap_under_get_rule(*r as *const _).to_f64());
+                        let width = bounds_dict.find(&width_key)
+                            .and_then(|r| CFNumber::wrap_under_get_rule(*r as *const _).to_f64());
+                        let height = bounds_dict.find(&height_key)
+                            .and_then(|r| CFNumber::wrap_under_get_rule(*r as *const _).to_f64());
+                        
+                        if let (Some(x), Some(y), Some(width), Some(height)) = (x, y, width, height) {
+                            return Some((x, y, width, height));
+                        }
+                    }
+                }
+            }
+
+            None
+        }
+    }
+    
     /// Compare two images and return similarity score (0.0 = different, 1.0 = identical)
     pub fn compare_images(&self, img1: &DynamicImage, img2: &DynamicImage) -> f32 {
         if (img1.width(), img1.height()) != (img2.width(), img2.height()) {
@@ -417,9 +510,8 @@ impl ScreenCapture {
         hash
     }
     
-    // Private helper methods
-    
-    fn capture_display(&self, display_id: u32) -> Result<DynamicImage> {
+    /// Capture a specific display by its ID
+    pub fn capture_display(&self, display_id: u32) -> Result<DynamicImage> {
         unsafe {
             let image_ref = CGDisplayCreateImage(display_id);
             if image_ref.is_null() {
@@ -432,6 +524,28 @@ impl ScreenCapture {
             self.cg_image_to_dynamic(&cg_image)
         }
     }
+    
+    /// Capture the display containing the active window
+    /// This is the recommended method for multi-monitor setups
+    pub fn capture_active_display(&self) -> Result<DynamicImage> {
+        // Try to get the display containing the active window
+        if let Some(display_info) = self.get_active_window_display() {
+            println!("📸 Capturing display {} (containing active window)", display_info.id);
+            return self.capture_display(display_info.id);
+        }
+        
+        // Fallback to main display if we can't determine active window display
+        println!("⚠️  Could not determine active window display, falling back to main display");
+        let displays = self.get_display_info();
+        if let Some(main_display) = displays.iter().find(|d| d.is_main) {
+            return self.capture_display(main_display.id);
+        }
+        
+        // Final fallback to the old method
+        self.capture_full_screen_fallback()
+    }
+    
+    // Private helper methods
 
     /// Convert a CGImage to a DynamicImage
     fn cg_image_to_dynamic(&self, cg_image: &CGImage) -> Result<DynamicImage> {

@@ -64,8 +64,7 @@ interface Action {
   id: string;
   uuid: string;
   title: string;
-  description: string;
-  action_prompt: string;
+  description: string;  // Contains full context for execution
 }
 
 export const ActionButtonWithAutoSuspend: React.FC<{ action: Action }> = ({ action }) => {
@@ -75,23 +74,24 @@ export const ActionButtonWithAutoSuspend: React.FC<{ action: Action }> = ({ acti
     setStatus('executing');
     
     try {
-      // This will automatically:
-      // 1. Disable context collection
-      // 2. Call Flask /trigger_action endpoint
-      // 3. Wait 2 seconds
-      // 4. Re-enable context collection
-      const response = await invoke('trigger_action', {
+      // New flow: 
+      // 1. Call plan_action to get action plan
+      // 2. User approves/edits the plan
+      // 3. Call execute_action to execute
+      const response = await invoke('plan_action', {
         actionUuid: action.uuid,
-        actionPrompt: action.action_prompt,
+        actionOverride: null,
       });
       
-      console.log('Action executed successfully:', response);
+      console.log('Action plan received:', response);
+      // In real usage, you would show a confirmation modal here
+      // For this example, we just mark as done
       setStatus('done');
       
       // Reset to idle after 2 seconds
       setTimeout(() => setStatus('idle'), 2000);
     } catch (error) {
-      console.error('Failed to execute action:', error);
+      console.error('Failed to plan action:', error);
       setStatus('error');
       
       // Reset to idle after 3 seconds on error
@@ -197,15 +197,13 @@ export const FloatingAssistantWithContextControl: React.FC = () => {
       id: '1',
       uuid: 'action-uuid-1',
       title: 'Click Submit',
-      description: 'Click the submit button on the form',
-      action_prompt: 'Click the submit button to complete the form submission',
+      description: 'Click the submit button to complete the form submission',
     },
     {
       id: '2',
       uuid: 'action-uuid-2',
       title: 'Fill Name Field',
-      description: 'Enter "John Doe" in the name field',
-      action_prompt: 'Type "John Doe" into the name input field',
+      description: 'Enter "John Doe" into the name input field',
     },
   ]);
 
@@ -270,10 +268,17 @@ export const FloatingAssistantWithContextControl: React.FC = () => {
  *      try {
  *        setActionStatuses({ ...actionStatuses, [action.id]: 'playing' });
  *        
- *        // This automatically pauses context collection
- *        await invoke('trigger_action', {
+ *        // Step 1: Plan the action (shows confirmation modal)
+ *        const plan = await invoke('plan_action', {
  *          actionUuid: action.uuid,
- *          actionDescription: action.description,
+ *          actionOverride: null,
+ *        });
+ *        
+ *        // Step 2: Execute after user confirmation
+ *        await invoke('execute_action', {
+ *          actionUuid: action.uuid,
+ *          toolName: plan.proposed_action.tool_name,
+ *          parameters: plan.proposed_action.parameters,
  *        });
  *        
  *        setActionStatuses({ ...actionStatuses, [action.id]: 'done' });

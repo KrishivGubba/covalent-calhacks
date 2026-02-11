@@ -20,8 +20,8 @@ class GraphDAO:
             check_same_thread=False,
             timeout=10.0  # Wait up to 10 seconds if database is locked
         )
-        # Enable WAL mode for better concurrent access
-        self.conn.execute('PRAGMA journal_mode=WAL')
+        # Use DELETE mode (default) to avoid creating -shm and -wal files
+        self.conn.execute('PRAGMA journal_mode=DELETE')
         self.cursor = self.conn.cursor()
 
     def get_all_nodes(self):
@@ -97,15 +97,14 @@ class GraphDAO:
         self.execute_query(query, (data_uuid, node_uuid, key, data_type, info, category))
         return data_uuid
 
-    def add_action(self, node_uuid, action_name, action_plan=None, action_prompt=None, last_selected=None):
+    def add_action(self, node_uuid, action_name, action_plan=None, last_selected=None):
         '''
         Insert an action into the action_table associated with a specific node.
 
         Args:
             node_uuid (str): UUID of the node to associate this action with
             action_name (str): Name/description of the action
-            action_plan (str, optional): Detailed plan for the action (user-facing)
-            action_prompt (str, optional): Full prompt for LangGraph execution
+            action_plan (str, optional): Detailed plan for the action (contains all context for execution)
             last_selected (str, optional): ISO format timestamp of last selection
 
         Returns:
@@ -120,12 +119,12 @@ class GraphDAO:
         print(f"  - Generated action_uuid: {action_uuid}")
 
         query = """
-            INSERT INTO action_table (UUID, Action_name, Action_plan, Action_prompt, Node_UUID, last_selected)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO action_table (UUID, Action_name, Action_plan, Node_UUID, last_selected)
+            VALUES (?, ?, ?, ?, ?)
         """
 
         try:
-            self.execute_query(query, (action_uuid, action_name, action_plan, action_prompt, node_uuid, last_selected))
+            self.execute_query(query, (action_uuid, action_name, action_plan, node_uuid, last_selected))
             print(f"  ✅ Successfully inserted action into database")
             return action_uuid
         except Exception as e:
@@ -143,15 +142,20 @@ class GraphDAO:
             action_uuid (str): UUID of the action to retrieve
             
         Returns:
-            tuple: (action_uuid, action_name, action_plan, action_prompt, node_uuid) or None if not found
+            tuple: (action_uuid, action_name, action_plan, node_uuid) or None if not found
+            Note: Returns 5-tuple with None placeholder for backwards compatibility during transition
         '''
         query = """
-            SELECT UUID, Action_name, Action_plan, Action_prompt, Node_UUID 
+            SELECT UUID, Action_name, Action_plan, Node_UUID 
             FROM action_table 
             WHERE UUID = ?
         """
         result = self.execute_query(query, (action_uuid,))
-        return result[0] if result else None
+        if result:
+            # Return 5-tuple with None placeholder for deprecated action_prompt for backwards compatibility
+            row = result[0]
+            return (row[0], row[1], row[2], None, row[3])
+        return None
 
     def get_node_by_id(self, node_uuid):
         '''
@@ -210,25 +214,24 @@ class GraphDAO:
         """
         self.execute_query(query, (timestamp, action_uuid))
 
-    def update_action(self, action_uuid, action_name, action_plan, action_prompt):
+    def update_action(self, action_uuid, action_name, action_plan):
         '''
         Update an existing action's fields.
 
         Args:
             action_uuid (str): UUID of the action to update
             action_name (str): New action name
-            action_plan (str): New action plan
-            action_prompt (str): New action prompt
+            action_plan (str): New action plan (contains all context for execution)
 
         Returns:
             None
         '''
         query = """
             UPDATE action_table
-            SET Action_name = ?, Action_plan = ?, Action_prompt = ?
+            SET Action_name = ?, Action_plan = ?
             WHERE UUID = ?
         """
-        self.execute_query(query, (action_name, action_plan, action_prompt, action_uuid))
+        self.execute_query(query, (action_name, action_plan, action_uuid))
 
     def get_actions_for_node(self, node_uuid, order_by_last_selected=True):
         '''
@@ -239,18 +242,18 @@ class GraphDAO:
             order_by_last_selected (bool): If True, sort by last_selected DESC (NULLs last)
 
         Returns:
-            list: List of tuples (UUID, Action_name, Action_plan, Action_prompt, Node_UUID, last_selected)
+            list: List of tuples (UUID, Action_name, Action_plan, Node_UUID, last_selected)
         '''
         if order_by_last_selected:
             query = """
-                SELECT UUID, Action_name, Action_plan, Action_prompt, Node_UUID, last_selected
+                SELECT UUID, Action_name, Action_plan, Node_UUID, last_selected
                 FROM action_table
                 WHERE Node_UUID = ?
                 ORDER BY last_selected IS NULL, last_selected DESC
             """
         else:
             query = """
-                SELECT UUID, Action_name, Action_plan, Action_prompt, Node_UUID, last_selected
+                SELECT UUID, Action_name, Action_plan, Node_UUID, last_selected
                 FROM action_table
                 WHERE Node_UUID = ?
             """
@@ -265,10 +268,10 @@ class GraphDAO:
             limit (int): Maximum number of actions to return
 
         Returns:
-            list: List of tuples (UUID, Action_name, Action_plan, Action_prompt, Node_UUID, last_selected)
+            list: List of tuples (UUID, Action_name, Action_plan, Node_UUID, last_selected)
         '''
         query = """
-            SELECT UUID, Action_name, Action_plan, Action_prompt, Node_UUID, last_selected
+            SELECT UUID, Action_name, Action_plan, Node_UUID, last_selected
             FROM action_table
             WHERE Node_UUID = ? AND last_selected IS NOT NULL
             ORDER BY last_selected DESC
@@ -941,7 +944,7 @@ class TestGraphDAO:
         from datetime import datetime
 
         # In-memory storage for mock data
-        self.actions_data = []  # List of tuples: (uuid, action_name, action_plan, action_prompt, node_uuid, last_selected)
+        self.actions_data = []  # List of tuples: (uuid, action_name, action_plan, node_uuid, last_selected)
         self.data_entries = []  # List of tuples: (uuid, node_uuid, key, data_type, info, category)
         self.node_counters = {}  # Dict: node_uuid -> {insertion_count: int, last_cleanup: str}
         
@@ -1087,20 +1090,20 @@ class TestGraphDAO:
 
     # ==================== ACTION METHODS ====================
 
-    def add_action(self, node_uuid, action_name, action_plan=None, action_prompt=None, last_selected=None):
+    def add_action(self, node_uuid, action_name, action_plan=None, last_selected=None):
         '''Add an action to the in-memory store.'''
         import uuid
         action_uuid = str(uuid.uuid4())
-        action_tuple = (action_uuid, action_name, action_plan, action_prompt, node_uuid, last_selected)
+        action_tuple = (action_uuid, action_name, action_plan, node_uuid, last_selected)
         self.actions_data.append(action_tuple)
         return action_uuid
 
-    def update_action(self, action_uuid, action_name, action_plan, action_prompt):
+    def update_action(self, action_uuid, action_name, action_plan):
         '''Update an existing action's fields.'''
         for i, action in enumerate(self.actions_data):
             if action[0] == action_uuid:
-                # Replace with updated tuple
-                self.actions_data[i] = (action_uuid, action_name, action_plan, action_prompt, action[4], action[5])
+                # Replace with updated tuple (uuid, name, plan, node_uuid, last_selected)
+                self.actions_data[i] = (action_uuid, action_name, action_plan, action[3], action[4])
                 return True
         return False
 
@@ -1112,8 +1115,8 @@ class TestGraphDAO:
 
         for i, action in enumerate(self.actions_data):
             if action[0] == action_uuid:
-                # Replace with updated tuple
-                self.actions_data[i] = (action[0], action[1], action[2], action[3], action[4], timestamp)
+                # Replace with updated tuple (uuid, name, plan, node_uuid, last_selected)
+                self.actions_data[i] = (action[0], action[1], action[2], action[3], timestamp)
                 return True
         return False
 
@@ -1121,31 +1124,30 @@ class TestGraphDAO:
         '''Retrieve an action by UUID.'''
         for action in self.actions_data:
             if action[0] == action_uuid:
-                # Return tuple: (UUID, Action_name, Action_plan, Action_prompt, Node_UUID)
-                return (action[0], action[1], action[2], action[3], action[4])
+                # Return tuple: (UUID, Action_name, Action_plan, None (placeholder for deprecated action_prompt), Node_UUID)
+                return (action[0], action[1], action[2], None, action[3])
         return None
 
     def get_actions_for_node(self, node_uuid, order_by_last_selected=True):
         '''Get all actions for a node, optionally sorted by last_selected.'''
-        actions = [action for action in self.actions_data if action[4] == node_uuid]
+        # Tuple format: (uuid, name, plan, node_uuid, last_selected)
+        actions = [action for action in self.actions_data if action[3] == node_uuid]
 
         if order_by_last_selected:
             # Sort by last_selected DESC, NULLs last
-            # Use (x[5] is not None, x[5]) as key:
-            # - Non-NULL values: (True, date_string) - sorts by date DESC when reversed
-            # - NULL values: (False, None) - sorts last when reversed
-            actions.sort(key=lambda x: (x[5] is not None, x[5] if x[5] else ''), reverse=True)
+            actions.sort(key=lambda x: (x[4] is not None, x[4] if x[4] else ''), reverse=True)
 
         return actions
 
     def get_recent_actions_for_node(self, node_uuid, limit=4):
         '''Get the N most recently selected actions for a node.'''
         # Filter actions with non-NULL last_selected
+        # Tuple format: (uuid, name, plan, node_uuid, last_selected)
         actions = [action for action in self.actions_data
-                  if action[4] == node_uuid and action[5] is not None]
+                  if action[3] == node_uuid and action[4] is not None]
 
         # Sort by last_selected DESC
-        actions.sort(key=lambda x: x[5], reverse=True)
+        actions.sort(key=lambda x: x[4], reverse=True)
 
         return actions[:limit]
 
@@ -1155,12 +1157,13 @@ class TestGraphDAO:
         threshold_date = (datetime.now() - timedelta(days=days_threshold)).isoformat()
 
         # Find actions to delete
+        # Tuple format: (uuid, name, plan, node_uuid, last_selected)
         initial_count = len(self.actions_data)
         self.actions_data = [
             action for action in self.actions_data
-            if not (action[4] == node_uuid and
-                   action[5] is not None and
-                   action[5] < threshold_date)
+            if not (action[3] == node_uuid and
+                   action[4] is not None and
+                   action[4] < threshold_date)
         ]
 
         deleted_count = initial_count - len(self.actions_data)

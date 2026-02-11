@@ -164,7 +164,7 @@ class Tree:
         
         Args:
             action_uuid (str): UUID of the action to get context for
-            action_override (dict, optional): Override values for action_name, action_plan, action_prompt
+            action_override (dict, optional): Override values for action_name, action_plan
             
         Returns:
             tuple: (action_text, collected_data_string) - The action description and all collected data as a single string
@@ -175,25 +175,23 @@ class Tree:
             print(f"Error: Action with UUID {action_uuid} not found")
             return None, None
         
-        action_uuid_db, action_name, action_plan, action_prompt, node_uuid = action_data
+        # Unpack - action_prompt is deprecated but may still exist in DB during transition
+        action_uuid_db, action_name, action_plan, _, node_uuid = action_data
 
         effective_action_name = action_name
         effective_action_plan = action_plan
-        effective_action_prompt = action_prompt
 
         if action_override:
             if action_override.get("action_name"):
                 effective_action_name = action_override["action_name"]
             if action_override.get("action_plan"):
                 effective_action_plan = action_override["action_plan"]
-            if action_override.get("action_prompt"):
-                effective_action_prompt = action_override["action_prompt"]
         
-        # Use action_prompt if available, otherwise fall back to action_name
-        action_text = effective_action_prompt if effective_action_prompt else effective_action_name
+        # Use action_plan as the action text (contains full context for execution)
+        action_text = effective_action_plan if effective_action_plan else effective_action_name
         
         print(f"Found action: {effective_action_name}")
-        print(f"Action prompt: {action_text[:200]}..." if len(action_text) > 200 else f"Action prompt: {action_text}")
+        print(f"Action plan: {action_text[:200]}..." if len(action_text) > 200 else f"Action plan: {action_text}")
         print(f"Associated with node UUID: {node_uuid}")
         
         # Collect all data into a list to be concatenated later
@@ -558,6 +556,107 @@ class Tree:
 
         return "\n".join(lines)
 
+    def _serialize_graph_structure(self, include_data_counts: bool = True) -> str:
+        """
+        Serialize the entire graph structure as a text representation for LLM consumption.
+        
+        This allows the LLM to see all nodes and choose any node to operate on,
+        not just the current best-match node.
+        
+        Args:
+            include_data_counts: Whether to include data/category counts per node
+            
+        Returns:
+            str: A formatted text representation of the entire graph with node UUIDs,
+                 paths, relationships, and optionally data statistics
+        """
+        if not self.root:
+            return "Graph is empty (no root node)."
+        
+        lines = ["COMPLETE GRAPH STRUCTURE:", "=" * 50]
+        
+        def format_node(node: 'Node', depth: int = 0) -> List[str]:
+            """Recursively format a node and its children."""
+            result = []
+            indent = "  " * depth
+            
+            # Get node statistics
+            stats_str = ""
+            if include_data_counts:
+                try:
+                    data_by_category = self.dao.get_data_for_node_by_category(node.node_uuid)
+                    num_categories = len(data_by_category) if data_by_category else 0
+                    num_entries = sum(len(entries) for entries in data_by_category.values()) if data_by_category else 0
+                    stats_str = f" [{num_categories} categories, {num_entries} entries]"
+                except:
+                    stats_str = " [stats unavailable]"
+            
+            # Get node depth
+            try:
+                node_depth = self.dao.get_node_depth(node.node_uuid)
+            except:
+                node_depth = depth
+            
+            # Format the node line
+            # Show UUID truncated to first 8 chars for readability, full UUID in parentheses
+            uuid_short = node.node_uuid[:8] if node.node_uuid else "no-uuid"
+            path = self._get_node_path(node)
+            
+            node_line = f"{indent}├── [{uuid_short}] {node.metadata}{stats_str}"
+            result.append(node_line)
+            result.append(f"{indent}│   UUID: {node.node_uuid}")
+            result.append(f"{indent}│   Path: {path}")
+            result.append(f"{indent}│   Depth: {node_depth}")
+            
+            # Recursively format children
+            if node.children:
+                result.append(f"{indent}│   Children ({len(node.children)}):")
+                for child in node.children:
+                    result.extend(format_node(child, depth + 1))
+            else:
+                result.append(f"{indent}│   Children: None (leaf node)")
+            
+            return result
+        
+        # Format the entire tree starting from root
+        lines.extend(format_node(self.root, 0))
+        lines.append("=" * 50)
+        lines.append(f"Total nodes in graph: {len(self.nodes)}")
+        
+        return "\n".join(lines)
+    
+    def _get_node_by_uuid(self, node_uuid: str) -> Optional['Node']:
+        """
+        Get a node by its UUID.
+        
+        Args:
+            node_uuid: The UUID of the node to retrieve
+            
+        Returns:
+            Node if found, None otherwise
+        """
+        if not node_uuid:
+            return None
+        return self.nodes.get(node_uuid)
+    
+    def _validate_node_uuid(self, node_uuid: str) -> Tuple[bool, str]:
+        """
+        Validate that a node UUID exists in the graph.
+        
+        Args:
+            node_uuid: The UUID to validate
+            
+        Returns:
+            Tuple of (is_valid: bool, error_message: str)
+        """
+        if not node_uuid:
+            return False, "Node UUID is empty or None"
+        
+        if node_uuid not in self.nodes:
+            return False, f"Node UUID '{node_uuid}' does not exist in the graph"
+        
+        return True, ""
+
     def _get_data_sample(self, node: 'Node', max_chars: int = 500) -> str:
         """
         Get a sample of existing data in a node, grouped by category.
@@ -796,9 +895,12 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
         """
         Ask LLM to decide what graph structural changes are needed.
         Can return MULTIPLE operations to be executed in sequence.
+        
+        The LLM has access to the ENTIRE graph structure and can choose to operate
+        on ANY node, not just the current best-match node.
 
         Args:
-            node: The current best-match node
+            node: The current best-match node (from similarity search)
             summary: Description of what the user is doing
             top_scores: Top 5 nodes with scores for context
 
@@ -809,7 +911,8 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
                     "reasoning": str,
                     "new_node_metadata": str | None,
                     "split_plan": {...} | None,
-                    "target_ref": str | None  # References which previously created node to operate on
+                    "target_ref": str | None,  # References which previously created node to operate on
+                    "target_node_uuid": str | None  # UUID of any existing node to target
                 }
         """
         default_response = [{
@@ -817,7 +920,8 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
             "reasoning": "Error during structure decision - defaulting to insert",
             "new_node_metadata": None,
             "split_plan": None,
-            "target_ref": None
+            "target_ref": None,
+            "target_node_uuid": None
         }]
 
         # Check if graph operations model is available
@@ -828,11 +932,12 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
                 "reasoning": "No LLM available - defaulting to insert",
                 "new_node_metadata": None,
                 "split_plan": None,
-                "target_ref": None
+                "target_ref": None,
+                "target_node_uuid": None
             }]
 
         try:
-            # Gather context
+            # Gather context for the best-match node
             node_path = self.get_parent_metadata(node)
             existing_categories = self.dao.get_categories_for_node(node.node_uuid)
             data_sample = self._get_data_sample(node)
@@ -865,25 +970,40 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
             current_categories_count = len(data_by_category) if data_by_category else 0
             current_entries_count = sum(len(entries) for entries in data_by_category.values()) if data_by_category else 0
 
-            # Determine if split is allowed
+            # Determine if split is allowed for current node
             split_allowed = (current_categories_count >= min_categories and
                            current_entries_count >= min_entries)
             split_note = ""
             if not split_allowed:
-                split_note = f"\nNOTE: SPLIT is NOT recommended for this node (has {current_categories_count} categories and {current_entries_count} entries, needs >= {min_categories} categories and >= {min_entries} entries)"
+                split_note = f"\nNOTE: SPLIT is NOT recommended for the best-match node (has {current_categories_count} categories and {current_entries_count} entries, needs >= {min_categories} categories and >= {min_entries} entries)"
 
-            # Check if we're at max depth
+            # Check if best-match node is at max depth
             depth_note = ""
             if current_depth >= max_depth:
-                depth_note = f"\nNOTE: This node is at maximum depth ({current_depth}/{max_depth}). CREATE_CHILD is not allowed - consider CREATE_SIBLING instead."
+                depth_note = f"\nNOTE: The best-match node is at maximum depth ({current_depth}/{max_depth}). CREATE_CHILD is not allowed on this node - consider CREATE_SIBLING or choose a different target node."
+
+            # Get the FULL graph structure
+            full_graph_structure = self._serialize_graph_structure(include_data_counts=True)
+            
+            # Get root UUID for reference
+            root_uuid = self.root.node_uuid if self.root else "N/A"
 
             prompt = f"""{self.BASE_PROMPT}
 
-TASK: Decide what structural change is needed to accommodate new information that doesn't fit well in existing nodes.
+TASK: Decide what structural change is needed to accommodate new information.
 
-CURRENT NODE CONTEXT:
+IMPORTANT: You have access to the ENTIRE graph structure below. You can choose to operate on ANY node in the graph,
+not just the best-match node. If the new information doesn't fit anywhere in the current graph structure,
+you can create a new branch by adding a child to the Root node or any other appropriate parent.
+
+{full_graph_structure}
+
+ROOT NODE UUID: {root_uuid}
+
+BEST-MATCH NODE (from similarity search):
 - Path from root: {node_path}
-- Current node: {node.metadata}
+- Node name: {node.metadata}
+- Node UUID: {node.node_uuid}
 - Current depth: {current_depth} (max allowed: {max_depth})
 - Parent: {parent_text}
 - Siblings:
@@ -893,13 +1013,13 @@ CURRENT NODE CONTEXT:
 - Existing categories ({current_categories_count}): {', '.join(existing_categories) if existing_categories else 'None'}
 - Total data entries: {current_entries_count}
 
-EXISTING DATA SAMPLE:
+EXISTING DATA SAMPLE (from best-match node):
 {data_sample}
 
-NEW INFORMATION THAT DOESN'T FIT WELL:
+NEW INFORMATION TO ORGANIZE:
 {summary}
 
-ALTERNATIVE NODES (with similarity scores):
+ALTERNATIVE NODES (from similarity search, with scores):
 {alternatives_text}
 
 {depth_note}
@@ -907,51 +1027,50 @@ ALTERNATIVE NODES (with similarity scores):
 
 AVAILABLE OPERATIONS:
 
-1. **CREATE_CHILD** - Create a new child node under "{node.metadata}"
-   - Use when: New info is a specialization/subset/subtask of the current node
+1. **CREATE_CHILD** - Create a new child node under a target node
+   - Use when: New info is a specialization/subset/subtask of the target node
    - IMPORTANT: When you have a specific task that is part of a broader task, create a CHILD node
-   - Examples from sample graph:
+   - Examples:
      * "Summer 2026" (parent) → "Ritesh" (child - specific applicant)
      * "Events" (parent) → "Online Webinar" (child - specific event type)
-     * "Questions/Requests" (parent) → "Answer Questions" (child - specific request type)
    - Use for: Individual items within a category, specific tasks within a project, subtasks
-   - NOT allowed if current depth >= max_depth
+   - NOT allowed if target node depth >= max_depth ({max_depth})
 
-2. **CREATE_SIBLING** - Create a new sibling node (same parent as "{node.metadata}")
-   - Use when: New info is parallel to current node (same parent, different category)
-   - Examples from sample graph:
+2. **CREATE_SIBLING** - Create a new sibling node (same parent as target node)
+   - Use when: New info is parallel to target node (same parent, different category)
+   - Examples:
      * "Summer 2026" and "Fall 2026" are siblings (both under "Intern")
      * "Recruiting" and "Employee Management" are siblings (both under "Root")
-     * "Answer Questions", "Approve Timesheets", and "Approve Leave Requests" are siblings (all under "Questions/Requests")
    - Use for: Similar level tasks that belong to the same parent category
 
-3. **SPLIT** - Divide "{node.metadata}" into multiple child nodes
-   - Use when: Current node has become too broad with mixed categories that should be separated
-   - Example: Node has mixed engineering and marketing data that should be separate nodes
-   - Only recommend if node has >= {min_categories} categories AND >= {min_entries} entries
+3. **SPLIT** - Divide a target node into multiple child nodes
+   - Use when: Target node has become too broad with mixed categories that should be separated
    - Must provide complete split_plan with new children and category assignments
 
-4. **INSERT_ANYWAY** - Insert into "{node.metadata}" despite low confidence
-   - Use when: After review, the data actually does belong here
+4. **INSERT_ANYWAY** - Insert into the target node
+   - Use when: After review, the data actually does belong in the target node
    - Or when none of the other options make sense
 
-CRITICAL GUIDANCE FOR SUBTASKS:
-- If the new information is about a SUBTASK or SPECIFIC INSTANCE of what the current node represents, CREATE_CHILD is usually correct
-- Example: If current node is "Summer 2026 Interns" and new info is about scheduling an interview with one intern, that should be a CHILD node for that specific intern
+KEY DECISION: CHOOSING THE TARGET NODE
+- If the new information doesn't fit well with the best-match node, look at the ENTIRE graph structure above
+- You can target ANY node by specifying its UUID in "target_node_uuid"
+- If the new information represents a completely new category, consider creating a child under Root
+- Use "target_ref" for relative references ("current" for best-match, "op1"/"op2" for nodes created in previous operations)
+- Use "target_node_uuid" to directly specify any existing node in the graph
 
 MULTIPLE OPERATIONS:
 You can return MULTIPLE operations if the new information requires a sequence of structural changes.
 For example:
-1. First create a child node for a category
+1. First create a child node for a new category under Root
 2. Then create another child under that new node for a specific item
 3. Then insert the data into the final node
 
-Operations will be executed IN THE ORDER you specify them. Each operation can reference previously created nodes using target_ref.
+Operations will be executed IN THE ORDER you specify them.
 
-TARGET REFERENCES:
-- "current": The node passed in (current best match)
-- "op1", "op2", "op3", etc.: Nodes created by previous operations in this sequence
-- Only operations that CREATE nodes (create_child, create_sibling, split) can be referenced
+TARGET SPECIFICATION (choose ONE per operation):
+- "target_ref": "current" - The best-match node from similarity search
+- "target_ref": "op1", "op2", etc. - Nodes created by previous operations in this sequence
+- "target_node_uuid": "<uuid>" - ANY existing node in the graph (use exact UUID from the graph structure above)
 
 OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
 {{
@@ -959,7 +1078,8 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
         {{
             "type": "create_child" | "create_sibling" | "split" | "insert_anyway",
             "target_ref": "current" | "op1" | "op2" | null,
-            "reasoning": "Explanation of why this operation is needed",
+            "target_node_uuid": "uuid-string-if-targeting-specific-node" | null,
+            "reasoning": "Explanation of why this operation is needed and why this target was chosen",
             "new_node_metadata": "Name for the new node (required for create_child/create_sibling, null otherwise)",
             "split_plan": {{
                 "new_children": [
@@ -974,31 +1094,41 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
 
 EXAMPLES:
 
-Single operation:
+Example 1 - Single operation on best-match node:
 {{
     "operations": [
-        {{"type": "create_child", "target_ref": "current", "reasoning": "...", "new_node_metadata": "New Node", "split_plan": null}}
+        {{"type": "create_child", "target_ref": "current", "target_node_uuid": null, "reasoning": "...", "new_node_metadata": "New Node", "split_plan": null}}
     ]
 }}
 
-Multiple operations (create parent, then child, then insert):
+Example 2 - Creating a completely new branch under Root (when info doesn't fit existing structure):
 {{
     "operations": [
-        {{"type": "create_child", "target_ref": "current", "reasoning": "First create category", "new_node_metadata": "Events", "split_plan": null}},
-        {{"type": "create_child", "target_ref": "op1", "reasoning": "Then create specific event", "new_node_metadata": "Career Fair", "split_plan": null}},
-        {{"type": "insert_anyway", "target_ref": "op2", "reasoning": "Insert data into Career Fair", "new_node_metadata": null, "split_plan": null}}
+        {{"type": "create_child", "target_ref": null, "target_node_uuid": "{root_uuid}", "reasoning": "New information about personal projects doesn't fit existing work categories - creating new branch under Root", "new_node_metadata": "Personal Projects", "split_plan": null}},
+        {{"type": "insert_anyway", "target_ref": "op1", "target_node_uuid": null, "reasoning": "Insert data into the new Personal Projects node", "new_node_metadata": null, "split_plan": null}}
+    ]
+}}
+
+Example 3 - Operating on a specific existing node (not best-match):
+{{
+    "operations": [
+        {{"type": "create_child", "target_ref": null, "target_node_uuid": "abc123-specific-node-uuid", "reasoning": "This information better fits under the Events node rather than the best-match", "new_node_metadata": "Conference 2026", "split_plan": null}}
     ]
 }}
 
 IMPORTANT:
 - split_plan is ONLY required when type is "split", otherwise set to null
-- target_ref defaults to "current" if not specified
+- If target_node_uuid is provided, it takes precedence over target_ref
+- target_ref defaults to "current" if neither target_ref nor target_node_uuid is specified
+- Validate that any UUID you specify exists in the graph structure shown above
 - For most cases, a single operation is sufficient
-- Only use multiple operations when you need to create a hierarchy (e.g., category → subcategory → specific item)
+- Only use multiple operations when you need to create a hierarchy
 """
 
             # Call the LLM
-            print(f"🏗️ _llm_decide_structure: Calling graph operations model for node '{node.metadata}'")
+            print(f"🏗️ _llm_decide_structure: Calling graph operations model")
+            print(f"   Best-match node: '{node.metadata}' (UUID: {node.node_uuid[:8]}...)")
+            print(f"   Total nodes in graph: {len(self.nodes)}")
             response = self.graph_operations_model.generate(prompt)
 
             # Parse and validate the response
@@ -1097,17 +1227,38 @@ IMPORTANT:
                 target_ref = operation.get("target_ref", "current")
                 if target_ref is None:
                     target_ref = "current"
+                
+                # Get target_node_uuid (for directly specifying any node in the graph)
+                target_node_uuid = operation.get("target_node_uuid")
+                
+                # Validate target_node_uuid if provided
+                if target_node_uuid:
+                    is_valid, error_msg = self._validate_node_uuid(target_node_uuid)
+                    if not is_valid:
+                        print(f"⚠️ Operation {idx}: Invalid target_node_uuid '{target_node_uuid}': {error_msg}")
+                        print(f"   Falling back to target_ref='{target_ref}'")
+                        target_node_uuid = None  # Fall back to target_ref
 
                 # Enforce max_depth constraint for CREATE_CHILD
-                # Note: Only check depth for operations targeting "current" node
-                if operation_type == "create_child" and target_ref == "current" and current_depth >= max_depth:
-                    print(f"⚠️ Operation {idx}: CREATE_CHILD not allowed at max depth, converting to INSERT_ANYWAY")
+                # Check depth for the target node (either specified by UUID or "current")
+                target_depth = current_depth  # Default to current node's depth
+                if target_node_uuid:
+                    # Get depth of the specified target node
+                    try:
+                        target_depth = self.dao.get_node_depth(target_node_uuid)
+                    except:
+                        print(f"⚠️ Operation {idx}: Could not get depth for target node, using current depth")
+                
+                if operation_type == "create_child" and target_depth >= max_depth:
+                    target_info = f"UUID: {target_node_uuid[:8]}..." if target_node_uuid else f"ref: {target_ref}"
+                    print(f"⚠️ Operation {idx}: CREATE_CHILD not allowed at max depth for target ({target_info}), converting to INSERT_ANYWAY")
                     validated_operations.append({
                         "type": "insert_anyway",
-                        "reasoning": f"CREATE_CHILD requested but node is at max depth ({current_depth}/{max_depth}). Inserting anyway.",
+                        "reasoning": f"CREATE_CHILD requested but target node is at max depth ({target_depth}/{max_depth}). Inserting anyway.",
                         "new_node_metadata": None,
                         "split_plan": None,
-                        "target_ref": target_ref
+                        "target_ref": target_ref,
+                        "target_node_uuid": target_node_uuid
                     })
                     continue
 
@@ -1152,7 +1303,8 @@ IMPORTANT:
                     "reasoning": str(operation.get("reasoning", "No reasoning provided")),
                     "new_node_metadata": new_node_metadata if operation_type in ["create_child", "create_sibling"] else None,
                     "split_plan": split_plan if operation_type == "split" else None,
-                    "target_ref": target_ref
+                    "target_ref": target_ref,
+                    "target_node_uuid": target_node_uuid
                 })
 
             # If no valid operations, return default
@@ -1163,7 +1315,15 @@ IMPORTANT:
             # Print summary
             print(f"✅ _llm_decide_structure parsed {len(validated_operations)} operation(s):")
             for idx, op in enumerate(validated_operations):
-                print(f"   Op {idx + 1}: {op['type']} (target: {op['target_ref']})")
+                target_info = ""
+                if op.get('target_node_uuid'):
+                    # Show which node was specified by UUID
+                    target_node = self._get_node_by_uuid(op['target_node_uuid'])
+                    node_name = target_node.metadata if target_node else "Unknown"
+                    target_info = f"UUID: {op['target_node_uuid'][:8]}... ({node_name})"
+                else:
+                    target_info = f"ref: {op['target_ref']}"
+                print(f"   Op {idx + 1}: {op['type']} (target: {target_info})")
                 if op['new_node_metadata']:
                     print(f"         New node: {op['new_node_metadata']}")
                 print(f"         Reasoning: {op['reasoning'][:80]}...")
@@ -1993,17 +2153,39 @@ Return ONLY a JSON object:
                 operation_type = decision["type"]
                 reasoning = decision.get("reasoning", "No reasoning provided")
                 target_ref = decision.get("target_ref", "current")
+                target_node_uuid = decision.get("target_node_uuid")
                 
                 all_reasoning.append(f"Op{idx + 1}: {reasoning}")
                 
-                print(f"\n   [{idx + 1}/{len(operations)}] {operation_type.upper()} (target: {target_ref})")
+                # Determine target info for logging
+                if target_node_uuid:
+                    target_info = f"UUID: {target_node_uuid[:8]}..."
+                else:
+                    target_info = f"ref: {target_ref}"
+                
+                print(f"\n   [{idx + 1}/{len(operations)}] {operation_type.upper()} (target: {target_info})")
                 print(f"   Reasoning: {reasoning[:100]}...")
                 
                 # Resolve target node
-                target_node = node_refs.get(target_ref, best_node)
+                # Priority: target_node_uuid > target_ref > best_node
+                target_node = None
+                
+                if target_node_uuid:
+                    # LLM specified a specific node UUID
+                    target_node = self._get_node_by_uuid(target_node_uuid)
+                    if target_node:
+                        print(f"   📍 Resolved target by UUID: '{target_node.metadata}'")
+                    else:
+                        print(f"   ⚠️ Invalid target_node_uuid '{target_node_uuid}', falling back to target_ref")
+                
                 if target_node is None:
-                    print(f"   ⚠️ Invalid target_ref '{target_ref}', using 'current' instead")
-                    target_node = best_node
+                    # Fall back to target_ref resolution
+                    target_node = node_refs.get(target_ref, best_node)
+                    if target_node is None:
+                        print(f"   ⚠️ Invalid target_ref '{target_ref}', using 'current' instead")
+                        target_node = best_node
+                    elif target_ref != "current":
+                        print(f"   📍 Resolved target by ref '{target_ref}': '{target_node.metadata}'")
                 
                 # Determine if this is the last operation (where we insert data)
                 is_last_operation = (idx == len(operations) - 1)
@@ -2180,6 +2362,13 @@ Return ONLY a JSON object:
         Returns:
             str: The prompt to send to the LLM
         """
+        # region agent log
+        import json
+        try:
+            with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"id":"log_entry","timestamp":__import__('time').time()*1000,"location":"graph.py:2167","message":"_generate_learning_prompt entry","data":{"num_actions":len(existing_actions) if existing_actions else 0,"first_action_length":len(existing_actions[0]) if existing_actions else None},"runId":"initial","hypothesisId":"A,B,C"}) + '\n')
+        except: pass
+        # endregion
         # Get metadata chain for context
         metadata_chain = self.get_parent_metadata(node)
 
@@ -2188,7 +2377,21 @@ Return ONLY a JSON object:
         if existing_actions:
             actions_text = "EXISTING ACTIONS for this node:\n"
             for idx, action in enumerate(existing_actions, 1):
-                uuid, name, plan, prompt, node_uuid, last_selected = action
+                # region agent log
+                import json
+                try:
+                    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"id":f"log_before_{idx}","timestamp":__import__('time').time()*1000,"location":"graph.py:2195","message":"Action tuple before unpack","data":{"action_length":len(action),"action_content":str(action)[:200],"idx":idx},"runId":"fix","hypothesisId":"A,C"}) + '\n')
+                except: pass
+                # endregion
+                # Unpack 5-tuple format (action_prompt removed from schema)
+                uuid, name, plan, node_uuid, last_selected = action
+                # region agent log
+                try:
+                    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({"id":f"log_after_{idx}","timestamp":__import__('time').time()*1000,"location":"graph.py:2203","message":"Action values after unpack","data":{"uuid":uuid,"name":name,"has_plan":plan is not None,"node_uuid":node_uuid,"last_selected":last_selected},"runId":"fix","hypothesisId":"A"}) + '\n')
+                except: pass
+                # endregion
                 actions_text += f"{idx}. UUID: {uuid}\n"
                 actions_text += f"   Name: {name}\n"
                 actions_text += f"   Plan: {plan or 'N/A'}\n"
@@ -2228,6 +2431,7 @@ USER'S CURRENT ACTIVITY:
 
 YOUR TASK:
 You are an AI Desktop Agent that learns from user behavior and suggests proactive actions.
+Your goal is to try to suggest actions that the user would likely want to do next. If the user is talking about doing something and we have relevant context and MCPs available for this, then you should suggest this action! 
 
 IMPORTANT: When creating or modifying actions, you MUST only suggest actions that use the available MCP integrations listed above.
 Do NOT suggest actions for integrations that are not connected (e.g., don't suggest GitHub actions if GitHub is not in the available list).
@@ -2238,11 +2442,11 @@ Based on the user's current activity, you must:
 
    a) **CREATE** - Generate a completely new action
       - Use when: Current activity represents a new workflow or task type
-      - Provide: action_name (short UI display), action_plan (detailed user-facing description), action_prompt (full technical prompt for MCP execution)
+      - Provide: action_name (short UI display), action_plan (detailed user-facing description with full transparency of what will be executed)
 
    b) **MODIFY** - Update an existing action to better match current context
       - Use when: An existing action is close but needs refinement
-      - Provide: action_uuid (from list above), updated action_name, action_plan, action_prompt
+      - Provide: action_uuid (from list above), updated action_name, action_plan
 
    c) **SELECT** - Use an existing action exactly as-is
       - Use when: An existing action perfectly matches the current activity
@@ -2261,8 +2465,7 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
     "type": "create" | "modify" | "select",
     "action_uuid": "uuid-here-if-modify-or-select-otherwise-null",
     "action_name": "Short name for UI display (20-40 chars)",
-    "action_plan": "Detailed plan shown on hover - exact content of what will happen",
-    "action_prompt": "Full technical prompt for MCP orchestration - include all context needed for execution"
+    "action_plan": "Detailed plan shown on hover - exact content of what will happen including all relevant context"
   }},
   "data_insertions": [
     {{
@@ -2275,8 +2478,7 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
 
 IMPORTANT:
 - action_name: Concise UI label (e.g., "Schedule Interview with Ritesh")
-- action_plan: User-facing details (e.g., exact email content, meeting times and every detail relevant to the action). The user must have full transparency about what the action is going to do
-- action_prompt: Technical execution details (e.g., full instructions for LangGraph/MCP)
+- action_plan: User-facing details with FULL transparency (e.g., exact email content, meeting times, all context needed). This is what will be used as context when executing the action via MCP tools.
 - Output ONLY the JSON object - no explanations, no markdown code blocks
 - Ensure all JSON is properly formatted and valid
 """
@@ -2331,7 +2533,7 @@ IMPORTANT:
             raise ValueError(f"action_uuid required for type '{action_decision['type']}'")
 
         if action_decision["type"] in ["create", "modify"]:
-            required = ["action_name", "action_plan", "action_prompt"]
+            required = ["action_name", "action_plan"]
             for field in required:
                 if not action_decision.get(field):
                     raise ValueError(f"Missing required field for {action_decision['type']}: action_decision.{field}")
@@ -2444,6 +2646,14 @@ IMPORTANT:
             existing_actions = self.dao.get_actions_for_node(node.node_uuid, order_by_last_selected=True)
             existing_categories = self.dao.get_categories_for_node(node.node_uuid)
 
+            # region agent log
+            import json
+            try:
+                with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"id":"log_dao_result","timestamp":__import__('time').time()*1000,"location":"graph.py:2460","message":"DAO get_actions_for_node result","data":{"num_actions":len(existing_actions),"first_action_tuple_length":len(existing_actions[0]) if existing_actions else None,"sample_action_types":[type(x).__name__ for x in existing_actions[0]] if existing_actions else None},"runId":"initial","hypothesisId":"B,C"}) + '\n')
+            except: pass
+            # endregion
+
             print(f"Existing actions: {len(existing_actions)}")
             print(f"Existing categories: {existing_categories}")
 
@@ -2477,7 +2687,6 @@ IMPORTANT:
                     node_uuid=node.node_uuid,
                     action_name=action_decision["action_name"],
                     action_plan=action_decision["action_plan"],
-                    action_prompt=action_decision["action_prompt"],
                     last_selected=current_timestamp
                 )
                 print(f"Created action UUID: {selected_action_uuid}")
@@ -2487,8 +2696,7 @@ IMPORTANT:
                 self.dao.update_action(
                     action_uuid=action_decision["action_uuid"],
                     action_name=action_decision["action_name"],
-                    action_plan=action_decision["action_plan"],
-                    action_prompt=action_decision["action_prompt"]
+                    action_plan=action_decision["action_plan"]
                 )
                 self.dao.update_action_last_selected(action_decision["action_uuid"], current_timestamp)
                 selected_action_uuid = action_decision["action_uuid"]
