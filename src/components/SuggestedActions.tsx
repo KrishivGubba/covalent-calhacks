@@ -418,7 +418,16 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
               <h3 style={styles.modalTitle}>
                 {actionPlan.display?.display_name || actionPlan.proposed_action?.tool_name || 'Confirm Action'}
               </h3>
-              <button style={styles.modalClose} onClick={handleCancelPlan}>
+              <button 
+                style={styles.modalClose} 
+                onClick={handleCancelPlan}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#27272a';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#1a1a1a';
+                }}
+              >
                 ✕
               </button>
             </div>
@@ -449,6 +458,12 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
                           onChange={(e) => handleParamChange(field.key, e.target.value)}
                           disabled={!field.editable}
                           rows={4}
+                          onFocus={(e) => {
+                            e.currentTarget.style.borderColor = '#3f3f46';
+                          }}
+                          onBlur={(e) => {
+                            e.currentTarget.style.borderColor = '#27272a';
+                          }}
                         />
                       ) : (
                         <input
@@ -456,6 +471,12 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
                           value={String(editableParams[field.key] ?? field.value ?? '')}
                           onChange={(e) => handleParamChange(field.key, e.target.value)}
                           disabled={!field.editable}
+                          onFocus={(e) => {
+                            e.currentTarget.style.borderColor = '#3f3f46';
+                          }}
+                          onBlur={(e) => {
+                            e.currentTarget.style.borderColor = '#27272a';
+                          }}
                         />
                       )}
                     </label>
@@ -471,12 +492,24 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
                           value={String(value)}
                           onChange={(e) => handleParamChange(key, e.target.value)}
                           rows={4}
+                          onFocus={(e) => {
+                            e.currentTarget.style.borderColor = '#3f3f46';
+                          }}
+                          onBlur={(e) => {
+                            e.currentTarget.style.borderColor = '#27272a';
+                          }}
                         />
                       ) : (
                         <input
                           style={styles.modalInput}
                           value={String(value ?? '')}
                           onChange={(e) => handleParamChange(key, e.target.value)}
+                          onFocus={(e) => {
+                            e.currentTarget.style.borderColor = '#3f3f46';
+                          }}
+                          onBlur={(e) => {
+                            e.currentTarget.style.borderColor = '#27272a';
+                          }}
                         />
                       )}
                     </label>
@@ -491,6 +524,12 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
                 style={styles.exitButton} 
                 onClick={handleCancelPlan}
                 disabled={isExecuting}
+                onMouseEnter={(e) => {
+                  if (!isExecuting) e.currentTarget.style.backgroundColor = '#27272a';
+                }}
+                onMouseLeave={(e) => {
+                  if (!isExecuting) e.currentTarget.style.backgroundColor = '#1a1a1a';
+                }}
               >
                 Exit
               </button>
@@ -498,6 +537,12 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
                 style={styles.executeButton} 
                 onClick={handleExecuteAction}
                 disabled={isExecuting}
+                onMouseEnter={(e) => {
+                  if (!isExecuting) e.currentTarget.style.opacity = '0.9';
+                }}
+                onMouseLeave={(e) => {
+                  if (!isExecuting) e.currentTarget.style.opacity = '1';
+                }}
               >
                 {isExecuting ? 'Executing...' : 'Execute'}
               </button>
@@ -830,13 +875,11 @@ const styles = {
     width: '700px',
     maxWidth: '94vw',
     maxHeight: '85vh',
-    backgroundColor: 'rgba(255, 255, 255, 0.85)',
-    borderRadius: '24px',
-    padding: '1.25rem 1.25rem 1rem',
-    boxShadow: '0 30px 80px rgba(15, 23, 42, 0.35)',
-    border: '1px solid rgba(255, 255, 255, 0.6)',
-    backdropFilter: 'blur(28px) saturate(160%)',
-    WebkitBackdropFilter: 'blur(28px) saturate(160%)',
+    backgroundColor: '#141414',
+    borderRadius: '16px',
+    padding: '1.5rem',
+    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)',
+    border: '1px solid #27272a',
     display: 'flex',
     flexDirection: 'column' as const,
   },
@@ -847,20 +890,19 @@ const styles = {
   },
   planDescription: {
     fontSize: '0.9rem',
-    color: '#475569',
+    color: '#a1a1aa',
     marginBottom: '1rem',
     lineHeight: '1.5',
   },
   reasoningBox: {
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
-    border: '1px solid rgba(255, 255, 255, 0.4)',
-    borderRadius: '12px',
+    backgroundColor: '#1a1a1a',
+    border: '1px solid #27272a',
+    borderRadius: '8px',
     padding: '0.75rem 1rem',
     marginBottom: '1rem',
     fontSize: '0.85rem',
-    color: '#0f172a',
-    backdropFilter: 'blur(10px)',
-    WebkitBackdropFilter: 'blur(10px)',
+    color: '#ffffff',
+    lineHeight: '1.5',
   },
   paramsSection: {
     marginTop: '0.5rem',
@@ -868,7 +910,7 @@ const styles = {
   paramsSectionTitle: {
     fontSize: '0.95rem',
     fontWeight: '600',
-    color: '#0f172a',
+    color: '#ffffff',
     marginBottom: '0.75rem',
   },
   planModalActions: {
@@ -876,50 +918,48 @@ const styles = {
     justifyContent: 'flex-end',
     gap: '0.75rem',
     marginTop: '1rem',
-    paddingTop: '0.75rem',
-    borderTop: '1px solid rgba(148, 163, 184, 0.25)',
+    paddingTop: '1rem',
+    borderTop: '1px solid #27272a',
   },
   exitButton: {
-    padding: '0.6rem 1.5rem',
-    borderRadius: '999px',
-    border: '2px solid rgba(239, 68, 68, 0.6)',
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    color: '#dc2626',
-    fontWeight: '600',
+    padding: '10px 20px',
+    borderRadius: '8px',
+    border: '1px solid #27272a',
+    backgroundColor: '#1a1a1a',
+    color: '#a1a1aa',
+    fontWeight: '500',
     cursor: 'pointer',
     transition: 'all 0.2s ease',
   },
   executeButton: {
-    padding: '0.6rem 1.5rem',
-    borderRadius: '999px',
-    border: '2px solid rgba(34, 197, 94, 0.6)',
-    backgroundColor: 'rgba(34, 197, 94, 0.2)',
-    color: '#16a34a',
+    padding: '10px 20px',
+    borderRadius: '8px',
+    border: 'none',
+    backgroundColor: '#C5F467',
+    color: '#0a0a0a',
     fontWeight: '600',
     cursor: 'pointer',
     transition: 'all 0.2s ease',
   },
   loadingModal: {
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    borderRadius: '20px',
+    backgroundColor: '#141414',
+    borderRadius: '16px',
     padding: '2rem 3rem',
     display: 'flex',
     flexDirection: 'column' as const,
     alignItems: 'center',
     justifyContent: 'center',
-    boxShadow: '0 20px 60px rgba(15, 23, 42, 0.25)',
-    border: '1px solid rgba(255, 255, 255, 0.6)',
-    backdropFilter: 'blur(28px)',
-    WebkitBackdropFilter: 'blur(28px)',
+    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)',
+    border: '1px solid #27272a',
   },
   loadingSpinner: {
     fontSize: '2rem',
-    color: '#9333ea',
+    color: '#C5F467',
     marginBottom: '0.5rem',
   },
   loadingText: {
     fontSize: '0.95rem',
-    color: '#475569',
+    color: '#a1a1aa',
   },
 };
 
