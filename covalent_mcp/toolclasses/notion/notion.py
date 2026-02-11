@@ -263,22 +263,6 @@ class NotionToolModule(MCPToolModule):
     def get_display_schemas(self) -> Dict[str, ToolDisplaySchema]:
         """Return display schemas for Notion tools."""
         return {
-            "notion_search": ToolDisplaySchema(
-                tool_name="notion_search",
-                display_name="Search Notion",
-                description="Search pages and databases in Notion.",
-                fields=[
-                    DisplayField(key="query", label="Search Query", widget="text_input", placeholder="Search by title..."),
-                    DisplayField(
-                        key="filter_type", label="Filter", widget="select",
-                        options=[
-                            {"value": "", "label": "All"},
-                            {"value": "page", "label": "Pages only"},
-                            {"value": "database", "label": "Databases only"},
-                        ],
-                    ),
-                ],
-            ),
             "notion_create_page": ToolDisplaySchema(
                 tool_name="notion_create_page",
                 display_name="Create Notion Page",
@@ -335,17 +319,6 @@ class NotionToolModule(MCPToolModule):
                     DisplayField(key="block_id", label="Block ID", required=True, editable=False, widget="display_text"),
                 ],
             ),
-            "notion_query_database": ToolDisplaySchema(
-                tool_name="notion_query_database",
-                display_name="Query Notion Database",
-                description="Query a Notion database with filters.",
-                fields=[
-                    DisplayField(key="database_title", label="Database", source="resolved", editable=False, widget="display_text"),
-                    DisplayField(key="filter_json", label="Filter (JSON)", widget="textarea", placeholder="Optional filter conditions..."),
-                    DisplayField(key="sorts_json", label="Sort (JSON)", widget="textarea", placeholder='[{"property":"Name","direction":"ascending"}]'),
-                ],
-                resolve=self._resolve_database_title,
-            ),
             "notion_create_database": ToolDisplaySchema(
                 tool_name="notion_create_database",
                 display_name="Create Notion Database",
@@ -373,42 +346,6 @@ class NotionToolModule(MCPToolModule):
     def register(self, mcp: FastMCP) -> None:
         """Register Notion tools (write operations) with MCP server."""
         module = self  # Capture reference for closures
-        
-        @mcp.tool()
-        def notion_search(
-            query: str = "",
-            filter_type: Optional[str] = None,
-            page_size: int = 20,
-        ) -> dict:
-            """
-            Search Notion pages and databases by title.
-            
-            Args:
-                query: Text to search for in page/database titles. Empty string returns recent items.
-                filter_type: Filter by "page" or "database" (omit for both)
-                page_size: Number of results to return (max 100)
-            
-            Returns:
-                Search results with matching pages and databases
-            """
-            client = module._ensure_client()
-            results = client.search(query=query, filter_type=filter_type, page_size=page_size)
-            items = results.get("results", [])
-            return {
-                "success": True,
-                "count": len(items),
-                "has_more": results.get("has_more", False),
-                "results": [
-                    {
-                        "id": item.get("id"),
-                        "type": item.get("object"),
-                        "title": _extract_title(item),
-                        "url": item.get("url"),
-                        "last_edited": item.get("last_edited_time"),
-                    }
-                    for item in items
-                ],
-            }
         
         @mcp.tool()
         def notion_create_page(
@@ -565,52 +502,6 @@ class NotionToolModule(MCPToolModule):
             return {"success": True, "deleted": block_id}
         
         @mcp.tool()
-        def notion_query_database(
-            database_id: str,
-            filter_json: Optional[str] = None,
-            sorts_json: Optional[str] = None,
-            page_size: int = 50,
-        ) -> dict:
-            """
-            Query a Notion database with optional filters and sorts.
-            
-            Args:
-                database_id: Database ID to query
-                filter_json: Optional JSON string of filter conditions (Notion filter format)
-                sorts_json: Optional JSON string of sort conditions (e.g. [{"property":"Name","direction":"ascending"}])
-                page_size: Number of results (max 100)
-            
-            Returns:
-                Query results with matching pages/rows
-            """
-            client = module._ensure_client()
-            
-            filter_obj = json.loads(filter_json) if filter_json else None
-            sorts_obj = json.loads(sorts_json) if sorts_json else None
-            
-            results = client.query_database(
-                database_id=database_id,
-                filter=filter_obj,
-                sorts=sorts_obj,
-                page_size=page_size,
-            )
-            items = results.get("results", [])
-            return {
-                "success": True,
-                "count": len(items),
-                "has_more": results.get("has_more", False),
-                "results": [
-                    {
-                        "id": item.get("id"),
-                        "url": item.get("url"),
-                        "title": _extract_title(item),
-                        "last_edited": item.get("last_edited_time"),
-                    }
-                    for item in items
-                ],
-            }
-        
-        @mcp.tool()
         def notion_create_database(
             parent_page_id: str,
             title: str,
@@ -669,6 +560,73 @@ class NotionToolModule(MCPToolModule):
     def register_resources(self, mcp: FastMCP) -> None:
         """Register Notion resources (read-only operations) with MCP server."""
         module = self
+        
+        @mcp.resource("notion://search{?query,filter_type,page_size}")
+        def search_resource(
+            query: str = "",
+            filter_type: Optional[str] = None,
+            page_size: int = 20,
+        ) -> str:
+            """
+            Search Notion pages and databases by title.
+            
+            URI: notion://search?query={query}&filter_type={filter_type}&page_size={page_size}
+            """
+            client = module._ensure_client()
+            results = client.search(query=query, filter_type=filter_type, page_size=page_size)
+            items = results.get("results", [])
+            return json.dumps({
+                "count": len(items),
+                "has_more": results.get("has_more", False),
+                "results": [
+                    {
+                        "id": item.get("id"),
+                        "type": item.get("object"),
+                        "title": _extract_title(item),
+                        "url": item.get("url"),
+                        "last_edited": item.get("last_edited_time"),
+                    }
+                    for item in items
+                ],
+            }, indent=2)
+        
+        @mcp.resource("notion://database/{database_id}/query{?filter_json,sorts_json,page_size}")
+        def query_database_resource(
+            database_id: str,
+            filter_json: Optional[str] = None,
+            sorts_json: Optional[str] = None,
+            page_size: int = 50,
+        ) -> str:
+            """
+            Query a Notion database with optional filters and sorts.
+            
+            URI: notion://database/{database_id}/query?filter_json={filter_json}&sorts_json={sorts_json}&page_size={page_size}
+            """
+            client = module._ensure_client()
+            
+            filter_obj = json.loads(filter_json) if filter_json else None
+            sorts_obj = json.loads(sorts_json) if sorts_json else None
+            
+            results = client.query_database(
+                database_id=database_id,
+                filter=filter_obj,
+                sorts=sorts_obj,
+                page_size=page_size,
+            )
+            items = results.get("results", [])
+            return json.dumps({
+                "count": len(items),
+                "has_more": results.get("has_more", False),
+                "results": [
+                    {
+                        "id": item.get("id"),
+                        "url": item.get("url"),
+                        "title": _extract_title(item),
+                        "last_edited": item.get("last_edited_time"),
+                    }
+                    for item in items
+                ],
+            }, indent=2)
         
         @mcp.resource("notion://page/{page_id}")
         def get_page_resource(page_id: str) -> str:
