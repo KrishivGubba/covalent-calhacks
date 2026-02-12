@@ -22,15 +22,15 @@ FLASK_URL = "http://localhost:5001"
 # A task that triggers research (skip_research=False) and results in
 # a filesystem write_file tool call — safe to actually execute.
 TASK = {
-    "action_text": "can you make a notion page about facts about marsupials",
-    "context": "",
+    "action_text": "can you make a github issue on my basketball reference repo that lists top 10 facts about lebron james and how the codebase shold be dedicated to him. also email ritesh neela about how i created this and would love for him to check it out.",
+    "context": "email of ritesh neela is rneela@wisc.edu",
     "skip_research": False,
 }
 
 # Also test with skip_research=True so we can isolate planning time
 TASK_NO_RESEARCH = {
-    "action_text": "can you make a notion page about facts about marsupials",
-    "context": "",
+    "action_text": "can you make a github issue on my basketball reference repo that lists top 10 facts about lebron james and how the codebase shold be dedicated to him. also email ritesh neela about how i created this and would love for him to check it out.",
+    "context": "email of ritesh neela is rneela@wisc.edu",
     "skip_research": True,
 }
 
@@ -70,12 +70,17 @@ def run_plan(label: str, payload: dict) -> dict | None:
         return None
 
     server_total_ms = data.get("duration_ms", 0)
-    proposed = data.get("proposed_action", {})
-    display = data.get("display")
+    proposed_actions = data.get("proposed_actions", [])
+    displays = data.get("displays", [])
+    is_multi = data.get("is_multi_action", False)
 
-    print(f"  Tool chosen : {proposed.get('tool_name', '???')}")
-    print(f"  Params      : {json.dumps(proposed.get('parameters', {}), indent=4)}")
-    print(f"  has_schema  : {display.get('has_schema') if display else 'N/A'}")
+    print(f"  Multi-action: {is_multi}")
+    print(f"  Actions ({len(proposed_actions)}):")
+    for i, action in enumerate(proposed_actions):
+        display = displays[i] if i < len(displays) else {}
+        print(f"    [{action.get('step_id', i+1)}] {action.get('tool_name', '???')}")
+        print(f"        Params    : {json.dumps(action.get('parameters', {}), indent=8)}")
+        print(f"        has_schema: {display.get('has_schema', 'N/A')}")
     print()
     print(f"  ⏱  Server total    : {server_total_ms}ms")
     print(f"  ⏱  Client round-trip: {fmt(elapsed)}")
@@ -146,16 +151,22 @@ def main():
     plan_ms = plan_only.get("duration_ms", 0)
     research_ms = max(full_ms - plan_ms, 0)
 
-    # ── Run 3: Execute the planned action ───────────────────────
-    proposed = full.get("proposed_action") or plan_only.get("proposed_action", {})
-    tool_name = proposed.get("tool_name", "")
-    params = proposed.get("parameters", {})
-
+    # ── Run 3: Execute the planned action(s) ──────────────────────
+    proposed_actions = full.get("proposed_actions") or plan_only.get("proposed_actions", [])
+    
     exec_result = None
-    if tool_name and params:
-        exec_result = run_execute(tool_name, params)
+    if proposed_actions:
+        # For timing test, just execute the first action
+        first_action = proposed_actions[0]
+        tool_name = first_action.get("tool_name", "")
+        params = first_action.get("parameters", {})
+        
+        if tool_name and params:
+            exec_result = run_execute(tool_name, params)
+        else:
+            print("\n  ⚠️  First action missing tool_name or parameters")
     else:
-        print("\n  ⚠️  No proposed action to execute")
+        print("\n  ⚠️  No proposed actions to execute")
 
     # ── Summary ─────────────────────────────────────────────────
     print(f"\n\n{'='*60}")
