@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { disableContextCollection, enableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
+import { notifyActionResult } from '../utils/actionNotifications';
 
 export interface Action {
   id: string;
@@ -134,10 +135,16 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
       
       console.log(`✅ Action executed successfully`);
       setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+      
+      // Send notification for successful execution
+      await notifyActionResult(planningAction.title, true);
     } catch (error) {
       console.error(`❌ Action execution failed:`, error);
       setPlanError(String(error));
       setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'error' }));
+      
+      // Send notification for failed execution
+      await notifyActionResult(planningAction.title, false, String(error));
     } finally {
       setIsExecuting(false);
       setPlanningAction(null);

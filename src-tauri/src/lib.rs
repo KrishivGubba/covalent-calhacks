@@ -547,6 +547,21 @@ fn get_auth_status() -> Result<serde_json::Value, String> {
     }))
 }
 
+// Open dashboard and navigate to history page
+#[tauri::command]
+fn open_dashboard_history(app: tauri::AppHandle) -> Result<(), String> {
+    println!("🎛️  Opening dashboard to history page");
+    if let Some(window) = app.get_webview_window("dashboard") {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        // Emit event to navigate to history
+        app.emit_to("dashboard", "navigate-to-history", ()).map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Err("Dashboard window not found".to_string())
+    }
+}
+
 #[tauri::command]
 fn get_mcp_integrations() -> Result<Vec<serde_json::Value>, String> {
     // TODO: Fetch actual MCP integrations from Composio/backend
@@ -955,7 +970,8 @@ pub fn run() {
             get_excluded_apps,
             set_excluded_apps,
             get_auth_status,
-            get_mcp_integrations
+            get_mcp_integrations,
+            open_dashboard_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

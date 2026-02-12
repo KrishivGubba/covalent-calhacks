@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import Sidebar, { PageType } from './components/Sidebar';
 import UpdateButton from './components/UpdateButton';
 import AuthPage from './pages/AuthPage';
@@ -6,6 +7,7 @@ import SettingsPage from './pages/SettingsPage';
 import MCPPage from './pages/MCPPage';
 import MemoryPage from './pages/MemoryPage';
 import HistoryPage from './pages/HistoryPage';
+import type { ActionResultPayload } from '../utils/actionNotifications';
 
 // Must match the key used in AuthPage.tsx
 const USER_ID_KEY = 'covalent_user_id';
@@ -15,12 +17,6 @@ const Dashboard: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
 
-  // Check auth status on mount
-  useEffect(() => {
-    const userId = localStorage.getItem(USER_ID_KEY);
-    setIsAuthenticated(!!userId);
-  }, []);
-
   // Handle page changes with special handling for history tab
   const handlePageChange = useCallback((page: PageType) => {
     if (page === 'history') {
@@ -29,6 +25,25 @@ const Dashboard: React.FC = () => {
     }
     setCurrentPage(page);
   }, []);
+
+  // Check auth status on mount
+  useEffect(() => {
+    const userId = localStorage.getItem(USER_ID_KEY);
+    setIsAuthenticated(!!userId);
+  }, []);
+
+  // Listen for action completion events and auto-navigate to history
+  useEffect(() => {
+    const unlistenPromise = listen<ActionResultPayload>('action-completed', (event) => {
+      console.log('📬 Action completed event received:', event.payload);
+      // Auto-navigate to history page when action completes
+      handlePageChange('history');
+    });
+    
+    return () => {
+      unlistenPromise.then(fn => fn());
+    };
+  }, [handlePageChange]);
 
   // Callback for when auth state changes (login/logout)
   const handleAuthChange = (authenticated: boolean) => {

@@ -2,6 +2,7 @@ import React, { useState, useEffect, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Action, ActionPlan } from './SuggestedActions';
 import { disableContextCollection, enableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
+import { notifyActionResult } from '../utils/actionNotifications';
 
 interface FloatingAssistantProps {
   actions: Action[];
@@ -137,10 +138,16 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
       
       console.log(`✅ Action executed successfully`);
       setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+      
+      // Send notification for successful execution
+      await notifyActionResult(planningAction.title, true);
     } catch (error) {
       console.error(`❌ Action execution failed:`, error);
       setPlanError(String(error));
       setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'idle' }));
+      
+      // Send notification for failed execution
+      await notifyActionResult(planningAction.title, false, String(error));
     } finally {
       setIsExecuting(false);
       setPlanningAction(null);
