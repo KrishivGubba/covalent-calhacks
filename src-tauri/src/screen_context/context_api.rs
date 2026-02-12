@@ -182,6 +182,42 @@ impl ContextApiClient {
         }
     }
 
+    /// Execute multiple actions as a chain via Flask API
+    /// Called for multi-action execution
+    pub async fn execute_action_chain(&self, action_uuid: String, actions: Vec<serde_json::Value>) -> Result<serde_json::Value> {
+        let url = format!("{}/execute_action", self.base_url);
+        
+        let payload = serde_json::json!({
+            "action_uuid": action_uuid,
+            "actions": actions
+        });
+        
+        let response = self.client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .context("Failed to send execute_action_chain request to Flask API")?;
+
+        // Handle both 200 (success) and 207 (partial success) as valid responses
+        let status = response.status();
+        if status.is_success() || status.as_u16() == 207 {
+            let json_response: serde_json::Value = response
+                .json()
+                .await
+                .context("Failed to parse execute_action_chain response from Flask API")?;
+            
+            Ok(json_response)
+        } else {
+            let error_text = response.text().await.unwrap_or_default();
+            Err(anyhow::anyhow!(
+                "Flask API execute_action_chain returned error status {}: {}",
+                status,
+                error_text
+            ))
+        }
+    }
+
     /// Edit an action via Flask API (optionally persist)
     pub async fn edit_action(
         &self,

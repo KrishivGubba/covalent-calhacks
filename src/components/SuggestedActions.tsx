@@ -11,34 +11,82 @@ export interface Action {
   node_metadata?: string; // Optional: metadata of the node
 }
 
-// Action plan returned from /plan_action endpoint
+// Single proposed action from planning
+export interface ProposedAction {
+  step_id: number;
+  tool_name: string;
+  parameters: Record<string, unknown>;
+  reasoning?: string;
+}
+
+// Display schema for a single action
+export interface ActionDisplay {
+  step_id?: number;
+  display_name: string;
+  description: string;
+  fields: Array<{
+    key: string;
+    label: string;
+    source: string;
+    editable: boolean;
+    widget: string;
+    required: boolean;
+    value: unknown;
+  }>;
+  has_schema: boolean;
+}
+
+// Execution result for a single action
+export interface ActionResult {
+  step_id: number;
+  tool_name: string;
+  status: 'success' | 'error';
+  result?: unknown;
+  error?: string;
+}
+
+// Execution summary
+export interface ExecutionSummary {
+  total: number;
+  succeeded: number;
+  failed: number;
+}
+
+// Action plan returned from /plan_action endpoint (multi-action support)
 export interface ActionPlan {
   status: string;
   action_text: string;
   context_data: string;
+  // New multi-action format
+  proposed_actions?: ProposedAction[];
+  displays?: ActionDisplay[];
+  is_multi_action?: boolean;
+  overall_reasoning?: string;
+  // Legacy single-action format (backward compat)
   proposed_action?: {
     tool_name: string;
     parameters: Record<string, unknown>;
     reasoning?: string;
   };
-  display?: {
-    display_name: string;
-    description: string;
-    fields: Array<{
-      key: string;
-      label: string;
-      source: string;
-      editable: boolean;
-      widget: string;
-      required: boolean;
-      value: unknown;
-    }>;
-    has_schema: boolean;
-  };
+  display?: ActionDisplay;
   research?: {
     resources_read: string[];
     context_gathered: string;
   };
+  // Error info
+  error?: string;
+}
+
+// Execution response from /execute_action endpoint
+export interface ExecutionResponse {
+  status: 'success' | 'partial' | 'error';
+  // Multi-action response
+  results?: ActionResult[];
+  summary?: ExecutionSummary;
+  // Single-action response (legacy)
+  result?: unknown;
+  error?: string;
+  duration_ms?: number;
 }
 
 interface SuggestedActionsProps {
@@ -48,6 +96,11 @@ interface SuggestedActionsProps {
 type ActionStatus = 'idle' | 'playing' | 'done' | 'error';
 
 const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
+  // #region agent log
+  React.useEffect(() => {
+    fetch('http://127.0.0.1:7243/ingest/7843b36f-61b5-435e-a971-922268939b8a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SuggestedActions.tsx:mount',message:'NEW MULTI-ACTION COMPONENT MOUNTED v2',data:{hasExecutionResults:typeof useState !== 'undefined'},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
+  }, []);
+  // #endregion
   const [actionStatuses, setActionStatuses] = useState<Record<string, ActionStatus>>({});
   const [editingAction, setEditingAction] = useState<Action | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -59,8 +112,47 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
   const [planningAction, setPlanningAction] = useState<Action | null>(null);
   const [actionPlan, setActionPlan] = useState<ActionPlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
-  const [editableParams, setEditableParams] = useState<Record<string, unknown>>({});
+  // Multi-action: editable params per step_id
+  const [editableParamsMap, setEditableParamsMap] = useState<Record<number, Record<string, unknown>>>({});
   const [isExecuting, setIsExecuting] = useState(false);
+  // Execution results for display
+  const [executionResults, setExecutionResults] = useState<ActionResult[] | null>(null);
+  const [executionSummary, setExecutionSummary] = useState<ExecutionSummary | null>(null);
+  
+  // Legacy: single editableParams for backward compat
+  const [editableParams, setEditableParams] = useState<Record<string, unknown>>({});
+  
+  // Helper: Get normalized proposed actions array
+  const getProposedActions = (plan: ActionPlan): ProposedAction[] => {
+    // #region agent log
+    fetch('http://127.0.0.1:7243/ingest/7843b36f-61b5-435e-a971-922268939b8a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SuggestedActions.tsx:getProposedActions',message:'getProposedActions called',data:{has_proposed_actions:!!plan.proposed_actions,proposed_actions_length:plan.proposed_actions?.length,has_legacy:!!plan.proposed_action,plan_keys:Object.keys(plan)},timestamp:Date.now(),hypothesisId:'H1,H2'})}).catch(()=>{});
+    // #endregion
+    if (plan.proposed_actions && plan.proposed_actions.length > 0) {
+      return plan.proposed_actions;
+    }
+    // Legacy single-action format
+    if (plan.proposed_action) {
+      return [{
+        step_id: 1,
+        tool_name: plan.proposed_action.tool_name,
+        parameters: plan.proposed_action.parameters,
+        reasoning: plan.proposed_action.reasoning,
+      }];
+    }
+    return [];
+  };
+  
+  // Helper: Get display for a step
+  const getDisplayForStep = (plan: ActionPlan, stepId: number): ActionDisplay | undefined => {
+    if (plan.displays && plan.displays.length > 0) {
+      return plan.displays.find(d => d.step_id === stepId) || plan.displays[stepId - 1];
+    }
+    // Legacy single display
+    if (plan.display && stepId === 1) {
+      return plan.display;
+    }
+    return undefined;
+  };
 
   const handleActionClick = async (action: Action) => {
     const currentStatus = actionStatuses[action.id] || 'idle';
@@ -82,9 +174,27 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
         });
         
         console.log(`✅ Action plan received:`, plan);
+        console.log(`   - status: ${plan.status}`);
+        console.log(`   - proposed_actions: ${plan.proposed_actions ? JSON.stringify(plan.proposed_actions) : 'undefined'}`);
+        console.log(`   - displays: ${plan.displays ? JSON.stringify(plan.displays) : 'undefined'}`);
+        console.log(`   - legacy proposed_action: ${plan.proposed_action ? JSON.stringify(plan.proposed_action) : 'undefined'}`);
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/7843b36f-61b5-435e-a971-922268939b8a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SuggestedActions.tsx:handleActionClick',message:'Plan received from Tauri',data:{status:plan.status,proposed_actions:plan.proposed_actions,displays:plan.displays,legacy_proposed_action:plan.proposed_action,all_keys:Object.keys(plan)},timestamp:Date.now(),hypothesisId:'H1,H2,H5'})}).catch(()=>{});
+        // #endregion
         setActionPlan(plan);
+        setExecutionResults(null);
+        setExecutionSummary(null);
         
-        // Initialize editable params from the plan
+        // Initialize editable params for all proposed actions
+        const proposedActions = getProposedActions(plan);
+        console.log(`   - parsed proposedActions (${proposedActions.length}):`, proposedActions);
+        const paramsMap: Record<number, Record<string, unknown>> = {};
+        proposedActions.forEach(action => {
+          paramsMap[action.step_id] = { ...action.parameters };
+        });
+        setEditableParamsMap(paramsMap);
+        
+        // Legacy: also set single editableParams for backward compat
         if (plan.proposed_action?.parameters) {
           setEditableParams({ ...plan.proposed_action.parameters });
         }
@@ -114,36 +224,95 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
   };
 
   const handleExecuteAction = async () => {
-    if (!planningAction || !actionPlan?.proposed_action) {
+    if (!planningAction || !actionPlan) {
+      return;
+    }
+    
+    const proposedActions = getProposedActions(actionPlan);
+    if (proposedActions.length === 0) {
       return;
     }
     
     setIsExecuting(true);
     setPlanError(null);
+    setExecutionResults(null);
+    setExecutionSummary(null);
+    
+    // Track if we have results to show (for finally block)
+    let hasResults = false;
     
     try {
-      console.log(`🚀 Executing action: ${planningAction.title}`);
-      console.log(`   Tool: ${actionPlan.proposed_action.tool_name}`);
-      console.log(`   Parameters:`, editableParams);
+      console.log(`🚀 Executing ${proposedActions.length} action(s): ${planningAction.title}`);
       
-      await invoke('execute_action', {
+      // Build actions array with user-edited parameters
+      const actionsToExecute = proposedActions.map(action => ({
+        step_id: action.step_id,
+        tool_name: action.tool_name,
+        parameters: editableParamsMap[action.step_id] || action.parameters,
+      }));
+      
+      console.log(`   Actions:`, actionsToExecute);
+      
+      const response = await invoke<ExecutionResponse>('execute_action', {
         actionUuid: planningAction.uuid,
-        toolName: actionPlan.proposed_action.tool_name,
-        parameters: editableParams,
+        actions: actionsToExecute,
       });
       
-      console.log(`✅ Action executed successfully`);
-      setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+      console.log(`📊 Execution response:`, response);
+      
+      // Handle multi-action response
+      if (response.results && response.summary) {
+        setExecutionResults(response.results);
+        setExecutionSummary(response.summary);
+        hasResults = true;
+        
+        if (response.summary.failed === 0) {
+          console.log(`✅ All ${response.summary.total} actions executed successfully`);
+          setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+        } else if (response.summary.succeeded === 0) {
+          console.log(`❌ All ${response.summary.total} actions failed`);
+          setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'error' }));
+        } else {
+          console.log(`⚠️ Partial success: ${response.summary.succeeded}/${response.summary.total} succeeded`);
+          // Mark as done with partial success (user can see details)
+          setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+        }
+      } else {
+        // Legacy single-action response - no results modal, just close
+        if (response.status === 'success') {
+          console.log(`✅ Action executed successfully`);
+          setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+        } else {
+          console.error(`❌ Action failed:`, response.error);
+          setPlanError(response.error || 'Unknown error');
+          setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'error' }));
+        }
+      }
     } catch (error) {
       console.error(`❌ Action execution failed:`, error);
       setPlanError(String(error));
       setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'error' }));
     } finally {
       setIsExecuting(false);
-      setPlanningAction(null);
-      setActionPlan(null);
-      setEditableParams({});
+      // Don't clear the modal if we have results to show
+      if (!hasResults) {
+        setPlanningAction(null);
+        setActionPlan(null);
+        setEditableParamsMap({});
+        setEditableParams({});
+      }
     }
+  };
+  
+  // Close results modal
+  const handleCloseResults = async () => {
+    setPlanningAction(null);
+    setActionPlan(null);
+    setEditableParamsMap({});
+    setEditableParams({});
+    setExecutionResults(null);
+    setExecutionSummary(null);
+    await enableContextCollectionIfNotUserPaused();
   };
 
   const handleCancelPlan = async () => {
@@ -154,11 +323,28 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
     setActionPlan(null);
     setPlanError(null);
     setEditableParams({});
+    setEditableParamsMap({});
+    setExecutionResults(null);
+    setExecutionSummary(null);
     await enableContextCollectionIfNotUserPaused();
   };
 
+  // Per-step param change handler for multi-action
+  const handleStepParamChange = (stepId: number, key: string, value: unknown) => {
+    setEditableParamsMap(prev => ({
+      ...prev,
+      [stepId]: {
+        ...prev[stepId],
+        [key]: value,
+      }
+    }));
+  };
+
+  // Legacy: single action param change
   const handleParamChange = (key: string, value: unknown) => {
     setEditableParams(prev => ({ ...prev, [key]: value }));
+    // Also update the map for step 1 (backward compat)
+    handleStepParamChange(1, key, value);
   };
 
   const openEditModal = async (action: Action) => {
@@ -218,6 +404,18 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
       });
       
       setActionPlan(plan);
+      setExecutionResults(null);
+      setExecutionSummary(null);
+      
+      // Initialize editable params for all proposed actions
+      const proposedActions = getProposedActions(plan);
+      const paramsMap: Record<number, Record<string, unknown>> = {};
+      proposedActions.forEach(action => {
+        paramsMap[action.step_id] = { ...action.parameters };
+      });
+      setEditableParamsMap(paramsMap);
+      
+      // Legacy
       if (plan.proposed_action?.parameters) {
         setEditableParams({ ...plan.proposed_action.parameters });
       }
@@ -371,79 +569,128 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
         </div>
       )}
 
-      {/* Action Plan Confirmation Modal */}
-      {planningAction && actionPlan && (
+      {/* Action Plan Confirmation Modal - Multi-action support */}
+      {planningAction && actionPlan && !executionResults && (
         <div style={styles.modalOverlay}>
           <div style={styles.planModal}>
             <div style={styles.modalHeader}>
               <h3 style={styles.modalTitle}>
-                {actionPlan.display?.display_name || actionPlan.proposed_action?.tool_name || 'Confirm Action'}
+                {getProposedActions(actionPlan).length > 1 
+                  ? `Confirm ${getProposedActions(actionPlan).length} Actions`
+                  : (getDisplayForStep(actionPlan, 1)?.display_name || getProposedActions(actionPlan)[0]?.tool_name || 'Confirm Action')
+                }
               </h3>
               <button style={styles.modalClose} onClick={handleCancelPlan}>
                 ✕
               </button>
             </div>
             <div style={styles.planModalBody}>
-              {/* Tool description */}
-              {actionPlan.display?.description && (
-                <p style={styles.planDescription}>{actionPlan.display.description}</p>
-              )}
-              
-              {/* Reasoning from the agent */}
-              {actionPlan.proposed_action?.reasoning && (
+              {/* Overall reasoning for multi-action */}
+              {actionPlan.overall_reasoning && (
                 <div style={styles.reasoningBox}>
-                  <strong>Action Plan:</strong> {actionPlan.proposed_action.reasoning}
+                  <strong>Plan:</strong> {actionPlan.overall_reasoning}
                 </div>
               )}
 
-              {/* Editable parameters */}
-              <div style={styles.paramsSection}>
-                <h4 style={styles.paramsSectionTitle}>Parameters</h4>
-                {actionPlan.display?.fields ? (
-                  actionPlan.display.fields.map((field) => (
-                    <label key={field.key} style={styles.modalLabel}>
-                      {field.label} {field.required && <span style={{ color: '#ef4444' }}></span>}
-                      {field.widget === 'textarea' || (typeof editableParams[field.key] === 'string' && String(editableParams[field.key]).length > 100) ? (
-                        <textarea
-                          style={styles.modalTextarea}
-                          value={String(editableParams[field.key] ?? field.value ?? '')}
-                          onChange={(e) => handleParamChange(field.key, e.target.value)}
-                          disabled={!field.editable}
-                          rows={4}
-                        />
+              {/* Debug: Show raw data if no actions parsed */}
+              {getProposedActions(actionPlan).length === 0 && (
+                <div style={styles.reasoningBox}>
+                  <strong>Error:</strong> No actions could be parsed from the plan. 
+                  {actionPlan.error && <span> {actionPlan.error}</span>}
+                  <details style={{ marginTop: '0.5rem' }}>
+                    <summary style={{ cursor: 'pointer' }}>Debug Info</summary>
+                    <pre style={{ fontSize: '0.75rem', whiteSpace: 'pre-wrap', marginTop: '0.5rem' }}>
+                      {JSON.stringify({ 
+                        status: actionPlan.status,
+                        has_proposed_actions: !!actionPlan.proposed_actions,
+                        proposed_actions_length: actionPlan.proposed_actions?.length,
+                        has_legacy_proposed_action: !!actionPlan.proposed_action,
+                      }, null, 2)}
+                    </pre>
+                  </details>
+                </div>
+              )}
+
+              {/* Render each action step */}
+              {getProposedActions(actionPlan).map((proposedAction, idx) => {
+                const display = getDisplayForStep(actionPlan, proposedAction.step_id);
+                const stepParams = editableParamsMap[proposedAction.step_id] || proposedAction.parameters;
+                const isMultiAction = getProposedActions(actionPlan).length > 1;
+
+                return (
+                  <div key={proposedAction.step_id} style={styles.stepCard}>
+                    {/* Step header */}
+                    <div style={styles.stepHeader}>
+                      <span style={styles.stepNumber}>{idx + 1}</span>
+                      <span style={styles.stepTitle}>
+                        {display?.display_name || proposedAction.tool_name}
+                      </span>
+                    </div>
+
+                    {/* Step description */}
+                    {display?.description && (
+                      <p style={styles.stepDescription}>{display.description}</p>
+                    )}
+
+                    {/* Step reasoning (if single action and has reasoning) */}
+                    {!isMultiAction && proposedAction.reasoning && (
+                      <div style={styles.reasoningBox}>
+                        <strong>Plan:</strong> {proposedAction.reasoning}
+                      </div>
+                    )}
+
+                    {/* Editable parameters for this step */}
+                    <div style={styles.paramsSection}>
+                      {display?.fields ? (
+                        display.fields.map((field) => (
+                          <label key={field.key} style={styles.modalLabel}>
+                            {field.label} {field.required && <span style={{ color: '#ef4444' }}>*</span>}
+                            {field.widget === 'textarea' || (typeof stepParams[field.key] === 'string' && String(stepParams[field.key]).length > 100) ? (
+                              <textarea
+                                style={styles.modalTextarea}
+                                value={String(stepParams[field.key] ?? field.value ?? '')}
+                                onChange={(e) => handleStepParamChange(proposedAction.step_id, field.key, e.target.value)}
+                                disabled={!field.editable || isExecuting}
+                                rows={4}
+                              />
+                            ) : (
+                              <input
+                                style={styles.modalInput}
+                                value={String(stepParams[field.key] ?? field.value ?? '')}
+                                onChange={(e) => handleStepParamChange(proposedAction.step_id, field.key, e.target.value)}
+                                disabled={!field.editable || isExecuting}
+                              />
+                            )}
+                          </label>
+                        ))
                       ) : (
-                        <input
-                          style={styles.modalInput}
-                          value={String(editableParams[field.key] ?? field.value ?? '')}
-                          onChange={(e) => handleParamChange(field.key, e.target.value)}
-                          disabled={!field.editable}
-                        />
+                        // Fallback: render all parameters as editable fields
+                        Object.entries(stepParams).map(([key, value]) => (
+                          <label key={key} style={styles.modalLabel}>
+                            {key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                            {typeof value === 'string' && value.length > 100 ? (
+                              <textarea
+                                style={styles.modalTextarea}
+                                value={String(value)}
+                                onChange={(e) => handleStepParamChange(proposedAction.step_id, key, e.target.value)}
+                                disabled={isExecuting}
+                                rows={4}
+                              />
+                            ) : (
+                              <input
+                                style={styles.modalInput}
+                                value={String(value ?? '')}
+                                onChange={(e) => handleStepParamChange(proposedAction.step_id, key, e.target.value)}
+                                disabled={isExecuting}
+                              />
+                            )}
+                          </label>
+                        ))
                       )}
-                    </label>
-                  ))
-                ) : (
-                  // Fallback: render all parameters as editable fields
-                  Object.entries(editableParams).map(([key, value]) => (
-                    <label key={key} style={styles.modalLabel}>
-                      {key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                      {typeof value === 'string' && value.length > 100 ? (
-                        <textarea
-                          style={styles.modalTextarea}
-                          value={String(value)}
-                          onChange={(e) => handleParamChange(key, e.target.value)}
-                          rows={4}
-                        />
-                      ) : (
-                        <input
-                          style={styles.modalInput}
-                          value={String(value ?? '')}
-                          onChange={(e) => handleParamChange(key, e.target.value)}
-                        />
-                      )}
-                    </label>
-                  ))
-                )}
-              </div>
+                    </div>
+                  </div>
+                );
+              })}
 
               {planError && <div style={styles.modalError}>{planError}</div>}
             </div>
@@ -460,7 +707,90 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
                 onClick={handleExecuteAction}
                 disabled={isExecuting}
               >
-                {isExecuting ? 'Executing...' : 'Execute'}
+                {isExecuting 
+                  ? `Executing ${getProposedActions(actionPlan).length} action(s)...` 
+                  : `Execute${getProposedActions(actionPlan).length > 1 ? ` All (${getProposedActions(actionPlan).length})` : ''}`
+                }
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Execution Results Modal */}
+      {planningAction && executionResults && executionSummary && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.resultsModal}>
+            <div style={styles.modalHeader}>
+              <h3 style={styles.modalTitle}>
+                {executionSummary.failed === 0 
+                  ? '✅ All Actions Completed'
+                  : executionSummary.succeeded === 0
+                    ? '❌ All Actions Failed'
+                    : `⚠️ Partial Success (${executionSummary.succeeded}/${executionSummary.total})`
+                }
+              </h3>
+              <button style={styles.modalClose} onClick={handleCloseResults}>
+                ✕
+              </button>
+            </div>
+            <div style={styles.resultsBody}>
+              {/* Summary bar */}
+              <div style={styles.summaryBar}>
+                <span style={styles.summaryText}>
+                  {executionSummary.succeeded} succeeded, {executionSummary.failed} failed
+                </span>
+              </div>
+
+              {/* Individual results */}
+              {executionResults.map((result, idx) => (
+                <div 
+                  key={result.step_id} 
+                  style={{
+                    ...styles.resultCard,
+                    borderLeftColor: result.status === 'success' ? '#22c55e' : '#ef4444',
+                  }}
+                >
+                  <div style={styles.resultHeader}>
+                    <span style={styles.resultIcon}>
+                      {result.status === 'success' ? '✅' : '❌'}
+                    </span>
+                    <span style={styles.resultTitle}>
+                      Step {idx + 1}: {result.tool_name}
+                    </span>
+                    <span style={{
+                      ...styles.resultStatus,
+                      color: result.status === 'success' ? '#16a34a' : '#dc2626',
+                    }}>
+                      {result.status === 'success' ? 'Success' : 'Failed'}
+                    </span>
+                  </div>
+                  {result.error && (
+                    <div style={styles.resultError}>
+                      {String(result.error)}
+                    </div>
+                  )}
+                  {result.status === 'success' && Boolean(result.result) && (
+                    <div style={styles.resultSuccess}>
+                      {(() => {
+                        const resultStr = typeof result.result === 'string' 
+                          ? result.result 
+                          : JSON.stringify(result.result, null, 2);
+                        return resultStr.length > 200 
+                          ? resultStr.substring(0, 200) + '...'
+                          : resultStr;
+                      })()}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div style={styles.planModalActions}>
+              <button 
+                style={styles.closeButton} 
+                onClick={handleCloseResults}
+              >
+                Close
               </button>
             </div>
           </div>
@@ -858,6 +1188,133 @@ const styles = {
   loadingText: {
     fontSize: '0.95rem',
     color: '#475569',
+  },
+  // Multi-action step card styles
+  stepCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.4)',
+    border: '1px solid rgba(148, 163, 184, 0.3)',
+    borderRadius: '16px',
+    padding: '1rem',
+    marginBottom: '1rem',
+  },
+  stepHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.75rem',
+    marginBottom: '0.75rem',
+  },
+  stepNumber: {
+    width: '28px',
+    height: '28px',
+    borderRadius: '50%',
+    backgroundColor: 'rgba(147, 51, 234, 0.15)',
+    color: '#9333ea',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '0.85rem',
+    fontWeight: '600',
+  },
+  stepTitle: {
+    fontSize: '1rem',
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  stepDescription: {
+    fontSize: '0.85rem',
+    color: '#475569',
+    marginBottom: '0.75rem',
+    lineHeight: '1.5',
+  },
+  // Results modal styles
+  resultsModal: {
+    width: '700px',
+    maxWidth: '94vw',
+    maxHeight: '85vh',
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+    borderRadius: '24px',
+    padding: '1.25rem 1.25rem 1rem',
+    boxShadow: '0 30px 80px rgba(15, 23, 42, 0.35)',
+    border: '1px solid rgba(255, 255, 255, 0.6)',
+    backdropFilter: 'blur(28px) saturate(160%)',
+    WebkitBackdropFilter: 'blur(28px) saturate(160%)',
+    display: 'flex',
+    flexDirection: 'column' as const,
+  },
+  resultsBody: {
+    overflowY: 'auto' as const,
+    paddingRight: '0.25rem',
+    flex: 1,
+  },
+  summaryBar: {
+    backgroundColor: 'rgba(148, 163, 184, 0.15)',
+    borderRadius: '12px',
+    padding: '0.75rem 1rem',
+    marginBottom: '1rem',
+    textAlign: 'center' as const,
+  },
+  summaryText: {
+    fontSize: '0.9rem',
+    color: '#475569',
+    fontWeight: '500',
+  },
+  resultCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.5)',
+    border: '1px solid rgba(148, 163, 184, 0.3)',
+    borderLeftWidth: '4px',
+    borderLeftStyle: 'solid' as const,
+    borderRadius: '12px',
+    padding: '1rem',
+    marginBottom: '0.75rem',
+  },
+  resultHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.75rem',
+  },
+  resultIcon: {
+    fontSize: '1.1rem',
+  },
+  resultTitle: {
+    flex: 1,
+    fontSize: '0.95rem',
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  resultStatus: {
+    fontSize: '0.85rem',
+    fontWeight: '600',
+  },
+  resultError: {
+    marginTop: '0.75rem',
+    padding: '0.75rem',
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderRadius: '8px',
+    fontSize: '0.85rem',
+    color: '#dc2626',
+    lineHeight: '1.4',
+  },
+  resultSuccess: {
+    marginTop: '0.75rem',
+    padding: '0.75rem',
+    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+    borderRadius: '8px',
+    fontSize: '0.85rem',
+    color: '#16a34a',
+    lineHeight: '1.4',
+    fontFamily: 'monospace',
+    whiteSpace: 'pre-wrap' as const,
+    wordBreak: 'break-word' as const,
+  },
+  closeButton: {
+    padding: '0.6rem 2rem',
+    borderRadius: '999px',
+    border: '2px solid rgba(15, 23, 42, 0.25)',
+    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+    color: '#f8fafc',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
   },
 };
 
