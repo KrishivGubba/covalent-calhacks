@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Sidebar, { PageType } from './components/Sidebar';
 import UpdateButton from './components/UpdateButton';
 import AuthPage from './pages/AuthPage';
@@ -13,11 +13,21 @@ const USER_ID_KEY = 'covalent_user_id';
 const Dashboard: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<PageType>('settings');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
 
   // Check auth status on mount
   useEffect(() => {
     const userId = localStorage.getItem(USER_ID_KEY);
     setIsAuthenticated(!!userId);
+  }, []);
+
+  // Handle page changes with special handling for history tab
+  const handlePageChange = useCallback((page: PageType) => {
+    if (page === 'history') {
+      // Increment refresh key to force HistoryPage remount
+      setHistoryRefreshKey(prev => prev + 1);
+    }
+    setCurrentPage(page);
   }, []);
 
   // Callback for when auth state changes (login/logout)
@@ -34,7 +44,8 @@ const Dashboard: React.FC = () => {
       case 'memory':
         return <MemoryPage />;
       case 'history':
-        return <HistoryPage />;
+        // Key forces re-mount to ensure fresh data fetch each time
+        return <HistoryPage key={`history-${historyRefreshKey}`} />;
       case 'auth':
         return <AuthPage onAuthChange={handleAuthChange} />;
       default:
@@ -45,7 +56,7 @@ const Dashboard: React.FC = () => {
   return (
     <div style={styles.dashboard}>
       <UpdateButton checkInterval={30 * 60 * 1000} />
-      <Sidebar currentPage={currentPage} onPageChange={setCurrentPage} />
+      <Sidebar currentPage={currentPage} onPageChange={handlePageChange} />
       <main style={styles.main}>
         {renderPage()}
       </main>
