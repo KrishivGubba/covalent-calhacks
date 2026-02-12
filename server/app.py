@@ -23,7 +23,8 @@ from integration_dao import IntegrationDAO
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from action_executor import (
     plan_action, 
-    execute_action, 
+    execute_action,
+    execute_action_chain,
     gather_context,
     research_and_plan,
     health_check as mcp_health_check
@@ -1734,7 +1735,9 @@ def plan_action_endpoint():
                 )
                 plan_result = {
                     "status": result["status"],
-                    "proposed_action": result["proposed_action"],
+                    "proposed_actions": result.get("proposed_actions"),
+                    "is_multi_action": result.get("is_multi_action", False),
+                    "overall_reasoning": result.get("overall_reasoning", ""),
                     "error": result.get("error")
                 }
                 research_info = result.get("research", {"resources_read": [], "context_gathered": collected_data})
@@ -1751,19 +1754,34 @@ def plan_action_endpoint():
                 "duration_ms": duration_ms
             }), 500
         
-        # Resolve display schema for the proposed tool call
-        display_info = None
-        if plan_result.get("proposed_action"):
+        # Resolve display schemas for all proposed actions
+        displays = []
+        proposed_actions = plan_result.get("proposed_actions") or []
+        for action in proposed_actions:
             try:
-                display_info = _resolve_tool_display(plan_result["proposed_action"])
+                display_info = _resolve_tool_display(action, loop=None)
+                displays.append({
+                    "step_id": action.get("step_id", len(displays) + 1),
+                    **display_info
+                })
             except Exception as display_err:
-                print(f"Warning: display schema resolution failed: {display_err}")
+                print(f"Warning: display schema resolution failed for {action.get('tool_name')}: {display_err}")
+                # Add fallback display info
+                displays.append({
+                    "step_id": action.get("step_id", len(displays) + 1),
+                    "display_name": action.get("tool_name", "Unknown").replace("_", " ").title(),
+                    "description": "",
+                    "fields": [],
+                    "has_schema": False
+                })
         
         return jsonify({
             "status": "success",
             "research": research_info,
-            "proposed_action": plan_result["proposed_action"],
-            "display": display_info,
+            "proposed_actions": proposed_actions,
+            "is_multi_action": plan_result.get("is_multi_action", False),
+            "overall_reasoning": plan_result.get("overall_reasoning", ""),
+            "displays": displays,
             "action_text": action_text,
             "context_data": research_info.get("context_gathered", collected_data),
             "duration_ms": duration_ms
@@ -1802,7 +1820,9 @@ def plan_action_direct_endpoint():
         {
             "status": "success" | "error",
             "research": {...},
-            "proposed_action": {...}
+            "proposed_actions": [{...}, ...],
+            "is_multi_action": bool,
+            "displays": [{...}, ...]
         }
     """
     start_time = time.perf_counter()
@@ -1836,7 +1856,9 @@ def plan_action_direct_endpoint():
                 )
                 plan_result = {
                     "status": result["status"],
-                    "proposed_action": result["proposed_action"],
+                    "proposed_actions": result.get("proposed_actions"),
+                    "is_multi_action": result.get("is_multi_action", False),
+                    "overall_reasoning": result.get("overall_reasoning", ""),
                     "error": result.get("error")
                 }
                 research_info = result.get("research", {"resources_read": [], "context_gathered": context})
@@ -1853,19 +1875,33 @@ def plan_action_direct_endpoint():
                 "duration_ms": duration_ms
             }), 500
         
-        # Resolve display schema for the proposed tool call
-        display_info = None
-        if plan_result.get("proposed_action"):
+        # Resolve display schemas for all proposed actions
+        displays = []
+        proposed_actions = plan_result.get("proposed_actions") or []
+        for action in proposed_actions:
             try:
-                display_info = _resolve_tool_display(plan_result["proposed_action"])
+                display_info = _resolve_tool_display(action, loop=None)
+                displays.append({
+                    "step_id": action.get("step_id", len(displays) + 1),
+                    **display_info
+                })
             except Exception as display_err:
-                print(f"Warning: display schema resolution failed: {display_err}")
+                print(f"Warning: display schema resolution failed for {action.get('tool_name')}: {display_err}")
+                displays.append({
+                    "step_id": action.get("step_id", len(displays) + 1),
+                    "display_name": action.get("tool_name", "Unknown").replace("_", " ").title(),
+                    "description": "",
+                    "fields": [],
+                    "has_schema": False
+                })
         
         return jsonify({
             "status": "success",
             "research": research_info,
-            "proposed_action": plan_result["proposed_action"],
-            "display": display_info,
+            "proposed_actions": proposed_actions,
+            "is_multi_action": plan_result.get("is_multi_action", False),
+            "overall_reasoning": plan_result.get("overall_reasoning", ""),
+            "displays": displays,
             "action_text": action_text,
             "context_data": research_info.get("context_gathered", context),
             "duration_ms": duration_ms
@@ -1887,108 +1923,168 @@ def plan_action_direct_endpoint():
 @app.route("/execute_action", methods=["POST"])
 def execute_action_endpoint():
     """
-    Execute an approved action - Phase 2 of two-phase execution.
+    Execute approved action(s) - Phase 2 of two-phase execution.
     
-    This endpoint:
-    1. Takes user-approved/edited parameters
-    2. Executes the tool via MCP
-    3. Logs the execution to history
-    4. Returns the result
+    Supports both single action and multi-action (chain) execution.
     
-    Body:
+    Body (single action - legacy):
         {
             "action_uuid": "uuid-of-action",
             "tool_name": "send_email",
-            "parameters": {
-                "to": "user@example.com",
-                "subject": "...",
-                "body": "..."
-            }
+            "parameters": {...}
         }
     
-    Returns:
+    Body (multi-action):
+        {
+            "action_uuid": "uuid-of-action",
+            "actions": [
+                {"step_id": 1, "tool_name": "create_issue", "parameters": {...}},
+                {"step_id": 2, "tool_name": "send_email", "parameters": {...}}
+            ]
+        }
+    
+    Returns (single action):
         {
             "status": "success" | "error",
             "result": Any,
             "duration_ms": int
         }
+    
+    Returns (multi-action):
+        {
+            "status": "success" | "partial" | "error",
+            "results": [{step_id, tool_name, status, result/error}, ...],
+            "summary": {total, succeeded, failed},
+            "duration_ms": int
+        }
     """
     start_time = time.perf_counter()
     action_uuid = ""
-    tool_name = ""
     
     try:
         body = request.get_json()
         action_uuid = body.get("action_uuid", "")
-        tool_name = body.get("tool_name", "")
-        parameters = body.get("parameters", {})
         
-        if not tool_name or not parameters:
+        # Check if this is a multi-action request
+        actions = body.get("actions")
+        
+        if actions and isinstance(actions, list):
+            # Multi-action execution
+            print(f"🚀 Executing action chain with {len(actions)} actions")
+            
+            # Get action data for logging
+            action_data = tree.dao.get_action_by_id(action_uuid)
+            node_uuid = action_data[4] if action_data else None
+            
+            # Run the chain execution async function
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                chain_result = loop.run_until_complete(
+                    execute_action_chain(actions)
+                )
+            finally:
+                loop.close()
+            
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            
+            # Log each action result to history
+            for step_result in chain_result.get("results", []):
+                try:
+                    tree.dao.insert_action_history(
+                        action_uuid=action_uuid,
+                        action_type=step_result.get("tool_name", "unknown"),
+                        action_data=json.dumps(next(
+                            (a.get("parameters", {}) for a in actions if a.get("step_id") == step_result.get("step_id")),
+                            {}
+                        )),
+                        node_uuid=node_uuid,
+                        status="completed" if step_result.get("status") == "success" else "failed",
+                        result=str(step_result.get("result")) if step_result.get("status") == "success" else None,
+                        error_message=step_result.get("error") if step_result.get("status") == "error" else None,
+                        duration_ms=None  # Individual step durations not tracked
+                    )
+                except Exception as log_err:
+                    print(f"⚠️ Failed to log action history for step {step_result.get('step_id')}: {log_err}")
+            
             return jsonify({
-                "status": "error",
-                "error": "Missing tool_name or parameters"
-            }), 400
+                "status": chain_result["status"],
+                "results": chain_result["results"],
+                "summary": chain_result["summary"],
+                "duration_ms": duration_ms
+            }), 200 if chain_result["status"] == "success" else (207 if chain_result["status"] == "partial" else 500)
         
-        print(f"🚀 Executing {tool_name} with parameters: {parameters}")
-        
-        # Get action data for logging
-        action_data = tree.dao.get_action_by_id(action_uuid)
-        node_uuid = action_data[4] if action_data else None
-        
-        # Run the execution async function
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            exec_result = loop.run_until_complete(
-                execute_action(tool_name, parameters)
-            )
-        finally:
-            loop.close()
-        
-        duration_ms = int((time.perf_counter() - start_time) * 1000)
-        
-        if exec_result["status"] == "error":
-            # Log failed execution
+        else:
+            # Single action execution (legacy support)
+            tool_name = body.get("tool_name", "")
+            parameters = body.get("parameters", {})
+            
+            if not tool_name or not parameters:
+                return jsonify({
+                    "status": "error",
+                    "error": "Missing tool_name or parameters (for single action) or actions array (for multi-action)"
+                }), 400
+            
+            print(f"🚀 Executing {tool_name} with parameters: {parameters}")
+            
+            # Get action data for logging
+            action_data = tree.dao.get_action_by_id(action_uuid)
+            node_uuid = action_data[4] if action_data else None
+            
+            # Run the execution async function
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                exec_result = loop.run_until_complete(
+                    execute_action(tool_name, parameters)
+                )
+            finally:
+                loop.close()
+            
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            
+            if exec_result["status"] == "error":
+                # Log failed execution
+                try:
+                    tree.dao.insert_action_history(
+                        action_uuid=action_uuid,
+                        action_type=tool_name,
+                        action_data=str(parameters),
+                        node_uuid=node_uuid,
+                        status="failed",
+                        result=None,
+                        error_message=exec_result["error"],
+                        duration_ms=duration_ms
+                    )
+                except Exception as log_err:
+                    print(f"⚠️ Failed to log action history: {log_err}")
+                
+                return jsonify({
+                    "status": "error",
+                    "error": exec_result["error"],
+                    "duration_ms": duration_ms
+                }), 500
+            
+            # Log successful execution
             try:
                 tree.dao.insert_action_history(
                     action_uuid=action_uuid,
                     action_type=tool_name,
                     action_data=str(parameters),
                     node_uuid=node_uuid,
-                    status="failed",
-                    result=None,
-                    error_message=exec_result["error"],
+                    status="completed",
+                    result=str(exec_result["result"]),
+                    error_message=None,
                     duration_ms=duration_ms
                 )
             except Exception as log_err:
                 print(f"⚠️ Failed to log action history: {log_err}")
             
             return jsonify({
-                "status": "error",
-                "error": exec_result["error"],
+                "status": "success",
+                "result": exec_result["result"],
                 "duration_ms": duration_ms
-            }), 500
-        
-        # Log successful execution
-        try:
-            tree.dao.insert_action_history(
-                action_uuid=action_uuid,
-                action_type=tool_name,
-                action_data=str(parameters),
-                node_uuid=node_uuid,
-                status="completed",
-                result=str(exec_result["result"]),
-                error_message=None,
-                duration_ms=duration_ms
-            )
-        except Exception as log_err:
-            print(f"⚠️ Failed to log action history: {log_err}")
-        
-        return jsonify({
-            "status": "success",
-            "result": exec_result["result"],
-            "duration_ms": duration_ms
-        }), 200
+            }), 200
         
     except Exception as e:
         import traceback

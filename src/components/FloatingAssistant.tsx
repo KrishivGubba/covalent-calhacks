@@ -1,6 +1,6 @@
 import React, { useState, useEffect, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { Action, ActionPlan } from './SuggestedActions';
+import type { Action, ActionPlan, ProposedAction, ActionDisplay, ActionResult, ExecutionSummary, ExecutionResponse } from './SuggestedActions';
 import { disableContextCollection, enableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
 import { notifyActionResult } from '../utils/actionNotifications';
 
@@ -36,6 +36,65 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
   const [planError, setPlanError] = useState<string | null>(null);
   const [editableParams, setEditableParams] = useState<Record<string, unknown>>({});
   const [isExecuting, setIsExecuting] = useState(false);
+  // Multi-action support
+  const [editableParamsMap, setEditableParamsMap] = useState<Record<number, Record<string, unknown>>>({});
+  const [executionResults, setExecutionResults] = useState<ActionResult[] | null>(null);
+  const [executionSummary, setExecutionSummary] = useState<ExecutionSummary | null>(null);
+
+  // #region agent log
+  useEffect(() => {
+    fetch('http://127.0.0.1:7243/ingest/7843b36f-61b5-435e-a971-922268939b8a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'FloatingAssistant.tsx:mount',message:'UPDATED FLOATING ASSISTANT MOUNTED',data:{},timestamp:Date.now(),hypothesisId:'verify'})}).catch(()=>{});
+  }, []);
+  // #endregion
+
+  // Helper: Get normalized proposed actions array
+  const getProposedActions = (plan: ActionPlan): ProposedAction[] => {
+    // #region agent log
+    fetch('http://127.0.0.1:7243/ingest/7843b36f-61b5-435e-a971-922268939b8a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'FloatingAssistant.tsx:getProposedActions',message:'getProposedActions called',data:{has_proposed_actions:!!plan.proposed_actions,proposed_actions_length:plan.proposed_actions?.length,has_legacy:!!plan.proposed_action,plan_keys:Object.keys(plan)},timestamp:Date.now(),hypothesisId:'H1,H2'})}).catch(()=>{});
+    // #endregion
+    if (plan.proposed_actions && plan.proposed_actions.length > 0) {
+      return plan.proposed_actions;
+    }
+    if (plan.proposed_action) {
+      return [{
+        step_id: 1,
+        tool_name: plan.proposed_action.tool_name,
+        parameters: plan.proposed_action.parameters,
+        reasoning: plan.proposed_action.reasoning,
+      }];
+    }
+    return [];
+  };
+
+  // Helper: Get display for a step
+  const getDisplayForStep = (plan: ActionPlan, stepId: number): ActionDisplay | undefined => {
+    if (plan.displays && plan.displays.length > 0) {
+      return plan.displays.find(d => d.step_id === stepId) || plan.displays[stepId - 1];
+    }
+    if (plan.display && stepId === 1) {
+      return plan.display;
+    }
+    return undefined;
+  };
+
+  // Per-step param change handler
+  const handleStepParamChange = (stepId: number, key: string, value: unknown) => {
+    setEditableParamsMap(prev => ({
+      ...prev,
+      [stepId]: { ...prev[stepId], [key]: value }
+    }));
+  };
+
+  // Close results modal
+  const handleCloseResults = async () => {
+    setPlanningAction(null);
+    setActionPlan(null);
+    setEditableParamsMap({});
+    setEditableParams({});
+    setExecutionResults(null);
+    setExecutionSummary(null);
+    await enableContextCollectionIfNotUserPaused();
+  };
 
   // Simulate action detection - expand to prompt
   useEffect(() => {
@@ -100,8 +159,22 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
         });
         
         console.log(`✅ Action plan received:`, plan);
+        // #region agent log
+        fetch('http://127.0.0.1:7243/ingest/7843b36f-61b5-435e-a971-922268939b8a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'FloatingAssistant.tsx:handleActionClick',message:'Plan received',data:{status:plan.status,proposed_actions:plan.proposed_actions,displays:plan.displays,legacy:plan.proposed_action,keys:Object.keys(plan)},timestamp:Date.now(),hypothesisId:'H1,H2,H5'})}).catch(()=>{});
+        // #endregion
         setActionPlan(plan);
+        setExecutionResults(null);
+        setExecutionSummary(null);
         
+        // Initialize editable params for all proposed actions
+        const proposedActions = getProposedActions(plan);
+        const paramsMap: Record<number, Record<string, unknown>> = {};
+        proposedActions.forEach(action => {
+          paramsMap[action.step_id] = { ...action.parameters };
+        });
+        setEditableParamsMap(paramsMap);
+        
+        // Legacy single params
         if (plan.proposed_action?.parameters) {
           setEditableParams({ ...plan.proposed_action.parameters });
         }
@@ -120,27 +193,69 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
   };
 
   const handleExecuteAction = async () => {
-    if (!planningAction || !actionPlan?.proposed_action) {
+    if (!planningAction || !actionPlan) {
+      return;
+    }
+    
+    const proposedActions = getProposedActions(actionPlan);
+    if (proposedActions.length === 0) {
       return;
     }
     
     setIsExecuting(true);
     setPlanError(null);
+    setExecutionResults(null);
+    setExecutionSummary(null);
+    
+    let hasResults = false;
     
     try {
-      console.log(`🚀 Executing action: ${planningAction.title}`);
+      console.log(`🚀 Executing ${proposedActions.length} action(s): ${planningAction.title}`);
       
-      await invoke('execute_action', {
+      const actionsToExecute = proposedActions.map(action => ({
+        step_id: action.step_id,
+        tool_name: action.tool_name,
+        parameters: editableParamsMap[action.step_id] || action.parameters,
+      }));
+      
+      // #region agent log
+      fetch('http://127.0.0.1:7243/ingest/7843b36f-61b5-435e-a971-922268939b8a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'FloatingAssistant.tsx:handleExecuteAction',message:'Executing actions',data:{count:actionsToExecute.length,actions:actionsToExecute},timestamp:Date.now(),hypothesisId:'execution'})}).catch(()=>{});
+      // #endregion
+      
+      const response = await invoke<ExecutionResponse>('execute_action', {
         actionUuid: planningAction.uuid,
-        toolName: actionPlan.proposed_action.tool_name,
-        parameters: editableParams,
+        actions: actionsToExecute,
       });
       
-      console.log(`✅ Action executed successfully`);
-      setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+      console.log(`📊 Execution response:`, response);
       
-      // Send notification for successful execution
-      await notifyActionResult(planningAction.title, true);
+      if (response.results && response.summary) {
+        setExecutionResults(response.results);
+        setExecutionSummary(response.summary);
+        hasResults = true;
+        
+        if (response.summary.failed === 0) {
+          setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+          // Send notification for successful execution
+          await notifyActionResult(planningAction.title, true);
+        } else if (response.summary.succeeded === 0) {
+          setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'idle' }));
+          // Send notification for failed execution
+          await notifyActionResult(planningAction.title, false, 'All actions failed');
+        } else {
+          setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+          // Send notification for partial success
+          await notifyActionResult(planningAction.title, true, `${response.summary.succeeded}/${response.summary.total} succeeded`);
+        }
+      } else {
+        if (response.status === 'success') {
+          setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+          await notifyActionResult(planningAction.title, true);
+        } else {
+          setPlanError(response.error || 'Unknown error');
+          setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'idle' }));
+        }
+      }
     } catch (error) {
       console.error(`❌ Action execution failed:`, error);
       setPlanError(String(error));
@@ -150,9 +265,12 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
       await notifyActionResult(planningAction.title, false, String(error));
     } finally {
       setIsExecuting(false);
-      setPlanningAction(null);
-      setActionPlan(null);
-      setEditableParams({});
+      if (!hasResults) {
+        setPlanningAction(null);
+        setActionPlan(null);
+        setEditableParamsMap({});
+        setEditableParams({});
+      }
     }
   };
 
@@ -164,6 +282,9 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
     setActionPlan(null);
     setPlanError(null);
     setEditableParams({});
+    setEditableParamsMap({});
+    setExecutionResults(null);
+    setExecutionSummary(null);
     await enableContextCollectionIfNotUserPaused();
   };
 
@@ -517,13 +638,16 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
         </div>
       )}
 
-      {/* Action Plan Confirmation Modal */}
-      {planningAction && actionPlan && (
+      {/* Action Plan Confirmation Modal - Multi-action support */}
+      {planningAction && actionPlan && !executionResults && (
         <div style={styles.modalOverlay}>
           <div style={styles.planModal}>
             <div style={styles.modalHeader}>
               <h3 style={styles.modalTitle}>
-                {actionPlan.display?.display_name || actionPlan.proposed_action?.tool_name || 'Confirm Action'}
+                {getProposedActions(actionPlan).length > 1 
+                  ? `Confirm ${getProposedActions(actionPlan).length} Actions`
+                  : (getDisplayForStep(actionPlan, 1)?.display_name || getProposedActions(actionPlan)[0]?.tool_name || 'Confirm Action')
+                }
               </h3>
               <button 
                 style={styles.modalClose} 
@@ -539,86 +663,130 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
               </button>
             </div>
             <div style={styles.planModalBody}>
-              {actionPlan.display?.description && (
-                <p style={styles.planDescription}>{actionPlan.display.description}</p>
-              )}
-              
-              {actionPlan.proposed_action?.reasoning && (
+              {/* Overall reasoning for multi-action */}
+              {actionPlan.overall_reasoning && (
                 <div style={styles.reasoningBox}>
-                  <strong>Reasoning:</strong> {actionPlan.proposed_action.reasoning}
+                  <strong>Plan:</strong> {actionPlan.overall_reasoning}
                 </div>
               )}
 
-              <div style={styles.paramsSection}>
-                <h4 style={styles.paramsSectionTitle}>Parameters</h4>
-                {actionPlan.display?.fields ? (
-                  actionPlan.display.fields.map((field) => (
-                    <label key={field.key} style={styles.modalLabel}>
-                      {field.label} {field.required && <span style={{ color: '#ef4444' }}>*</span>}
-                      {field.widget === 'textarea' || (typeof editableParams[field.key] === 'string' && String(editableParams[field.key]).length > 100) ? (
-                        <textarea
-                          style={styles.modalTextarea}
-                          value={String(editableParams[field.key] ?? field.value ?? '')}
-                          onChange={(e) => handleParamChange(field.key, e.target.value)}
-                          disabled={!field.editable}
-                          rows={4}
-                          onFocus={(e) => {
-                            e.currentTarget.style.borderColor = '#3f3f46';
-                          }}
-                          onBlur={(e) => {
-                            e.currentTarget.style.borderColor = '#27272a';
-                          }}
-                        />
+              {/* Debug: Show if no actions parsed */}
+              {getProposedActions(actionPlan).length === 0 && (
+                <div style={styles.reasoningBox}>
+                  <strong>Error:</strong> No actions could be parsed from the plan.
+                  <details style={{ marginTop: '0.5rem' }}>
+                    <summary style={{ cursor: 'pointer' }}>Debug Info</summary>
+                    <pre style={{ fontSize: '0.75rem', whiteSpace: 'pre-wrap', marginTop: '0.5rem' }}>
+                      {JSON.stringify({ 
+                        status: actionPlan.status,
+                        has_proposed_actions: !!actionPlan.proposed_actions,
+                        proposed_actions_length: actionPlan.proposed_actions?.length,
+                        has_legacy: !!actionPlan.proposed_action,
+                      }, null, 2)}
+                    </pre>
+                  </details>
+                </div>
+              )}
+
+              {/* Render each action step */}
+              {getProposedActions(actionPlan).map((proposedAction, idx) => {
+                const display = getDisplayForStep(actionPlan, proposedAction.step_id);
+                const stepParams = editableParamsMap[proposedAction.step_id] || proposedAction.parameters;
+                const isMultiAction = getProposedActions(actionPlan).length > 1;
+
+                return (
+                  <div key={proposedAction.step_id} style={styles.stepCard}>
+                    <div style={styles.stepHeader}>
+                      <span style={styles.stepNumber}>{idx + 1}</span>
+                      <span style={styles.stepTitle}>
+                        {display?.display_name || proposedAction.tool_name}
+                      </span>
+                    </div>
+
+                    {display?.description && (
+                      <p style={styles.stepDescription}>{display.description}</p>
+                    )}
+
+                    {!isMultiAction && proposedAction.reasoning && (
+                      <div style={styles.reasoningBox}>
+                        <strong>Plan:</strong> {proposedAction.reasoning}
+                      </div>
+                    )}
+
+                    <div style={styles.paramsSection}>
+                      {display?.fields ? (
+                        display.fields.map((field) => (
+                          <label key={field.key} style={styles.modalLabel}>
+                            {field.label} {field.required && <span style={{ color: '#ef4444' }}>*</span>}
+                            {field.widget === 'textarea' || (typeof stepParams[field.key] === 'string' && String(stepParams[field.key]).length > 100) ? (
+                              <textarea
+                                style={styles.modalTextarea}
+                                value={String(stepParams[field.key] ?? field.value ?? '')}
+                                onChange={(e) => handleStepParamChange(proposedAction.step_id, field.key, e.target.value)}
+                                disabled={!field.editable || isExecuting}
+                                rows={4}
+                                onFocus={(e) => {
+                                  e.currentTarget.style.borderColor = '#3f3f46';
+                                }}
+                                onBlur={(e) => {
+                                  e.currentTarget.style.borderColor = '#27272a';
+                                }}
+                              />
+                            ) : (
+                              <input
+                                style={styles.modalInput}
+                                value={String(stepParams[field.key] ?? field.value ?? '')}
+                                onChange={(e) => handleStepParamChange(proposedAction.step_id, field.key, e.target.value)}
+                                disabled={!field.editable || isExecuting}
+                                onFocus={(e) => {
+                                  e.currentTarget.style.borderColor = '#3f3f46';
+                                }}
+                                onBlur={(e) => {
+                                  e.currentTarget.style.borderColor = '#27272a';
+                                }}
+                              />
+                            )}
+                          </label>
+                        ))
                       ) : (
-                        <input
-                          style={styles.modalInput}
-                          value={String(editableParams[field.key] ?? field.value ?? '')}
-                          onChange={(e) => handleParamChange(field.key, e.target.value)}
-                          disabled={!field.editable}
-                          onFocus={(e) => {
-                            e.currentTarget.style.borderColor = '#3f3f46';
-                          }}
-                          onBlur={(e) => {
-                            e.currentTarget.style.borderColor = '#27272a';
-                          }}
-                        />
+                        Object.entries(stepParams).map(([key, value]) => (
+                          <label key={key} style={styles.modalLabel}>
+                            {key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                            {typeof value === 'string' && value.length > 100 ? (
+                              <textarea
+                                style={styles.modalTextarea}
+                                value={String(value)}
+                                onChange={(e) => handleStepParamChange(proposedAction.step_id, key, e.target.value)}
+                                disabled={isExecuting}
+                                rows={4}
+                                onFocus={(e) => {
+                                  e.currentTarget.style.borderColor = '#3f3f46';
+                                }}
+                                onBlur={(e) => {
+                                  e.currentTarget.style.borderColor = '#27272a';
+                                }}
+                              />
+                            ) : (
+                              <input
+                                style={styles.modalInput}
+                                value={String(value ?? '')}
+                                onChange={(e) => handleStepParamChange(proposedAction.step_id, key, e.target.value)}
+                                disabled={isExecuting}
+                                onFocus={(e) => {
+                                  e.currentTarget.style.borderColor = '#3f3f46';
+                                }}
+                                onBlur={(e) => {
+                                  e.currentTarget.style.borderColor = '#27272a';
+                                }}
+                              />
+                            )}
+                          </label>
+                        ))
                       )}
-                    </label>
-                  ))
-                ) : (
-                  Object.entries(editableParams).map(([key, value]) => (
-                    <label key={key} style={styles.modalLabel}>
-                      {key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                      {typeof value === 'string' && value.length > 100 ? (
-                        <textarea
-                          style={styles.modalTextarea}
-                          value={String(value)}
-                          onChange={(e) => handleParamChange(key, e.target.value)}
-                          rows={4}
-                          onFocus={(e) => {
-                            e.currentTarget.style.borderColor = '#3f3f46';
-                          }}
-                          onBlur={(e) => {
-                            e.currentTarget.style.borderColor = '#27272a';
-                          }}
-                        />
-                      ) : (
-                        <input
-                          style={styles.modalInput}
-                          value={String(value ?? '')}
-                          onChange={(e) => handleParamChange(key, e.target.value)}
-                          onFocus={(e) => {
-                            e.currentTarget.style.borderColor = '#3f3f46';
-                          }}
-                          onBlur={(e) => {
-                            e.currentTarget.style.borderColor = '#27272a';
-                          }}
-                        />
-                      )}
-                    </label>
-                  ))
-                )}
-              </div>
+                    </div>
+                  </div>
+                );
+              })}
 
               {planError && <div style={styles.modalError}>{planError}</div>}
             </div>
@@ -647,7 +815,130 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
                   if (!isExecuting) e.currentTarget.style.opacity = '1';
                 }}
               >
-                {isExecuting ? 'Executing...' : 'Execute'}
+                {isExecuting 
+                  ? `Executing ${getProposedActions(actionPlan).length} action(s)...` 
+                  : `Execute${getProposedActions(actionPlan).length > 1 ? ` All (${getProposedActions(actionPlan).length})` : ''}`
+                }
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Execution Results Modal */}
+      {planningAction && executionResults && executionSummary && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.resultsModal}>
+            <div style={styles.modalHeader}>
+              <div style={styles.resultsTitleContainer}>
+                <span style={{
+                  ...styles.resultsTitleIndicator,
+                  backgroundColor: executionSummary.failed === 0 
+                    ? 'rgba(34, 197, 94, 0.2)' 
+                    : executionSummary.succeeded === 0 
+                      ? 'rgba(239, 68, 68, 0.2)' 
+                      : 'rgba(251, 191, 36, 0.2)',
+                  borderColor: executionSummary.failed === 0 
+                    ? 'rgba(34, 197, 94, 0.5)' 
+                    : executionSummary.succeeded === 0 
+                      ? 'rgba(239, 68, 68, 0.5)' 
+                      : 'rgba(251, 191, 36, 0.5)',
+                  color: executionSummary.failed === 0 
+                    ? '#22c55e' 
+                    : executionSummary.succeeded === 0 
+                      ? '#ef4444' 
+                      : '#fbbf24',
+                }}>
+                  {executionSummary.failed === 0 ? '✓' : executionSummary.succeeded === 0 ? '✕' : '!'}
+                </span>
+                <h3 style={styles.modalTitle}>
+                  {executionSummary.failed === 0 
+                    ? 'All Actions Completed'
+                    : executionSummary.succeeded === 0
+                      ? 'All Actions Failed'
+                      : `Partial Success (${executionSummary.succeeded}/${executionSummary.total})`
+                  }
+                </h3>
+              </div>
+              <button 
+                style={styles.modalClose} 
+                onClick={handleCloseResults}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#27272a';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#1a1a1a';
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <div style={styles.resultsBody}>
+              <div style={styles.summaryBar}>
+                <span style={styles.summaryText}>
+                  {executionSummary.succeeded} succeeded, {executionSummary.failed} failed
+                </span>
+              </div>
+
+              {executionResults.map((result, idx) => (
+                <div 
+                  key={result.step_id} 
+                  style={{
+                    ...styles.resultCard,
+                    borderLeftColor: result.status === 'success' ? '#22c55e' : '#ef4444',
+                  }}
+                >
+                  <div style={styles.resultHeader}>
+                    <span style={{
+                      ...styles.resultIconBadge,
+                      backgroundColor: result.status === 'success' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                      borderColor: result.status === 'success' ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)',
+                      color: result.status === 'success' ? '#22c55e' : '#ef4444',
+                    }}>
+                      {result.status === 'success' ? '✓' : '✕'}
+                    </span>
+                    <span style={styles.resultTitle}>
+                      Step {idx + 1}: {result.tool_name}
+                    </span>
+                    <span style={{
+                      ...styles.resultStatus,
+                      color: result.status === 'success' ? '#22c55e' : '#ef4444',
+                    }}>
+                      {result.status === 'success' ? 'Success' : 'Failed'}
+                    </span>
+                  </div>
+                  {result.error && (
+                    <div style={styles.resultError}>
+                      {String(result.error)}
+                    </div>
+                  )}
+                  {result.status === 'success' && Boolean(result.result) && (
+                    <div style={styles.resultSuccess}>
+                      {(() => {
+                        const resultStr = typeof result.result === 'string' 
+                          ? result.result 
+                          : JSON.stringify(result.result, null, 2);
+                        return resultStr.length > 200 
+                          ? resultStr.substring(0, 200) + '...'
+                          : resultStr;
+                      })()}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div style={styles.planModalActions}>
+              <button 
+                style={styles.closeButton} 
+                onClick={handleCloseResults}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.opacity = '0.9';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.opacity = '1';
+                }}
+              >
+                Close
               </button>
             </div>
           </div>
@@ -1121,6 +1412,159 @@ const styles = {
   loadingText: {
     fontSize: '0.95rem',
     color: '#a1a1aa',
+  },
+  // Multi-action step card styles
+  stepCard: {
+    backgroundColor: '#1a1a1a',
+    border: '1px solid #27272a',
+    borderRadius: '12px',
+    padding: '1rem',
+    marginBottom: '1rem',
+  },
+  stepHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.75rem',
+    marginBottom: '0.75rem',
+  },
+  stepNumber: {
+    width: '28px',
+    height: '28px',
+    borderRadius: '50%',
+    backgroundColor: 'rgba(197, 244, 103, 0.15)',
+    color: '#C5F467',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '0.85rem',
+    fontWeight: '600' as const,
+  },
+  stepTitle: {
+    fontSize: '1rem',
+    fontWeight: '600' as const,
+    color: '#ffffff',
+  },
+  stepDescription: {
+    fontSize: '0.85rem',
+    color: '#a1a1aa',
+    marginBottom: '0.75rem',
+    lineHeight: '1.5',
+  },
+  // Results modal styles
+  resultsModal: {
+    width: '700px',
+    maxWidth: '94vw',
+    maxHeight: '85vh',
+    backgroundColor: '#141414',
+    borderRadius: '16px',
+    padding: '1.5rem',
+    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)',
+    border: '1px solid #27272a',
+    display: 'flex',
+    flexDirection: 'column' as const,
+  },
+  resultsBody: {
+    overflowY: 'auto' as const,
+    paddingRight: '0.25rem',
+    flex: 1,
+  },
+  summaryBar: {
+    backgroundColor: '#1a1a1a',
+    border: '1px solid #27272a',
+    borderRadius: '8px',
+    padding: '0.75rem 1rem',
+    marginBottom: '1rem',
+    textAlign: 'center' as const,
+  },
+  summaryText: {
+    fontSize: '0.9rem',
+    color: '#a1a1aa',
+    fontWeight: '500' as const,
+  },
+  resultCard: {
+    backgroundColor: '#1a1a1a',
+    border: '1px solid #27272a',
+    borderLeftWidth: '4px',
+    borderLeftStyle: 'solid' as const,
+    borderRadius: '8px',
+    padding: '1rem',
+    marginBottom: '0.75rem',
+  },
+  resultHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.75rem',
+  },
+  resultsTitleContainer: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.75rem',
+  },
+  resultsTitleIndicator: {
+    width: '28px',
+    height: '28px',
+    borderRadius: '50%',
+    border: '2px solid',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '0.9rem',
+    fontWeight: '700' as const,
+  },
+  resultIconBadge: {
+    width: '24px',
+    height: '24px',
+    borderRadius: '50%',
+    border: '1.5px solid',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '0.75rem',
+    fontWeight: '700' as const,
+    flexShrink: 0,
+  },
+  resultTitle: {
+    flex: 1,
+    fontSize: '0.95rem',
+    fontWeight: '600' as const,
+    color: '#ffffff',
+  },
+  resultStatus: {
+    fontSize: '0.85rem',
+    fontWeight: '600' as const,
+  },
+  resultError: {
+    marginTop: '0.75rem',
+    padding: '0.75rem',
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    border: '1px solid rgba(239, 68, 68, 0.3)',
+    borderRadius: '8px',
+    fontSize: '0.85rem',
+    color: '#ef4444',
+    lineHeight: '1.4',
+  },
+  resultSuccess: {
+    marginTop: '0.75rem',
+    padding: '0.75rem',
+    backgroundColor: 'rgba(34, 197, 94, 0.15)',
+    border: '1px solid rgba(34, 197, 94, 0.3)',
+    borderRadius: '8px',
+    fontSize: '0.85rem',
+    color: '#22c55e',
+    lineHeight: '1.4',
+    fontFamily: 'monospace',
+    whiteSpace: 'pre-wrap' as const,
+    wordBreak: 'break-word' as const,
+  },
+  closeButton: {
+    padding: '10px 20px',
+    borderRadius: '8px',
+    border: 'none',
+    backgroundColor: '#C5F467',
+    color: '#0a0a0a',
+    fontWeight: '600' as const,
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
   },
 };
 

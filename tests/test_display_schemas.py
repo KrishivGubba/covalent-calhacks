@@ -108,22 +108,32 @@ def run_tests():
                 failed += 1
                 continue
 
-            proposed = data.get("proposed_action", {})
-            display = data.get("display")
+            proposed_actions = data.get("proposed_actions", [])
+            displays = data.get("displays", [])
+            is_multi = data.get("is_multi_action", False)
 
-            print(f"  Tool chosen:  {proposed.get('tool_name', '???')}")
-            print(f"  Parameters:   {json.dumps(proposed.get('parameters', {}), indent=4)}")
-            print(f"  has_schema:   {display.get('has_schema') if display else 'N/A'}")
-            print(f"  display_name: {display.get('display_name') if display else 'N/A'}")
+            print(f"  Multi-action: {is_multi}")
+            print(f"  Actions ({len(proposed_actions)}):")
+            
+            all_issues = []
+            for i, proposed in enumerate(proposed_actions):
+                display = displays[i] if i < len(displays) else None
+                print(f"    [{proposed.get('step_id', i+1)}] Tool: {proposed.get('tool_name', '???')}")
+                print(f"        Parameters:   {json.dumps(proposed.get('parameters', {}), indent=8)}")
+                print(f"        has_schema:   {display.get('has_schema') if display else 'N/A'}")
+                print(f"        display_name: {display.get('display_name') if display else 'N/A'}")
 
-            if display and display.get("fields"):
-                print(f"  fields ({len(display['fields'])}):")
-                for f in display["fields"]:
-                    val = f.get("value", "—")
-                    edit = "✏️" if f.get("editable") else "🔒"
-                    print(f"    {edit} [{f['widget']}] {f['label']}: {val}")
+                if display and display.get("fields"):
+                    print(f"        fields ({len(display['fields'])}):")
+                    for f in display["fields"]:
+                        val = f.get("value", "—")
+                        edit = "✏️" if f.get("editable") else "🔒"
+                        print(f"          {edit} [{f['widget']}] {f['label']}: {val}")
 
-            issues = validate_display(label, display, proposed)
+                issues = validate_display(label, display, proposed)
+                all_issues.extend(issues)
+
+            issues = all_issues
             if issues:
                 print(f"  ⚠️  Validation issues:")
                 for iss in issues:

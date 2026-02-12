@@ -531,7 +531,7 @@ Your task is to decide which READ-ONLY resources to query to gather information 
 IMPORTANT:
 1. Only select resources that will provide USEFUL context for the action
 2. Don't select resources if the existing context is sufficient
-3. Be selective - only query what's needed (max 3 resources)
+3. Be selective - only query what's needed (max 5 resources for complex multi-step actions)
 4. Resources are READ-ONLY and safe to execute
 
 OUTPUT FORMAT - Return ONLY valid JSON:
@@ -593,7 +593,7 @@ Which resources should I query to gather context for this action?"""
         # Build a resource lookup by name for URI expansion
         resource_lookup = {r.name: r for r in resources}
         
-        for resource_spec in resources_to_read[:3]:  # Max 3 resources
+        for resource_spec in resources_to_read[:5]:  # Max 5 resources for complex multi-step actions
             resource_name = resource_spec.get("name", "")
             params = resource_spec.get("parameters", {})
             reason = resource_spec.get("reason", "")
@@ -665,10 +665,20 @@ Which resources should I query to gather context for this action?"""
 
 def _parse_tool_response(response_text: str) -> Optional[Dict[str, Any]]:
     """
-    Parse the LLM response to extract the tool call JSON.
+    Parse the LLM response to extract tool call(s) JSON.
+    
+    Supports two formats:
+    1. Multi-action format (preferred):
+       {"actions": [{"tool_name": ..., "parameters": {...}, "reasoning": ...}, ...]}
+    
+    2. Legacy single-action format (backward compatible):
+       {"tool_name": ..., "parameters": {...}, "reasoning": ...}
     
     Returns:
-        Dict with tool_name, parameters, reasoning or None if parsing fails
+        Dict with:
+        - "is_multi_action": bool
+        - "actions": List[Dict] with tool_name, parameters, reasoning for each action
+        Or None if parsing fails
     """
     # Try to find JSON in the response
     # First, try to find a JSON code block
@@ -676,31 +686,51 @@ def _parse_tool_response(response_text: str) -> Optional[Dict[str, Any]]:
     if json_match:
         json_str = json_match.group(1)
     else:
-        # Try to find raw JSON object
-        json_match = re.search(r'\{[^{}]*"tool_name"[^{}]*\}', response_text, re.DOTALL)
-        if json_match:
-            json_str = json_match.group(0)
+        # Try to find JSON with nested objects
+        # Match from first { to last }
+        start = response_text.find('{')
+        end = response_text.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            json_str = response_text[start:end + 1]
         else:
-            # Try to find JSON with nested objects (parameters)
-            # Match from first { to last }
-            start = response_text.find('{')
-            end = response_text.rfind('}')
-            if start != -1 and end != -1 and end > start:
-                json_str = response_text[start:end + 1]
-            else:
-                return None
+            return None
     
     try:
         parsed = json.loads(json_str)
         
-        # Validate required fields
+        # Check for multi-action format
+        if "actions" in parsed and isinstance(parsed["actions"], list):
+            actions = []
+            for i, action in enumerate(parsed["actions"]):
+                if isinstance(action, dict) and "tool_name" in action:
+                    actions.append({
+                        "step_id": i + 1,
+                        "tool_name": action.get("tool_name"),
+                        "parameters": action.get("parameters", {}),
+                        "reasoning": action.get("reasoning", f"Step {i + 1}")
+                    })
+            
+            if actions:
+                return {
+                    "is_multi_action": len(actions) > 1,
+                    "actions": actions,
+                    "overall_reasoning": parsed.get("overall_reasoning", "")
+                }
+            return None
+        
+        # Legacy single-action format
         if "tool_name" not in parsed:
             return None
         
         return {
-            "tool_name": parsed.get("tool_name"),
-            "parameters": parsed.get("parameters", {}),
-            "reasoning": parsed.get("reasoning", "Action proposed by agent")
+            "is_multi_action": False,
+            "actions": [{
+                "step_id": 1,
+                "tool_name": parsed.get("tool_name"),
+                "parameters": parsed.get("parameters", {}),
+                "reasoning": parsed.get("reasoning", "Action proposed by agent")
+            }],
+            "overall_reasoning": parsed.get("reasoning", "")
         }
     except json.JSONDecodeError:
         return None
@@ -757,27 +787,42 @@ async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
         
         system_prompt = """You are an action planning assistant.
 
-Your task is to analyze the user's action and propose ONE TOOL to execute.
+Your task is to analyze the user's action and propose the tool(s) needed to accomplish it.
 
 IMPORTANT INSTRUCTIONS:
-1. Choose ONLY ONE tool that best accomplishes the action
-2. Fill in ALL required parameters based on the provided context
-3. Use the context data to infer missing information (emails, names, dates, etc.)
-4. If information is missing, make reasonable assumptions or use placeholders like "[FILL IN]"
-5. DO NOT execute the tool - just propose it with all parameters filled
-6. Provide brief reasoning for your choice
+1. Analyze if the action requires ONE or MULTIPLE tools
+2. If the action involves multiple distinct operations (e.g., "create an issue AND send an email AND update a note"), propose MULTIPLE actions
+3. If the action is simple and requires only one tool, propose just that one
+4. Fill in ALL required parameters based on the provided context
+5. Use the context data to infer missing information (emails, names, dates, etc.)
+6. If information is missing, make reasonable assumptions or use placeholders like "[FILL IN]"
+7. DO NOT execute any tools - just propose them with all parameters filled
+8. Each action is INDEPENDENT - do not assume you can use outputs from previous actions
 
 The user will review and can edit your proposed parameters before execution.
 
 OUTPUT FORMAT - Return ONLY valid JSON with NO additional text:
 {
-    "tool_name": "the_tool_name",
-    "parameters": {
-        "param1": "value1",
-        "param2": "value2"
-    },
-    "reasoning": "Brief explanation of why this tool and these parameters"
-}"""
+    "actions": [
+        {
+            "tool_name": "first_tool_name",
+            "parameters": {
+                "param1": "value1"
+            },
+            "reasoning": "Brief explanation for this action"
+        },
+        {
+            "tool_name": "second_tool_name",
+            "parameters": {
+                "param1": "value1"
+            },
+            "reasoning": "Brief explanation for this action"
+        }
+    ],
+    "overall_reasoning": "Brief explanation of the overall plan"
+}
+
+For SINGLE actions, still use the same format with just one item in the actions array."""
 
         user_prompt = f"""Available tools:
 {tool_descriptions}
@@ -805,19 +850,22 @@ Analyze this action and output a single JSON object with the tool call."""
         print(response.content)
         print(f"{'='*60}\n")
         
-        # Parse the response
-        proposed_action = _parse_tool_response(response.content)
+        # Parse the response (now supports multi-action)
+        parsed_response = _parse_tool_response(response.content)
         
-        if not proposed_action:
+        if not parsed_response:
             return {
                 "status": "error",
-                "proposed_action": None,
+                "proposed_actions": None,
+                "is_multi_action": False,
                 "error": f"Failed to parse tool call from LLM response. Response: {response.content[:200]}"
             }
         
         return {
             "status": "success",
-            "proposed_action": proposed_action,
+            "proposed_actions": parsed_response["actions"],
+            "is_multi_action": parsed_response["is_multi_action"],
+            "overall_reasoning": parsed_response.get("overall_reasoning", ""),
             "error": None
         }
         
@@ -900,6 +948,106 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
         }
 
 
+async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Execute a sequence of approved actions sequentially.
+    
+    Actions are executed in order. If one fails, execution continues to the next
+    (no dependencies between actions - each is independent).
+    
+    Args:
+        actions: List of action dicts, each with:
+            - step_id: int
+            - tool_name: str
+            - parameters: dict (user-approved/edited)
+            
+    Returns:
+        {
+            "status": "success" | "partial" | "error",
+            "results": [
+                {"step_id": 1, "tool_name": "...", "status": "success", "result": {...}},
+                {"step_id": 2, "tool_name": "...", "status": "error", "error": "..."},
+                ...
+            ],
+            "summary": {
+                "total": int,
+                "succeeded": int,
+                "failed": int
+            }
+        }
+    """
+    results = []
+    succeeded = 0
+    failed = 0
+    
+    print(f"\n{'='*60}")
+    print(f"🚀 EXECUTING ACTION CHAIN ({len(actions)} actions)")
+    print(f"{'='*60}")
+    
+    for action in actions:
+        step_id = action.get("step_id", len(results) + 1)
+        tool_name = action.get("tool_name", "")
+        parameters = action.get("parameters", {})
+        
+        print(f"\n📌 Step {step_id}: {tool_name}")
+        
+        try:
+            exec_result = await execute_action(tool_name, parameters)
+            
+            if exec_result["status"] == "success":
+                succeeded += 1
+                results.append({
+                    "step_id": step_id,
+                    "tool_name": tool_name,
+                    "status": "success",
+                    "result": exec_result["result"]
+                })
+                print(f"   ✅ Step {step_id} succeeded")
+            else:
+                failed += 1
+                results.append({
+                    "step_id": step_id,
+                    "tool_name": tool_name,
+                    "status": "error",
+                    "error": exec_result["error"]
+                })
+                print(f"   ❌ Step {step_id} failed: {exec_result['error']}")
+                # Continue to next action (no early exit)
+                
+        except Exception as e:
+            failed += 1
+            results.append({
+                "step_id": step_id,
+                "tool_name": tool_name,
+                "status": "error",
+                "error": str(e)
+            })
+            print(f"   ❌ Step {step_id} exception: {e}")
+            # Continue to next action
+    
+    # Determine overall status
+    if failed == 0:
+        overall_status = "success"
+    elif succeeded == 0:
+        overall_status = "error"
+    else:
+        overall_status = "partial"
+    
+    print(f"\n{'='*60}")
+    print(f"📊 CHAIN COMPLETE: {succeeded}/{len(actions)} succeeded")
+    print(f"{'='*60}\n")
+    
+    return {
+        "status": overall_status,
+        "results": results,
+        "summary": {
+            "total": len(actions),
+            "succeeded": succeeded,
+            "failed": failed
+        }
+    }
+
+
 # =============================================================================
 # COMBINED FLOW FUNCTIONS
 # =============================================================================
@@ -910,7 +1058,7 @@ async def research_and_plan(action_text: str, initial_context: str = "") -> Dict
     
     This is the main entry point for the action executor.
     1. Gathers context by reading relevant resources
-    2. Plans the action using gathered context
+    2. Plans the action(s) using gathered context
     
     Args:
         action_text: The action description from the user
@@ -923,11 +1071,16 @@ async def research_and_plan(action_text: str, initial_context: str = "") -> Dict
                 "resources_read": list,
                 "context_gathered": str
             },
-            "proposed_action": {
-                "tool_name": str,
-                "parameters": dict,
-                "reasoning": str
-            } | None,
+            "proposed_actions": [
+                {
+                    "step_id": int,
+                    "tool_name": str,
+                    "parameters": dict,
+                    "reasoning": str
+                }, ...
+            ] | None,
+            "is_multi_action": bool,
+            "overall_reasoning": str,
             "error": str | None
         }
     """
@@ -957,14 +1110,21 @@ async def research_and_plan(action_text: str, initial_context: str = "") -> Dict
         return {
             "status": "error",
             "research": research_info,
-            "proposed_action": None,
+            "proposed_actions": None,
+            "is_multi_action": False,
+            "overall_reasoning": "",
             "error": plan_result["error"]
         }
+    
+    num_actions = len(plan_result.get("proposed_actions", []))
+    print(f"✅ Planning complete: {num_actions} action(s) proposed")
     
     return {
         "status": "success",
         "research": research_info,
-        "proposed_action": plan_result["proposed_action"],
+        "proposed_actions": plan_result["proposed_actions"],
+        "is_multi_action": plan_result.get("is_multi_action", False),
+        "overall_reasoning": plan_result.get("overall_reasoning", ""),
         "error": None
     }
 
@@ -1035,9 +1195,9 @@ async def health_check():
 # =============================================================================
 
 async def main():
-    """Test the action executor with full 3-phase flow."""
+    """Test the action executor with full 3-phase flow (multi-action support)."""
     
-    # Test action - this one benefits from context gathering
+    # Test action - this one could trigger multi-action
     action_text = "Reply to Ritesh's latest email about the project update"
     
     # Initial context (could come from the graph or be empty)
@@ -1065,38 +1225,56 @@ async def main():
     print("PHASE 1: PLANNING")
     print("=" * 60)
     
-    # Phase 1: Plan the action using gathered context
+    # Phase 1: Plan the action(s) using gathered context
     plan_result = await plan_action(action_text, research_result["context"])
     
     if plan_result["status"] == "error":
         print(f"❌ Planning failed: {plan_result['error']}")
         return
     
-    proposed = plan_result["proposed_action"]
-    print(f"\n📋 Proposed Action:")
-    print(f"   Tool: {proposed['tool_name']}")
-    print(f"   Parameters: {json.dumps(proposed['parameters'], indent=4)}")
-    print(f"   Reasoning: {proposed['reasoning']}")
+    proposed_actions = plan_result["proposed_actions"]
+    is_multi = plan_result.get("is_multi_action", False)
+    
+    print(f"\n📋 Proposed Actions ({len(proposed_actions)} action(s), multi={is_multi}):")
+    for action in proposed_actions:
+        print(f"\n   Step {action['step_id']}: {action['tool_name']}")
+        print(f"   Parameters: {json.dumps(action['parameters'], indent=4)}")
+        print(f"   Reasoning: {action['reasoning']}")
     
     print("\n" + "=" * 60)
     print("PHASE 2: EXECUTION (simulated approval)")
     print("=" * 60)
     
-    # Simulate user approval (in real app, user would edit these)
-    approved_params = proposed['parameters']
-    
     # In real app, we'd wait for user approval here
     print("⏸️  [In real app: User reviews and approves/edits parameters here]")
     
-    # Phase 2: Execute the action
-    exec_result = await execute_action(proposed['tool_name'], approved_params)
-    
-    if exec_result["status"] == "error":
-        print(f"❌ Execution failed: {exec_result['error']}")
-        return
-    
-    print(f"\n✅ Action executed successfully!")
-    print(f"   Result: {exec_result['result']}")
+    # Phase 2: Execute the action(s)
+    if len(proposed_actions) == 1:
+        # Single action
+        action = proposed_actions[0]
+        exec_result = await execute_action(action['tool_name'], action['parameters'])
+        
+        if exec_result["status"] == "error":
+            print(f"❌ Execution failed: {exec_result['error']}")
+            return
+        
+        print(f"\n✅ Action executed successfully!")
+        print(f"   Result: {exec_result['result']}")
+    else:
+        # Multi-action chain
+        chain_result = await execute_action_chain(proposed_actions)
+        
+        print(f"\n📊 Chain execution complete:")
+        print(f"   Status: {chain_result['status']}")
+        print(f"   Summary: {chain_result['summary']['succeeded']}/{chain_result['summary']['total']} succeeded")
+        
+        for result in chain_result['results']:
+            status_icon = "✅" if result['status'] == "success" else "❌"
+            print(f"\n   {status_icon} Step {result['step_id']} ({result['tool_name']}): {result['status']}")
+            if result['status'] == 'success':
+                print(f"      Result: {str(result.get('result', ''))[:100]}...")
+            else:
+                print(f"      Error: {result.get('error', 'Unknown')}")
 
 
 if __name__ == "__main__":

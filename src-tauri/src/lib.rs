@@ -363,23 +363,40 @@ async fn plan_action(
 
 // Execute action command - Phase 2 of new action flow
 // Called after user approves/edits the action plan
+// Supports both single-action (legacy) and multi-action (new) formats
 #[tauri::command]
 async fn execute_action(
     action_uuid: String,
-    tool_name: String,
-    parameters: serde_json::Value,
+    // Legacy single-action parameters (optional)
+    tool_name: Option<String>,
+    parameters: Option<serde_json::Value>,
+    // New multi-action parameters (optional)
+    actions: Option<Vec<serde_json::Value>>,
     state: tauri::State<'_, ContextState>
 ) -> Result<serde_json::Value, String> {
     use screen_context::ContextApiClient;
     
-    println!("🚀 Executing action: {} with tool {}", action_uuid, tool_name);
-    
     let api_client = ContextApiClient::new();
     
-    let result = api_client
-        .execute_action(action_uuid, tool_name, parameters)
-        .await
-        .map_err(|e| format!("Failed to execute action: {}", e));
+    let result = if let Some(actions_array) = actions {
+        // Multi-action execution
+        println!("🚀 Executing {} action(s) for: {}", actions_array.len(), action_uuid);
+        
+        api_client
+            .execute_action_chain(action_uuid, actions_array)
+            .await
+            .map_err(|e| format!("Failed to execute action chain: {}", e))
+    } else if let (Some(tool), Some(params)) = (tool_name, parameters) {
+        // Legacy single-action execution
+        println!("🚀 Executing single action: {} with tool {}", action_uuid, tool);
+        
+        api_client
+            .execute_action(action_uuid, tool, params)
+            .await
+            .map_err(|e| format!("Failed to execute action: {}", e))
+    } else {
+        return Err("Either 'actions' array or 'tool_name' + 'parameters' must be provided".to_string());
+    };
     
     match &result {
         Ok(response) => {
