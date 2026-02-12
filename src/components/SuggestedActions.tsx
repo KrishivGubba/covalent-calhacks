@@ -817,15 +817,46 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
         <div style={styles.modalOverlay}>
           <div style={styles.resultsModal}>
             <div style={styles.modalHeader}>
-              <h3 style={styles.modalTitle}>
-                {executionSummary.failed === 0 
-                  ? '✅ All Actions Completed'
-                  : executionSummary.succeeded === 0
-                    ? '❌ All Actions Failed'
-                    : `⚠️ Partial Success (${executionSummary.succeeded}/${executionSummary.total})`
-                }
-              </h3>
-              <button style={styles.modalClose} onClick={handleCloseResults}>
+              <div style={styles.resultsTitleContainer}>
+                <span style={{
+                  ...styles.resultsTitleIndicator,
+                  backgroundColor: executionSummary.failed === 0 
+                    ? 'rgba(34, 197, 94, 0.2)' 
+                    : executionSummary.succeeded === 0 
+                      ? 'rgba(239, 68, 68, 0.2)' 
+                      : 'rgba(251, 191, 36, 0.2)',
+                  borderColor: executionSummary.failed === 0 
+                    ? 'rgba(34, 197, 94, 0.5)' 
+                    : executionSummary.succeeded === 0 
+                      ? 'rgba(239, 68, 68, 0.5)' 
+                      : 'rgba(251, 191, 36, 0.5)',
+                  color: executionSummary.failed === 0 
+                    ? '#22c55e' 
+                    : executionSummary.succeeded === 0 
+                      ? '#ef4444' 
+                      : '#fbbf24',
+                }}>
+                  {executionSummary.failed === 0 ? '✓' : executionSummary.succeeded === 0 ? '✕' : '!'}
+                </span>
+                <h3 style={styles.modalTitle}>
+                  {executionSummary.failed === 0 
+                    ? 'All Actions Completed'
+                    : executionSummary.succeeded === 0
+                      ? 'All Actions Failed'
+                      : `Partial Success (${executionSummary.succeeded}/${executionSummary.total})`
+                  }
+                </h3>
+              </div>
+              <button 
+                style={styles.modalClose} 
+                onClick={handleCloseResults}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#27272a';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#1a1a1a';
+                }}
+              >
                 ✕
               </button>
             </div>
@@ -847,15 +878,20 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
                   }}
                 >
                   <div style={styles.resultHeader}>
-                    <span style={styles.resultIcon}>
-                      {result.status === 'success' ? '✅' : '❌'}
+                    <span style={{
+                      ...styles.resultIconBadge,
+                      backgroundColor: result.status === 'success' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                      borderColor: result.status === 'success' ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)',
+                      color: result.status === 'success' ? '#22c55e' : '#ef4444',
+                    }}>
+                      {result.status === 'success' ? '✓' : '✕'}
                     </span>
                     <span style={styles.resultTitle}>
                       Step {idx + 1}: {result.tool_name}
                     </span>
                     <span style={{
                       ...styles.resultStatus,
-                      color: result.status === 'success' ? '#16a34a' : '#dc2626',
+                      color: result.status === 'success' ? '#22c55e' : '#ef4444',
                     }}>
                       {result.status === 'success' ? 'Success' : 'Failed'}
                     </span>
@@ -884,6 +920,12 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
               <button 
                 style={styles.closeButton} 
                 onClick={handleCloseResults}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.opacity = '0.9';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.opacity = '1';
+                }}
               >
                 Close
               </button>
@@ -1304,9 +1346,9 @@ const styles = {
   },
   // Multi-action step card styles
   stepCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.4)',
-    border: '1px solid rgba(148, 163, 184, 0.3)',
-    borderRadius: '16px',
+    backgroundColor: '#1a1a1a',
+    border: '1px solid #27272a',
+    borderRadius: '12px',
     padding: '1rem',
     marginBottom: '1rem',
   },
@@ -1320,8 +1362,8 @@ const styles = {
     width: '28px',
     height: '28px',
     borderRadius: '50%',
-    backgroundColor: 'rgba(147, 51, 234, 0.15)',
-    color: '#9333ea',
+    backgroundColor: 'rgba(197, 244, 103, 0.15)',
+    color: '#C5F467',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1331,11 +1373,11 @@ const styles = {
   stepTitle: {
     fontSize: '1rem',
     fontWeight: '600',
-    color: '#0f172a',
+    color: '#ffffff',
   },
   stepDescription: {
     fontSize: '0.85rem',
-    color: '#475569',
+    color: '#a1a1aa',
     marginBottom: '0.75rem',
     lineHeight: '1.5',
   },
@@ -1344,13 +1386,11 @@ const styles = {
     width: '700px',
     maxWidth: '94vw',
     maxHeight: '85vh',
-    backgroundColor: 'rgba(255, 255, 255, 0.92)',
-    borderRadius: '24px',
-    padding: '1.25rem 1.25rem 1rem',
-    boxShadow: '0 30px 80px rgba(15, 23, 42, 0.35)',
-    border: '1px solid rgba(255, 255, 255, 0.6)',
-    backdropFilter: 'blur(28px) saturate(160%)',
-    WebkitBackdropFilter: 'blur(28px) saturate(160%)',
+    backgroundColor: '#141414',
+    borderRadius: '16px',
+    padding: '1.5rem',
+    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)',
+    border: '1px solid #27272a',
     display: 'flex',
     flexDirection: 'column' as const,
   },
@@ -1360,23 +1400,24 @@ const styles = {
     flex: 1,
   },
   summaryBar: {
-    backgroundColor: 'rgba(148, 163, 184, 0.15)',
-    borderRadius: '12px',
+    backgroundColor: '#1a1a1a',
+    border: '1px solid #27272a',
+    borderRadius: '8px',
     padding: '0.75rem 1rem',
     marginBottom: '1rem',
     textAlign: 'center' as const,
   },
   summaryText: {
     fontSize: '0.9rem',
-    color: '#475569',
+    color: '#a1a1aa',
     fontWeight: '500',
   },
   resultCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.5)',
-    border: '1px solid rgba(148, 163, 184, 0.3)',
+    backgroundColor: '#1a1a1a',
+    border: '1px solid #27272a',
     borderLeftWidth: '4px',
     borderLeftStyle: 'solid' as const,
-    borderRadius: '12px',
+    borderRadius: '8px',
     padding: '1rem',
     marginBottom: '0.75rem',
   },
@@ -1385,14 +1426,39 @@ const styles = {
     alignItems: 'center',
     gap: '0.75rem',
   },
-  resultIcon: {
-    fontSize: '1.1rem',
+  resultsTitleContainer: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.75rem',
+  },
+  resultsTitleIndicator: {
+    width: '28px',
+    height: '28px',
+    borderRadius: '50%',
+    border: '2px solid',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '0.9rem',
+    fontWeight: '700',
+  },
+  resultIconBadge: {
+    width: '24px',
+    height: '24px',
+    borderRadius: '50%',
+    border: '1.5px solid',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '0.75rem',
+    fontWeight: '700',
+    flexShrink: 0,
   },
   resultTitle: {
     flex: 1,
     fontSize: '0.95rem',
     fontWeight: '600',
-    color: '#0f172a',
+    color: '#ffffff',
   },
   resultStatus: {
     fontSize: '0.85rem',
@@ -1401,30 +1467,32 @@ const styles = {
   resultError: {
     marginTop: '0.75rem',
     padding: '0.75rem',
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    border: '1px solid rgba(239, 68, 68, 0.3)',
     borderRadius: '8px',
     fontSize: '0.85rem',
-    color: '#dc2626',
+    color: '#ef4444',
     lineHeight: '1.4',
   },
   resultSuccess: {
     marginTop: '0.75rem',
     padding: '0.75rem',
-    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+    backgroundColor: 'rgba(34, 197, 94, 0.15)',
+    border: '1px solid rgba(34, 197, 94, 0.3)',
     borderRadius: '8px',
     fontSize: '0.85rem',
-    color: '#16a34a',
+    color: '#22c55e',
     lineHeight: '1.4',
     fontFamily: 'monospace',
     whiteSpace: 'pre-wrap' as const,
     wordBreak: 'break-word' as const,
   },
   closeButton: {
-    padding: '0.6rem 2rem',
-    borderRadius: '999px',
-    border: '2px solid rgba(15, 23, 42, 0.25)',
-    backgroundColor: 'rgba(15, 23, 42, 0.9)',
-    color: '#f8fafc',
+    padding: '10px 20px',
+    borderRadius: '8px',
+    border: 'none',
+    backgroundColor: '#C5F467',
+    color: '#0a0a0a',
     fontWeight: '600',
     cursor: 'pointer',
     transition: 'all 0.2s ease',
