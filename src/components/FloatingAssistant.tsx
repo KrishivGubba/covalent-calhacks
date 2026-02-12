@@ -1,7 +1,7 @@
-import React, { useState, useEffect, memo } from 'react';
+import React, { useState, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Action, ActionPlan, ProposedAction, ActionDisplay, ActionResult, ExecutionSummary, ExecutionResponse } from './SuggestedActions';
-import { disableContextCollection, enableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
+import { disableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
 import { notifyActionResult } from '../utils/actionNotifications';
 
 interface FloatingAssistantProps {
@@ -11,7 +11,7 @@ interface FloatingAssistantProps {
   onStop: () => void;
 }
 
-type ViewState = 'collapsed' | 'prompt' | 'expanded';
+type ViewState = 'collapsed' | 'expanded';
 type ActionStatus = 'idle' | 'playing' | 'done';
 
 const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({ 
@@ -96,49 +96,15 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
     await enableContextCollectionIfNotUserPaused();
   };
 
-  // Simulate action detection - expand to prompt
-  useEffect(() => {
-    if (actions.length > 0 && viewState === 'collapsed') {
-      setTimeout(() => {
-        setViewState('prompt');
-      }, 2000); // Simulate delay before suggesting help
-    }
-  }, [actions, viewState]);
-
-  const handleCollapsedClick = () => {
-    if (!isAnimating) {
-      setViewState('prompt');
-    }
-  };
-
   const handleIconClick = () => {
     if (!isAnimating) {
-      if (viewState === 'prompt' || viewState === 'expanded') {
-        setIsAnimating(true);
-        setTimeout(() => {
-          setViewState('collapsed');
-          setIsAnimating(false);
-        }, 100);
-      } else {
-        handleCollapsedClick();
-      }
+      setIsAnimating(true);
+      setTimeout(() => {
+        // Toggle between collapsed and expanded
+        setViewState(viewState === 'collapsed' ? 'expanded' : 'collapsed');
+        setIsAnimating(false);
+      }, 100);
     }
-  };
-
-  const handleAccept = () => {
-    setIsAnimating(true);
-    setTimeout(() => {
-      setViewState('expanded');
-      setIsAnimating(false);
-    }, 100);
-  };
-
-  const handleReject = () => {
-    setIsAnimating(true);
-    setTimeout(() => {
-      setViewState('collapsed');
-      setIsAnimating(false);
-    }, 100);
   };
 
   const handleActionClick = async (action: Action) => {
@@ -437,14 +403,8 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
         height: '60px',
         borderRadius: '30px',
       };
-    } else if (viewState === 'prompt') {
-      return {
-        ...baseStyle,
-        width: '400px',
-        height: '100px',
-        borderRadius: '20px',
-      };
     } else {
+      // expanded state
       return {
         ...baseStyle,
         width: '500px',
@@ -465,39 +425,6 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
             onClick={handleIconClick}
           />
         </div>
-
-      {/* Prompt State */}
-      {viewState === 'prompt' && (
-        <div style={styles.promptContent}>
-          <span style={styles.promptText}>Want help with this?</span>
-          <div style={styles.promptButtons}>
-            <button 
-              style={styles.acceptButton}
-              onClick={handleAccept}
-              onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = 'rgba(34, 197, 94, 0.35)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.backgroundColor = 'rgba(34, 197, 94, 0.25)';
-              }}
-            >
-              ✓
-            </button>
-            <button 
-              style={styles.rejectButton}
-              onClick={handleReject}
-              onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.35)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.25)';
-              }}
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Expanded State */}
       {viewState === 'expanded' && (
@@ -994,55 +921,6 @@ const styles = {
     width: '100%',
     height: '100%',
     objectFit: 'contain' as const,
-  },
-  promptContent: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '0 20px 0 60px',
-    height: '100%',
-    width: '100%',
-  },
-  promptText: {
-    fontSize: '1rem',
-    fontWeight: '600',
-    color: 'rgba(255, 255, 255, 0.95)',
-    flex: 1,
-  },
-  promptButtons: {
-    display: 'flex',
-    gap: '0.75rem',
-    marginLeft: 'auto',
-  },
-  acceptButton: {
-    width: '40px',
-    height: '40px',
-    borderRadius: '50%',
-    border: '2px solid rgba(34, 197, 94, 0.6)',
-    backgroundColor: 'rgba(34, 197, 94, 0.25)',
-    color: '#16a34a',
-    fontSize: '1.2rem',
-    fontWeight: 'bold',
-    cursor: 'pointer',
-    transition: 'all 0.2s ease',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  rejectButton: {
-    width: '40px',
-    height: '40px',
-    borderRadius: '50%',
-    border: '2px solid rgba(239, 68, 68, 0.6)',
-    backgroundColor: 'rgba(239, 68, 68, 0.25)',
-    color: '#dc2626',
-    fontSize: '1.2rem',
-    fontWeight: 'bold',
-    cursor: 'pointer',
-    transition: 'all 0.2s ease',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   expandedContent: {
     display: 'flex',

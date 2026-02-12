@@ -909,8 +909,6 @@ pub fn run() {
             }
             
             // Create menu items
-            let open_profile = MenuItem::with_id(app, "open_profile", "Open Profile", true, None::<&str>)?;
-            let link_mcps = MenuItem::with_id(app, "link_mcps", "Link MCPs", true, None::<&str>)?;
             let open_dashboard = MenuItem::with_id(app, "open_dashboard", "Dashboard", true, Some("cmd+;"))?;
             let quit = PredefinedMenuItem::quit(app, Some("Quit"))?;
             
@@ -919,7 +917,7 @@ pub fn run() {
                 app,
                 "Profile",
                 true,
-                &[&open_profile, &link_mcps, &open_dashboard, &quit],
+                &[&open_dashboard, &quit],
             )?;
             
             // Create menu bar
@@ -931,14 +929,6 @@ pub fn run() {
             // Handle menu events
             app.on_menu_event(move |app, event| {
                 match event.id().as_ref() {
-                    "open_profile" => {
-                        println!("Open Profile clicked");
-                        // TODO: Implement profile functionality
-                    }
-                    "link_mcps" => {
-                        println!("Link MCPs clicked");
-                        // TODO: Implement MCP linking functionality
-                    }
                     "open_dashboard" => {
                         println!("🎛️  Opening dashboard");
                         if let Some(window) = app.get_webview_window("dashboard") {
