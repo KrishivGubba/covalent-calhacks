@@ -2,6 +2,7 @@ import React, { useState, useEffect, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Action, ActionPlan } from './SuggestedActions';
 import { disableContextCollection, enableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
+import { notifyActionResult } from '../utils/actionNotifications';
 
 interface FloatingAssistantProps {
   actions: Action[];
@@ -137,10 +138,16 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
       
       console.log(`✅ Action executed successfully`);
       setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+      
+      // Send notification for successful execution
+      await notifyActionResult(planningAction.title, true);
     } catch (error) {
       console.error(`❌ Action execution failed:`, error);
       setPlanError(String(error));
       setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'idle' }));
+      
+      // Send notification for failed execution
+      await notifyActionResult(planningAction.title, false, String(error));
     } finally {
       setIsExecuting(false);
       setPlanningAction(null);
@@ -427,7 +434,16 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
           <div style={styles.modal}>
             <div style={styles.modalHeader}>
               <h3 style={styles.modalTitle}>Edit Action</h3>
-              <button style={styles.modalClose} onClick={() => closeEditModal(true)}>
+              <button 
+                style={styles.modalClose} 
+                onClick={() => closeEditModal(true)}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#27272a';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#1a1a1a';
+                }}
+              >
                 ✕
               </button>
             </div>
@@ -438,6 +454,12 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
                   style={styles.modalInput}
                   value={editTitle}
                   onChange={(e) => setEditTitle(e.target.value)}
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = '#3f3f46';
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = '#27272a';
+                  }}
                 />
               </label>
               <label style={styles.modalLabel}>
@@ -447,6 +469,12 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
                   value={editPlan}
                   onChange={(e) => setEditPlan(e.target.value)}
                   rows={5}
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = '#3f3f46';
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = '#27272a';
+                  }}
                 />
               </label>
               <label style={styles.modalCheckboxLabel}>
@@ -460,10 +488,28 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
               {editError && <div style={styles.modalError}>{editError}</div>}
             </div>
             <div style={styles.modalActions}>
-              <button style={styles.modalCancel} onClick={() => closeEditModal(true)}>
+              <button 
+                style={styles.modalCancel} 
+                onClick={() => closeEditModal(true)}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#27272a';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#1a1a1a';
+                }}
+              >
                 Cancel
               </button>
-              <button style={styles.modalRun} onClick={handleRunEditedAction}>
+              <button 
+                style={styles.modalRun} 
+                onClick={handleRunEditedAction}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.opacity = '0.9';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.opacity = '1';
+                }}
+              >
                 Run now
               </button>
             </div>
@@ -479,7 +525,16 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
               <h3 style={styles.modalTitle}>
                 {actionPlan.display?.display_name || actionPlan.proposed_action?.tool_name || 'Confirm Action'}
               </h3>
-              <button style={styles.modalClose} onClick={handleCancelPlan}>
+              <button 
+                style={styles.modalClose} 
+                onClick={handleCancelPlan}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#27272a';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#1a1a1a';
+                }}
+              >
                 ✕
               </button>
             </div>
@@ -507,6 +562,12 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
                           onChange={(e) => handleParamChange(field.key, e.target.value)}
                           disabled={!field.editable}
                           rows={4}
+                          onFocus={(e) => {
+                            e.currentTarget.style.borderColor = '#3f3f46';
+                          }}
+                          onBlur={(e) => {
+                            e.currentTarget.style.borderColor = '#27272a';
+                          }}
                         />
                       ) : (
                         <input
@@ -514,6 +575,12 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
                           value={String(editableParams[field.key] ?? field.value ?? '')}
                           onChange={(e) => handleParamChange(field.key, e.target.value)}
                           disabled={!field.editable}
+                          onFocus={(e) => {
+                            e.currentTarget.style.borderColor = '#3f3f46';
+                          }}
+                          onBlur={(e) => {
+                            e.currentTarget.style.borderColor = '#27272a';
+                          }}
                         />
                       )}
                     </label>
@@ -528,12 +595,24 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
                           value={String(value)}
                           onChange={(e) => handleParamChange(key, e.target.value)}
                           rows={4}
+                          onFocus={(e) => {
+                            e.currentTarget.style.borderColor = '#3f3f46';
+                          }}
+                          onBlur={(e) => {
+                            e.currentTarget.style.borderColor = '#27272a';
+                          }}
                         />
                       ) : (
                         <input
                           style={styles.modalInput}
                           value={String(value ?? '')}
                           onChange={(e) => handleParamChange(key, e.target.value)}
+                          onFocus={(e) => {
+                            e.currentTarget.style.borderColor = '#3f3f46';
+                          }}
+                          onBlur={(e) => {
+                            e.currentTarget.style.borderColor = '#27272a';
+                          }}
                         />
                       )}
                     </label>
@@ -548,6 +627,12 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
                 style={styles.exitButton} 
                 onClick={handleCancelPlan}
                 disabled={isExecuting}
+                onMouseEnter={(e) => {
+                  if (!isExecuting) e.currentTarget.style.backgroundColor = '#27272a';
+                }}
+                onMouseLeave={(e) => {
+                  if (!isExecuting) e.currentTarget.style.backgroundColor = '#1a1a1a';
+                }}
               >
                 Exit
               </button>
@@ -555,6 +640,12 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
                 style={styles.executeButton} 
                 onClick={handleExecuteAction}
                 disabled={isExecuting}
+                onMouseEnter={(e) => {
+                  if (!isExecuting) e.currentTarget.style.opacity = '0.9';
+                }}
+                onMouseLeave={(e) => {
+                  if (!isExecuting) e.currentTarget.style.opacity = '1';
+                }}
               >
                 {isExecuting ? 'Executing...' : 'Execute'}
               </button>
@@ -811,7 +902,9 @@ const styles = {
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(15, 23, 42, 0.4)',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backdropFilter: 'blur(8px)',
+    WebkitBackdropFilter: 'blur(8px)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -822,13 +915,11 @@ const styles = {
     width: '640px',
     maxWidth: '94vw',
     maxHeight: '85vh',
-    backgroundColor: 'rgba(255, 255, 255, 0.75)',
-    borderRadius: '24px',
-    padding: '1.25rem 1.25rem 1rem',
-    boxShadow: '0 30px 80px rgba(15, 23, 42, 0.35)',
-    border: '1px solid rgba(255, 255, 255, 0.6)',
-    backdropFilter: 'blur(28px) saturate(160%)',
-    WebkitBackdropFilter: 'blur(28px) saturate(160%)',
+    backgroundColor: '#141414',
+    borderRadius: '16px',
+    padding: '1.5rem',
+    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)',
+    border: '1px solid #27272a',
     display: 'flex',
     flexDirection: 'column' as const,
   },
@@ -836,23 +927,28 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: '0.75rem',
+    marginBottom: '1.25rem',
   },
   modalTitle: {
     margin: 0,
     fontSize: '1.35rem',
     fontWeight: 600,
-    color: '#0f172a',
+    color: '#ffffff',
+    letterSpacing: '-0.01em',
   },
   modalClose: {
     border: 'none',
-    backgroundColor: 'rgba(15, 23, 42, 0.12)',
-    color: '#0f172a',
-    width: '32px',
-    height: '32px',
-    borderRadius: '12px',
+    backgroundColor: '#1a1a1a',
+    color: '#a1a1aa',
+    width: '36px',
+    height: '36px',
+    borderRadius: '10px',
     cursor: 'pointer',
-    fontSize: '0.9rem',
+    fontSize: '1rem',
+    transition: 'all 0.2s ease',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   modalBody: {
     overflowY: 'auto' as const,
@@ -861,74 +957,90 @@ const styles = {
   modalLabel: {
     display: 'flex',
     flexDirection: 'column' as const,
-    gap: '0.4rem',
-    marginBottom: '0.8rem',
-    fontSize: '0.85rem',
-    color: '#0f172a',
+    gap: '0.5rem',
+    marginBottom: '1rem',
+    fontSize: '0.9rem',
+    fontWeight: '500',
+    color: '#ffffff',
   },
   modalInput: {
-    padding: '0.5rem 0.6rem',
-    borderRadius: '12px',
-    border: '1px solid rgba(148, 163, 184, 0.5)',
+    padding: '10px 14px',
+    borderRadius: '8px',
+    border: '1px solid #27272a',
     fontSize: '0.9rem',
-    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    backgroundColor: '#111111',
+    color: '#ffffff',
+    outline: 'none',
+    transition: 'border-color 0.2s ease',
   },
   modalTextarea: {
-    padding: '0.5rem 0.6rem',
-    borderRadius: '12px',
-    border: '1px solid rgba(148, 163, 184, 0.5)',
+    padding: '10px 14px',
+    borderRadius: '8px',
+    border: '1px solid #27272a',
     fontSize: '0.9rem',
     resize: 'vertical' as const,
-    backgroundColor: 'rgba(255, 255, 255, 0.7)',
-    minHeight: '90px',
+    backgroundColor: '#111111',
+    color: '#ffffff',
+    minHeight: '120px',
+    outline: 'none',
+    lineHeight: '1.5',
+    fontFamily: 'inherit',
+    transition: 'border-color 0.2s ease',
   },
   modalCheckboxLabel: {
     display: 'flex',
     alignItems: 'center',
-    gap: '0.5rem',
-    fontSize: '0.85rem',
-    color: '#0f172a',
+    gap: '0.6rem',
+    fontSize: '0.9rem',
+    color: '#a1a1aa',
     marginBottom: '0.8rem',
+    cursor: 'pointer',
   },
   modalActions: {
     display: 'flex',
     justifyContent: 'flex-end',
     gap: '0.75rem',
-    marginTop: '0.8rem',
-    paddingTop: '0.5rem',
-    borderTop: '1px solid rgba(148, 163, 184, 0.25)',
+    marginTop: '1.25rem',
+    paddingTop: '1rem',
+    borderTop: '1px solid #27272a',
   },
   modalCancel: {
-    padding: '0.5rem 0.9rem',
-    borderRadius: '999px',
-    border: '1px solid rgba(148, 163, 184, 0.6)',
-    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    padding: '10px 20px',
+    borderRadius: '8px',
+    border: '1px solid #27272a',
+    backgroundColor: '#1a1a1a',
+    color: '#a1a1aa',
+    fontSize: '0.9rem',
+    fontWeight: '500',
     cursor: 'pointer',
+    transition: 'all 0.2s ease',
   },
   modalRun: {
-    padding: '0.5rem 0.9rem',
-    borderRadius: '999px',
-    border: '1px solid rgba(15, 23, 42, 0.25)',
-    backgroundColor: 'rgba(15, 23, 42, 0.9)',
-    color: '#f8fafc',
+    padding: '10px 20px',
+    borderRadius: '8px',
+    border: 'none',
+    backgroundColor: '#C5F467',
+    color: '#0a0a0a',
+    fontSize: '0.9rem',
+    fontWeight: '600',
     cursor: 'pointer',
+    transition: 'all 0.2s ease',
   },
   modalError: {
-    color: '#b91c1c',
+    color: '#ef4444',
     fontSize: '0.85rem',
+    marginTop: '0.5rem',
   },
   // Action Plan Confirmation Modal styles
   planModal: {
     width: '700px',
     maxWidth: '94vw',
     maxHeight: '85vh',
-    backgroundColor: 'rgba(255, 255, 255, 0.85)',
-    borderRadius: '24px',
-    padding: '1.25rem 1.25rem 1rem',
-    boxShadow: '0 30px 80px rgba(15, 23, 42, 0.35)',
-    border: '1px solid rgba(255, 255, 255, 0.6)',
-    backdropFilter: 'blur(28px) saturate(160%)',
-    WebkitBackdropFilter: 'blur(28px) saturate(160%)',
+    backgroundColor: '#141414',
+    borderRadius: '16px',
+    padding: '1.5rem',
+    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)',
+    border: '1px solid #27272a',
     display: 'flex',
     flexDirection: 'column' as const,
   },
@@ -939,18 +1051,19 @@ const styles = {
   },
   planDescription: {
     fontSize: '0.9rem',
-    color: '#475569',
+    color: '#a1a1aa',
     marginBottom: '1rem',
     lineHeight: '1.5',
   },
   reasoningBox: {
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-    border: '1px solid rgba(59, 130, 246, 0.3)',
-    borderRadius: '12px',
+    backgroundColor: '#1a1a1a',
+    border: '1px solid #27272a',
+    borderRadius: '8px',
     padding: '0.75rem 1rem',
     marginBottom: '1rem',
     fontSize: '0.85rem',
-    color: '#1e40af',
+    color: '#ffffff',
+    lineHeight: '1.5',
   },
   paramsSection: {
     marginTop: '0.5rem',
@@ -958,7 +1071,7 @@ const styles = {
   paramsSectionTitle: {
     fontSize: '0.95rem',
     fontWeight: '600' as const,
-    color: '#0f172a',
+    color: '#ffffff',
     marginBottom: '0.75rem',
   },
   planModalActions: {
@@ -966,50 +1079,48 @@ const styles = {
     justifyContent: 'flex-end',
     gap: '0.75rem',
     marginTop: '1rem',
-    paddingTop: '0.75rem',
-    borderTop: '1px solid rgba(148, 163, 184, 0.25)',
+    paddingTop: '1rem',
+    borderTop: '1px solid #27272a',
   },
   exitButton: {
-    padding: '0.6rem 1.5rem',
-    borderRadius: '999px',
-    border: '2px solid rgba(239, 68, 68, 0.6)',
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    color: '#dc2626',
-    fontWeight: '600' as const,
+    padding: '10px 20px',
+    borderRadius: '8px',
+    border: '1px solid #27272a',
+    backgroundColor: '#1a1a1a',
+    color: '#a1a1aa',
+    fontWeight: '500' as const,
     cursor: 'pointer',
     transition: 'all 0.2s ease',
   },
   executeButton: {
-    padding: '0.6rem 1.5rem',
-    borderRadius: '999px',
-    border: '2px solid rgba(34, 197, 94, 0.6)',
-    backgroundColor: 'rgba(34, 197, 94, 0.2)',
-    color: '#16a34a',
+    padding: '10px 20px',
+    borderRadius: '8px',
+    border: 'none',
+    backgroundColor: '#C5F467',
+    color: '#0a0a0a',
     fontWeight: '600' as const,
     cursor: 'pointer',
     transition: 'all 0.2s ease',
   },
   loadingModal: {
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    borderRadius: '20px',
+    backgroundColor: '#141414',
+    borderRadius: '16px',
     padding: '2rem 3rem',
     display: 'flex',
     flexDirection: 'column' as const,
     alignItems: 'center',
     justifyContent: 'center',
-    boxShadow: '0 20px 60px rgba(15, 23, 42, 0.25)',
-    border: '1px solid rgba(255, 255, 255, 0.6)',
-    backdropFilter: 'blur(28px)',
-    WebkitBackdropFilter: 'blur(28px)',
+    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)',
+    border: '1px solid #27272a',
   },
   loadingSpinner: {
     fontSize: '2rem',
-    color: '#9333ea',
+    color: '#C5F467',
     marginBottom: '0.5rem',
   },
   loadingText: {
     fontSize: '0.95rem',
-    color: '#475569',
+    color: '#a1a1aa',
   },
 };
 

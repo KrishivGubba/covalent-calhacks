@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import Sidebar, { PageType } from './components/Sidebar';
 import UpdateButton from './components/UpdateButton';
 import AuthPage from './pages/AuthPage';
@@ -6,6 +7,7 @@ import SettingsPage from './pages/SettingsPage';
 import MCPPage from './pages/MCPPage';
 import MemoryPage from './pages/MemoryPage';
 import HistoryPage from './pages/HistoryPage';
+import type { ActionResultPayload } from '../utils/actionNotifications';
 
 // Must match the key used in AuthPage.tsx
 const USER_ID_KEY = 'covalent_user_id';
@@ -13,11 +15,45 @@ const USER_ID_KEY = 'covalent_user_id';
 const Dashboard: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<PageType>('settings');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  
+  // Track current page in a ref so handlePageChange can check without causing re-renders
+  const currentPageRef = useRef<PageType>('settings');
+
+  // Handle page changes with special handling for history tab
+  // Only increment refresh key when navigating TO history FROM a different page
+  const handlePageChange = useCallback((page: PageType) => {
+    if (page === 'history' && currentPageRef.current !== 'history') {
+      // Only force remount when coming from a different page
+      setHistoryRefreshKey(prev => prev + 1);
+    }
+    currentPageRef.current = page;
+    setCurrentPage(page);
+  }, []);
 
   // Check auth status on mount
   useEffect(() => {
     const userId = localStorage.getItem(USER_ID_KEY);
     setIsAuthenticated(!!userId);
+  }, []);
+
+  // Listen for action completion events and auto-navigate to history
+  useEffect(() => {
+    const unlistenPromise = listen<ActionResultPayload>('action-completed', (event) => {
+      console.log('📬 Action completed event received:', event.payload);
+      // Only navigate if not already on history page
+      // HistoryPage has its own listener to refresh data when already viewing it
+      if (currentPageRef.current !== 'history') {
+        setHistoryRefreshKey(prev => prev + 1);
+        currentPageRef.current = 'history';
+        setCurrentPage('history');
+      }
+      // If already on history, do nothing - HistoryPage's listener handles refresh
+    });
+    
+    return () => {
+      unlistenPromise.then(fn => fn());
+    };
   }, []);
 
   // Callback for when auth state changes (login/logout)
@@ -34,7 +70,8 @@ const Dashboard: React.FC = () => {
       case 'memory':
         return <MemoryPage />;
       case 'history':
-        return <HistoryPage />;
+        // Key forces re-mount to ensure fresh data fetch each time
+        return <HistoryPage key={`history-${historyRefreshKey}`} />;
       case 'auth':
         return <AuthPage onAuthChange={handleAuthChange} />;
       default:
@@ -45,7 +82,7 @@ const Dashboard: React.FC = () => {
   return (
     <div style={styles.dashboard}>
       <UpdateButton checkInterval={30 * 60 * 1000} />
-      <Sidebar currentPage={currentPage} onPageChange={setCurrentPage} />
+      <Sidebar currentPage={currentPage} onPageChange={handlePageChange} />
       <main style={styles.main}>
         {renderPage()}
       </main>

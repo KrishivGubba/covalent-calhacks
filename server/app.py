@@ -2066,12 +2066,35 @@ def get_action_history():
         # Cap limit to prevent huge queries
         limit = min(limit, 200)
         
+        # Ensure the action_history table exists
+        try:
+            tree.dao.execute_query("""
+                CREATE TABLE IF NOT EXISTS action_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action_uuid TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    action_data TEXT,
+                    creation_timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+                    node_uuid TEXT,
+                    status TEXT DEFAULT 'pending',
+                    result TEXT,
+                    error_message TEXT,
+                    duration_ms INTEGER
+                )
+            """)
+        except Exception:
+            pass  # Table likely already exists
+        
         records = tree.dao.get_action_history(
             limit=limit,
             offset=offset,
             status=status,
             action_type=action_type
         )
+        
+        # Handle case where records is None
+        if records is None:
+            records = []
         
         # Convert tuples to dicts
         history = []
