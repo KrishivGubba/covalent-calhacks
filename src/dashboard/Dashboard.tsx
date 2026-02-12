@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import Sidebar, { PageType } from './components/Sidebar';
 import UpdateButton from './components/UpdateButton';
@@ -16,13 +16,18 @@ const Dashboard: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<PageType>('settings');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  
+  // Track current page in a ref so handlePageChange can check without causing re-renders
+  const currentPageRef = useRef<PageType>('settings');
 
   // Handle page changes with special handling for history tab
+  // Only increment refresh key when navigating TO history FROM a different page
   const handlePageChange = useCallback((page: PageType) => {
-    if (page === 'history') {
-      // Increment refresh key to force HistoryPage remount
+    if (page === 'history' && currentPageRef.current !== 'history') {
+      // Only force remount when coming from a different page
       setHistoryRefreshKey(prev => prev + 1);
     }
+    currentPageRef.current = page;
     setCurrentPage(page);
   }, []);
 
@@ -36,14 +41,20 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     const unlistenPromise = listen<ActionResultPayload>('action-completed', (event) => {
       console.log('📬 Action completed event received:', event.payload);
-      // Auto-navigate to history page when action completes
-      handlePageChange('history');
+      // Only navigate if not already on history page
+      // HistoryPage has its own listener to refresh data when already viewing it
+      if (currentPageRef.current !== 'history') {
+        setHistoryRefreshKey(prev => prev + 1);
+        currentPageRef.current = 'history';
+        setCurrentPage('history');
+      }
+      // If already on history, do nothing - HistoryPage's listener handles refresh
     });
     
     return () => {
       unlistenPromise.then(fn => fn());
     };
-  }, [handlePageChange]);
+  }, []);
 
   // Callback for when auth state changes (login/logout)
   const handleAuthChange = (authenticated: boolean) => {

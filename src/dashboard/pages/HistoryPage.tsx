@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { listen } from '@tauri-apps/api/event';
 
 const BACKEND_URL = 'http://localhost:5001';
 
@@ -20,17 +21,35 @@ type TabType = 'all' | 'completed' | 'failed';
 const HistoryPage: React.FC = () => {
   const [actions, setActions] = useState<ActionHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false); // For background refresh indicator
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('all');
   const isMountedRef = useRef(true);
   const retryCountRef = useRef(0);
+  const hasLoadedOnceRef = useRef(false);
+  const mountTimeRef = useRef(Date.now()); // Track when component mounted
+  const isLoadingRef = useRef(false); // Prevent concurrent loads
 
-  const loadHistory = useCallback(async (isRetry = false) => {
+  const loadHistory = useCallback(async (isRetry = false, isBackgroundRefresh = false) => {
     if (!isMountedRef.current) return;
     
+    // Prevent concurrent loads (except retries which are part of the same load sequence)
+    if (!isRetry && isLoadingRef.current) {
+      console.log('📬 HistoryPage: Skipping load - already loading');
+      return;
+    }
+    
     if (!isRetry) {
-      setLoading(true);
+      isLoadingRef.current = true;
+      // Only show full loading spinner on initial load, not on background refresh
+      if (!hasLoadedOnceRef.current) {
+        setLoading(true);
+      } else if (isBackgroundRefresh) {
+        setIsRefreshing(true);
+      } else {
+        setLoading(true);
+      }
       retryCountRef.current = 0;
     }
     setError(null);
@@ -52,6 +71,7 @@ const HistoryPage: React.FC = () => {
       const data = await response.json();
       setActions(data.history || []);
       setError(null);
+      hasLoadedOnceRef.current = true;
     } catch (err) {
       if (!isMountedRef.current) return;
       
@@ -63,7 +83,7 @@ const HistoryPage: React.FC = () => {
         const delay = retryCountRef.current * 1000; // 1s, 2s, 3s
         setTimeout(() => {
           if (isMountedRef.current) {
-            loadHistory(true);
+            loadHistory(true, isBackgroundRefresh);
           }
         }, delay);
         return;
@@ -73,18 +93,48 @@ const HistoryPage: React.FC = () => {
     } finally {
       if (isMountedRef.current && !retryCountRef.current) {
         setLoading(false);
+        setIsRefreshing(false);
+        isLoadingRef.current = false;
       } else if (isMountedRef.current && retryCountRef.current >= 3) {
         setLoading(false);
+        setIsRefreshing(false);
+        isLoadingRef.current = false;
       }
     }
   }, []);
 
   useEffect(() => {
     isMountedRef.current = true;
+    mountTimeRef.current = Date.now();
     loadHistory();
     
     return () => {
       isMountedRef.current = false;
+      isLoadingRef.current = false;
+    };
+  }, [loadHistory]);
+
+  // Listen for action-completed events to refresh data when already on this page
+  useEffect(() => {
+    const unlistenPromise = listen('action-completed', () => {
+      // Ignore events that come within 1 second of mount (mount already triggers a load)
+      const timeSinceMount = Date.now() - mountTimeRef.current;
+      if (timeSinceMount < 1000) {
+        console.log('📬 HistoryPage: Ignoring event - too soon after mount');
+        return;
+      }
+      
+      console.log('📬 HistoryPage: Refreshing due to action-completed event');
+      // Small delay to ensure the action has been saved to the database
+      setTimeout(() => {
+        if (isMountedRef.current) {
+          loadHistory(false, true); // Background refresh - keeps existing data visible
+        }
+      }, 500);
+    });
+
+    return () => {
+      unlistenPromise.then(fn => fn());
     };
   }, [loadHistory]);
 
@@ -265,7 +315,15 @@ const HistoryPage: React.FC = () => {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <h1 style={styles.title}>Actions History</h1>
+        <div style={styles.titleRow}>
+          <h1 style={styles.title}>Actions History</h1>
+          {isRefreshing && (
+            <div style={styles.refreshingIndicator}>
+              <div style={styles.refreshingSpinner}></div>
+              <span>Refreshing...</span>
+            </div>
+          )}
+        </div>
         <p style={styles.subtitle}>
           View all actions executed by Covalent ({actions.length} actions)
         </p>
@@ -411,12 +469,36 @@ const styles: { [key: string]: React.CSSProperties } = {
   header: {
     marginBottom: '24px',
   },
+  titleRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '16px',
+  },
   title: {
     fontSize: '1.75rem',
     fontWeight: '600',
     color: '#ffffff',
     margin: '0 0 8px 0',
     letterSpacing: '-0.02em',
+  },
+  refreshingIndicator: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    fontSize: '0.8rem',
+    color: '#C5F467',
+    padding: '4px 12px',
+    backgroundColor: 'rgba(197, 244, 103, 0.1)',
+    borderRadius: '12px',
+    marginBottom: '8px',
+  },
+  refreshingSpinner: {
+    width: '12px',
+    height: '12px',
+    border: '2px solid rgba(197, 244, 103, 0.3)',
+    borderTopColor: '#C5F467',
+    borderRadius: '50%',
+    animation: 'spin 0.8s linear infinite',
   },
   subtitle: {
     fontSize: '0.95rem',
