@@ -32,10 +32,13 @@ from auth_dao import AuthDAO
 load_dotenv()
 
 # Project root for MCP server
-_PROJECT_ROOT = Path(__file__).resolve().parent
+if getattr(sys, 'frozen', False):
+    _PROJECT_ROOT = Path(sys._MEIPASS)
+else:
+    _PROJECT_ROOT = Path(__file__).resolve().parent
 
-# Database path for auth
-_DB_PATH = _PROJECT_ROOT / "context-engine" / "graph.db"
+# Database path for auth - use GRAPH_DB_PATH env var if set (e.g. by app.py or Tauri)
+_DB_PATH = Path(os.environ.get('GRAPH_DB_PATH', str(_PROJECT_ROOT / "context-engine" / "graph.db")))
 
 # Initialize the Gateway Client (talks to Lambda -> Bedrock)
 _gateway_client = None

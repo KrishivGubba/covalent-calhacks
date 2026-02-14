@@ -4,6 +4,7 @@ Provides a unified interface to switch between different LLM providers (Claude, 
 """
 
 import os
+import sys
 import yaml
 import numpy as np
 from pathlib import Path
@@ -15,8 +16,11 @@ class ModelConfig:
     
     def __init__(self, config_path: Optional[str] = None):
         if config_path is None:
-            # Default to model_config.yml in repo root
-            repo_root = Path(__file__).parent.parent
+            # Default to model_config.yml in repo root (or bundle root when frozen)
+            if getattr(sys, 'frozen', False):
+                repo_root = Path(sys._MEIPASS)
+            else:
+                repo_root = Path(__file__).parent.parent
             config_path = repo_root / "model_config.yml"
         
         self.config_path = Path(config_path)
