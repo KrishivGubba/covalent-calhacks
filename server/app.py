@@ -5,19 +5,24 @@ import sys
 import time
 import asyncio
 import json
+import platform
 from datetime import datetime, timedelta
 
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# Load .env from project root
-load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+# Load .env - in dev mode load from project root; in frozen mode env vars are set by Tauri
+if not getattr(sys, 'frozen', False):
+    load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+else:
+    load_dotenv()  # pick up any .env next to the executable, or rely on env vars
 
 # Add context-engine to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'context-engine'))
 from graph import Tree
 from auth_dao import AuthDAO
 from integration_dao import IntegrationDAO
+from init_db import create_schema, ensure_parent_dir
 
 # Import action executor for MCP integration
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -33,6 +38,20 @@ from action_executor import (
 # Import display schema registry for tool approval UI
 from covalent_mcp.tools import get_display_schema
 from covalent_mcp.toolclasses.base import resolve_display_fields
+
+
+# =============================================================================
+# DATA DIRECTORY & DATABASE AUTO-INITIALIZATION
+# =============================================================================
+
+def _get_data_dir():
+    """Get the user data directory for Covalent."""
+    data_dir = os.environ.get('COVALENT_DATA_DIR')
+    if data_dir:
+        return data_dir
+    if platform.system() == 'Darwin':
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Covalent")
+    return os.path.join(os.path.expanduser("~"), ".covalent")
 
 
 # =============================================================================
@@ -112,8 +131,19 @@ def log_request(response):
         response.headers["X-Process-Time"] = f"{duration:.3f}s"
     return response
 
-# Connect to SQLite Database
-db_path = os.path.join(os.path.dirname(__file__), '..', 'context-engine', 'graph.db')
+# Connect to SQLite Database - use GRAPH_DB_PATH env var, or default to user data dir
+DATA_DIR = _get_data_dir()
+db_path = os.environ.get('GRAPH_DB_PATH', os.path.join(DATA_DIR, 'graph.db'))
+
+# Auto-initialize database if it doesn't exist
+if not os.path.exists(db_path):
+    ensure_parent_dir(db_path)
+    with sqlite3.connect(db_path) as conn:
+        create_schema(conn)
+    print(f"Initialized database at: {db_path}")
+
+# Set env var so downstream modules (MCP tools, etc.) can find the DB
+os.environ.setdefault('GRAPH_DB_PATH', db_path)
 
 tree = Tree(db_path)
 
@@ -149,7 +179,10 @@ github_auth_pending = {}
 notion_auth_pending = {}
 
 # HTML templates directory
-HTML_TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'htmlstuff')
+if getattr(sys, 'frozen', False):
+    HTML_TEMPLATES_DIR = os.path.join(sys._MEIPASS, 'server', 'htmlstuff')
+else:
+    HTML_TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'htmlstuff')
 
 
 def load_html_template(filename, replacements=None):

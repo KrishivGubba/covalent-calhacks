@@ -7,6 +7,7 @@ graph construction settings.
 """
 
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -69,9 +70,12 @@ class GraphConfig:
         self._config = {}
 
         if config_path is None:
-            # Default to model_config.yml in parent directory
-            current_dir = Path(__file__).parent
-            config_path = current_dir.parent / "model_config.yml"
+            # Default to model_config.yml in parent directory (or bundle root when frozen)
+            if getattr(sys, 'frozen', False):
+                config_path = Path(sys._MEIPASS) / "model_config.yml"
+            else:
+                current_dir = Path(__file__).parent
+                config_path = current_dir.parent / "model_config.yml"
         else:
             config_path = Path(config_path)
 

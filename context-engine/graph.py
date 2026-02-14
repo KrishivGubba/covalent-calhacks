@@ -15,7 +15,11 @@ from graph_config import GraphConfig
 # Add parent directory to path to import LLMGraph
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+# Load .env - in dev mode load from project root; in frozen mode env vars are set by Tauri
+if not getattr(sys, 'frozen', False):
+    load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+else:
+    load_dotenv()
 
 class Node:
     def __init__(self, node_uuid=None, metadata=None, actions=None,
