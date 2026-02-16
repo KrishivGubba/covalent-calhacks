@@ -1,4 +1,4 @@
-import React, { useState, memo } from 'react';
+import React, { useState, memo, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Action, ActionPlan, ProposedAction, ActionDisplay, ActionResult, ExecutionSummary, ExecutionResponse } from './SuggestedActions';
 import { disableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
