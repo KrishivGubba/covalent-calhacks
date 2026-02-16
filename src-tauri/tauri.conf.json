@@ -82,11 +82,12 @@
         "resizable": true,
         "visible": false,
         "center": true,
-        "contentProtected": false
+        "contentProtected": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:* https://*.auth0.com https://*.amazonaws.com; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;",
+      "dangerousDisableAssetCspModification": false
     }
   },
   "bundle": {

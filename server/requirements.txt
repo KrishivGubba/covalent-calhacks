@@ -12,8 +12,10 @@ google-auth-oauthlib
 google-auth-httplib2
 fastmcp
 
-# Database
-# sqlite3 is part of Python's standard library (no pip install needed)
+# Database Encryption
+# SQLCipher: use sqlcipher3-wheels for macOS/Windows (pre-built); or brew install sqlcipher + pip install pysqlcipher3
+sqlcipher3-wheels>=0.5.0
+keyring>=24.0.0           # macOS Keychain integration for secure key storage
 
 # Agent-S Dependencies (installed separately from Agent-S-fork)
 # See ../Agent-S-fork/requirements.txt for complete Agent-S dependencies

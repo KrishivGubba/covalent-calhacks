@@ -11,15 +11,28 @@ This script provides multiple ways to visualize the graph:
 import os
 import sys
 import json
-import sqlite3
 from collections import defaultdict
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Use SQLCipher for encrypted database
+try:
+    from sqlcipher3 import dbapi2 as sqlite3
+except ImportError:
+    try:
+        from pysqlcipher3 import dbapi2 as sqlite3
+    except ImportError:
+        import sqlite3  # fallback to stdlib (will fail on encrypted DB)
+
 def get_graph_data(db_path):
-    """Load graph data from SQLite database."""
+    """Load graph data from SQLite database (supports encrypted DB)."""
     conn = sqlite3.connect(db_path)
+    try:
+        from security.key_manager import get_db_encryption_key
+        conn.execute(f"PRAGMA key = '{get_db_encryption_key()}'")
+    except ImportError:
+        pass  # no key_manager: assume unencrypted
     cursor = conn.cursor()
     
     # Get all nodes

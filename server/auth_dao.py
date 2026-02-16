@@ -1,10 +1,33 @@
 """
 Data Access Object for Auth operations.
 Handles OAuth state, tokens, and user sessions in SQLite.
+
+Database is encrypted using SQLCipher. Encryption key is stored in macOS Keychain.
 """
-import sqlite3
+import os
+import sys
 import json
 from typing import Optional, Dict, Any
+
+# Use SQLCipher for encrypted database access
+try:
+    from sqlcipher3 import dbapi2 as sqlite3
+except ImportError:
+    try:
+        from pysqlcipher3 import dbapi2 as sqlite3
+    except ImportError:
+        raise ImportError(
+            "SQLCipher not found. Install with: pip install sqlcipher3-wheels  "
+            "(macOS/Windows). Linux: pip install pysqlcipher3-binary. "
+            "Or with Homebrew: brew install sqlcipher && pip install pysqlcipher3"
+        )
+
+# Add context-engine to path for security module access
+_context_engine_path = os.path.join(os.path.dirname(__file__), '..', 'context-engine')
+if _context_engine_path not in sys.path:
+    sys.path.insert(0, _context_engine_path)
+
+from security.key_manager import get_db_encryption_key
 
 
 class AuthDAO:
@@ -12,10 +35,17 @@ class AuthDAO:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
+        # Set secure file permissions on database if it exists
+        if os.path.exists(db_path):
+            os.chmod(db_path, 0o600)
 
     def _conn(self) -> sqlite3.Connection:
-        """Create a new connection (short-lived for thread safety)."""
-        return sqlite3.connect(self.db_path, timeout=10.0)
+        """Create a new encrypted connection (short-lived for thread safety)."""
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        # Set encryption key before any other operations
+        key = get_db_encryption_key()
+        conn.execute(f"PRAGMA key = '{key}'")
+        return conn
 
     def execute_query(self, query: str, params: tuple = ()) -> list:
         """Execute a query and return results. Auto-commits."""

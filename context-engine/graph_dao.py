@@ -1,18 +1,39 @@
 
 '''
 Data Access Object for Graph operations. Used to load graph data from SQlite DB
+
+Database is encrypted using SQLCipher. Encryption key is stored in macOS Keychain.
 '''
 import os
-import sqlite3
+
+# Use SQLCipher for encrypted database access
+try:
+    from sqlcipher3 import dbapi2 as sqlite3
+except ImportError:
+    try:
+        from pysqlcipher3 import dbapi2 as sqlite3
+    except ImportError:
+        raise ImportError(
+            "SQLCipher not found. Install with: pip install sqlcipher3-wheels  "
+            "(macOS/Windows). Linux: pip install pysqlcipher3-binary. "
+            "Or with Homebrew: brew install sqlcipher && pip install pysqlcipher3"
+        )
+
+from security.key_manager import get_db_encryption_key
+
 
 class GraphDAO:
     def __init__(self, db_path):
         '''
         Initialize the DAO with a SQLite connection.
+        
+        Database is encrypted using SQLCipher with key from macOS Keychain.
+        File permissions are set to 0o600 (owner read/write only) for security.
         '''
-        # Ensure the database file has write permissions
+        # Set secure file permissions (owner read/write only)
+        # This prevents other users on the system from accessing the database
         if os.path.exists(db_path):
-            os.chmod(db_path, 0o666)
+            os.chmod(db_path, 0o600)
         
         # Open database with write access
         self.conn = sqlite3.connect(
@@ -20,7 +41,14 @@ class GraphDAO:
             check_same_thread=False,
             timeout=10.0  # Wait up to 10 seconds if database is locked
         )
+        
+        # CRITICAL: Set encryption key BEFORE any other operations
+        # The key must be set immediately after connection
+        key = get_db_encryption_key()
+        self.conn.execute(f"PRAGMA key = '{key}'")
+        
         # Use DELETE mode (default) to avoid creating -shm and -wal files
+        # This prevents unencrypted temporary files from being created
         self.conn.execute('PRAGMA journal_mode=DELETE')
         self.cursor = self.conn.cursor()
 
@@ -1465,9 +1493,10 @@ if __name__ == "__main__":
     # Initialize test data
     test_dao = TestGraphDAO()
     
-    # Connect to the database
+    # Connect to the database (encrypted)
     db_path = os.path.join(os.path.dirname(__file__), "graph.db")
     conn = sqlite3.connect(db_path)
+    conn.execute(f"PRAGMA key = '{get_db_encryption_key()}'")
     cursor = conn.cursor()
     
     # Enable foreign keys

@@ -1,5 +1,4 @@
 from flask import Flask, request, jsonify, g
-import sqlite3
 import os
 import sys
 import time
@@ -23,6 +22,26 @@ from graph import Tree
 from auth_dao import AuthDAO
 from integration_dao import IntegrationDAO
 from init_db import create_schema, ensure_parent_dir
+
+# SQLCipher for encrypted DB (same as DAOs)
+try:
+    from sqlcipher3 import dbapi2 as sqlite3
+except ImportError:
+    try:
+        from pysqlcipher3 import dbapi2 as sqlite3
+    except ImportError:
+        raise ImportError(
+            "SQLCipher not found. Install with: pip install sqlcipher3-wheels (macOS/Windows) or pysqlcipher3-binary (Linux)"
+        )
+
+
+def _encrypted_conn(path=None, timeout=10.0):
+    """Return a connection to the encrypted database with PRAGMA key set."""
+    from security.key_manager import get_db_encryption_key
+    p = path or db_path
+    conn = sqlite3.connect(p, timeout=timeout)
+    conn.execute(f"PRAGMA key = '{get_db_encryption_key()}'")
+    return conn
 
 # Import action executor for MCP integration
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -138,9 +157,10 @@ db_path = os.environ.get('GRAPH_DB_PATH', os.path.join(DATA_DIR, 'graph.db'))
 # Auto-initialize database if it doesn't exist
 if not os.path.exists(db_path):
     ensure_parent_dir(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with _encrypted_conn() as conn:
         create_schema(conn)
-    print(f"Initialized database at: {db_path}")
+    os.chmod(db_path, 0o600)
+    print(f"Initialized encrypted database at: {db_path}")
 
 # Set env var so downstream modules (MCP tools, etc.) can find the DB
 os.environ.setdefault('GRAPH_DB_PATH', db_path)
@@ -198,7 +218,7 @@ def load_html_template(filename, replacements=None):
 
 def _ensure_auth_table_schema():
     """Ensure auth_pending table has all required columns (migration for existing DBs)."""
-    conn = sqlite3.connect(db_path, timeout=10.0)
+    conn = _encrypted_conn()
     try:
         cursor = conn.execute("PRAGMA table_info(auth_pending)")
         existing_cols = {row[1] for row in cursor.fetchall()}
@@ -1440,7 +1460,7 @@ def graph_data():
     Return full graph data (nodes, edges, actions, data entries) for UI visualization.
     """
     try:
-        conn = sqlite3.connect(db_path, timeout=10.0)
+        conn = _encrypted_conn()
         cursor = conn.cursor()
 
         # Get all nodes
@@ -1531,7 +1551,7 @@ def graph_reset():
             pass
 
         # Connect directly and clear only graph-related tables
-        conn = sqlite3.connect(db_path, timeout=10.0)
+        conn = _encrypted_conn()
         cursor = conn.cursor()
 
         # Delete all data from graph tables (order matters due to foreign keys)

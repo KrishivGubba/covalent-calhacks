@@ -1,6 +1,29 @@
+"""
+Database initialization script for Covalent.
+
+Creates an encrypted SQLite database using SQLCipher.
+Encryption key is stored in macOS Keychain.
+
+Usage:
+    python init_db.py [--db-path path/to/database.db]
+"""
 import argparse
 import os
-import sqlite3
+
+# Use SQLCipher for encrypted database
+try:
+    from sqlcipher3 import dbapi2 as sqlite3
+except ImportError:
+    try:
+        from pysqlcipher3 import dbapi2 as sqlite3
+    except ImportError:
+        raise ImportError(
+            "SQLCipher not found. Install with: pip install sqlcipher3-wheels  "
+            "(macOS/Windows). Linux: pip install pysqlcipher3-binary. "
+            "Or with Homebrew: brew install sqlcipher && pip install pysqlcipher3"
+        )
+
+from security.key_manager import get_db_encryption_key
 
 
 def create_schema(conn: sqlite3.Connection) -> None:
@@ -191,19 +214,45 @@ def ensure_parent_dir(path: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Initialize encrypted SQLite database for Covalent"
+    )
     parser.add_argument(
         "--db-path",
         default=os.path.join(os.path.dirname(__file__), "graph.db"),
+        help="Path to the database file (default: context-engine/graph.db)"
     )
     args = parser.parse_args()
 
     ensure_parent_dir(args.db_path)
-
-    with sqlite3.connect(args.db_path) as conn:
-        create_schema(conn)
-
-    print(f"Initialized SQLite database at: {args.db_path}")
+    
+    # Check if database already exists
+    db_exists = os.path.exists(args.db_path)
+    if db_exists:
+        print(f"⚠️  Database already exists at: {args.db_path}")
+        print("   To create a fresh database, delete the existing one first.")
+    
+    # Get encryption key from Keychain (creates one if doesn't exist)
+    print("🔑 Retrieving encryption key from Keychain...")
+    key = get_db_encryption_key()
+    
+    # Create encrypted database connection
+    conn = sqlite3.connect(args.db_path)
+    
+    # CRITICAL: Set encryption key BEFORE any other operations
+    conn.execute(f"PRAGMA key = '{key}'")
+    
+    # Create schema
+    create_schema(conn)
+    conn.close()
+    
+    # Set secure file permissions (owner read/write only)
+    os.chmod(args.db_path, 0o600)
+    
+    print(f"✅ Initialized encrypted SQLite database at: {args.db_path}")
+    print(f"🔒 Database is encrypted with SQLCipher (AES-256)")
+    print(f"🔑 Encryption key stored in macOS Keychain")
+    print(f"📁 File permissions set to 0o600 (owner read/write only)")
 
 
 if __name__ == "__main__":
