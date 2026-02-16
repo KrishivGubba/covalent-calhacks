@@ -579,6 +579,41 @@ fn open_dashboard_history(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+// Open main window (FloatingAssistant)
+#[tauri::command]
+fn open_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    println!("🪟 Opening main window");
+    if let Some(window) = app.get_webview_window("main") {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Err("Main window not found".to_string())
+    }
+}
+
+// Check if any Covalent window is currently focused
+#[tauri::command]
+fn is_covalent_focused(app: tauri::AppHandle) -> Result<bool, String> {
+    // Check all Covalent windows to see if any are focused
+    let window_labels = vec!["main", "dashboard", "ghost-text", "completion-popup"];
+    
+    for label in window_labels {
+        if let Some(window) = app.get_webview_window(label) {
+            // Check if window is visible and focused
+            if let Ok(is_focused) = window.is_focused() {
+                if is_focused {
+                    println!("🔍 Window '{}' is focused", label);
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    
+    println!("🔍 No Covalent window is focused");
+    Ok(false)
+}
+
 #[tauri::command]
 fn get_mcp_integrations() -> Result<Vec<serde_json::Value>, String> {
     // TODO: Fetch actual MCP integrations from Composio/backend
@@ -988,7 +1023,9 @@ pub fn run() {
             set_excluded_apps,
             get_auth_status,
             get_mcp_integrations,
-            open_dashboard_history
+            open_dashboard_history,
+            open_main_window,
+            is_covalent_focused
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
