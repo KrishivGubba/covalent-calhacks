@@ -2,7 +2,7 @@ import React, { useState, memo, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Action, ActionPlan, ProposedAction, ActionDisplay, ActionResult, ExecutionSummary, ExecutionResponse } from './SuggestedActions';
 import { disableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
-import { notifyActionResult } from '../utils/actionNotifications';
+import { notifyPlanReady, notifyExecutionStatus } from '../utils/actionNotifications';
 
 interface FloatingAssistantProps {
   actions: Action[];
@@ -144,6 +144,9 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
         if (plan.proposed_action?.parameters) {
           setEditableParams({ ...plan.proposed_action.parameters });
         }
+        
+        // Send notification if app is not focused
+        await notifyPlanReady(action.title, action.uuid, plan, paramsMap);
       } catch (error) {
         console.error(`❌ Action planning failed:`, error);
         setPlanError(String(error));
@@ -203,20 +206,20 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
         if (response.summary.failed === 0) {
           setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
           // Send notification for successful execution
-          await notifyActionResult(planningAction.title, true);
+          await notifyExecutionStatus(planningAction.title, true);
         } else if (response.summary.succeeded === 0) {
           setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'idle' }));
           // Send notification for failed execution
-          await notifyActionResult(planningAction.title, false, 'All actions failed');
+          await notifyExecutionStatus(planningAction.title, false, 'All actions failed');
         } else {
           setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
           // Send notification for partial success
-          await notifyActionResult(planningAction.title, true, `${response.summary.succeeded}/${response.summary.total} succeeded`);
+          await notifyExecutionStatus(planningAction.title, true, `${response.summary.succeeded}/${response.summary.total} succeeded`);
         }
       } else {
         if (response.status === 'success') {
           setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
-          await notifyActionResult(planningAction.title, true);
+          await notifyExecutionStatus(planningAction.title, true);
         } else {
           setPlanError(response.error || 'Unknown error');
           setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'idle' }));
@@ -228,7 +231,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
       setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'idle' }));
       
       // Send notification for failed execution
-      await notifyActionResult(planningAction.title, false, String(error));
+      await notifyExecutionStatus(planningAction.title, false, String(error));
     } finally {
       setIsExecuting(false);
       if (!hasResults) {

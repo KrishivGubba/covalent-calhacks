@@ -4,6 +4,7 @@ import FloatingAssistant from './components/FloatingAssistant';
 import CompletionPopup from './components/CompletionPopup';
 import type { Action } from './components/SuggestedActions';
 import { enableContextCollection, disableContextCollection, getContextCollectionStatus } from './utils/contextControl';
+import { initializeNotifications, setupNotificationActionListener } from './utils/actionNotifications';
 import './styles.css';
 
 // Fetch suggested actions from Tauri backend
@@ -49,6 +50,11 @@ function App() {
   useEffect(() => {
     const initialize = async () => {
       try {
+        // Initialize notification system
+        await initializeNotifications();
+        await setupNotificationActionListener();
+        console.log('✅ Notification system initialized');
+
         // Load suggested actions
         const fetchedActions = await fetchSuggestedActions();
         setActions(fetchedActions);

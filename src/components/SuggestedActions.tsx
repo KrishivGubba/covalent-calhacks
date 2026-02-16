@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { disableContextCollection, enableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
-import { notifyActionResult } from '../utils/actionNotifications';
+import { disableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
+import { notifyPlanReady, notifyExecutionStatus } from '../utils/actionNotifications';
 
 export interface Action {
   id: string;
@@ -200,6 +200,9 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
           setEditableParams({ ...plan.proposed_action.parameters });
         }
         
+        // Send notification if app is not focused
+        await notifyPlanReady(action.title, action.uuid, plan, paramsMap);
+        
         // Keep status as 'playing' until user confirms or cancels
       } catch (error) {
         console.error(`❌ Action planning failed:`, error);
@@ -271,25 +274,25 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
           console.log(`✅ All ${response.summary.total} actions executed successfully`);
           setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
           // Send notification for successful execution
-          await notifyActionResult(planningAction.title, true);
+          await notifyExecutionStatus(planningAction.title, true);
         } else if (response.summary.succeeded === 0) {
           console.log(`❌ All ${response.summary.total} actions failed`);
           setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'error' }));
           // Send notification for failed execution
-          await notifyActionResult(planningAction.title, false, 'All actions failed');
+          await notifyExecutionStatus(planningAction.title, false, 'All actions failed');
         } else {
           console.log(`⚠️ Partial success: ${response.summary.succeeded}/${response.summary.total} succeeded`);
           // Mark as done with partial success (user can see details)
           setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
           // Send notification for partial success
-          await notifyActionResult(planningAction.title, true, `${response.summary.succeeded}/${response.summary.total} succeeded`);
+          await notifyExecutionStatus(planningAction.title, true, `${response.summary.succeeded}/${response.summary.total} succeeded`);
         }
       } else {
         // Legacy single-action response - no results modal, just close
         if (response.status === 'success') {
           console.log(`✅ Action executed successfully`);
           setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
-          await notifyActionResult(planningAction.title, true);
+          await notifyExecutionStatus(planningAction.title, true);
         } else {
           console.error(`❌ Action failed:`, response.error);
           setPlanError(response.error || 'Unknown error');
@@ -302,7 +305,7 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
       setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'error' }));
       
       // Send notification for failed execution
-      await notifyActionResult(planningAction.title, false, String(error));
+      await notifyExecutionStatus(planningAction.title, false, String(error));
     } finally {
       setIsExecuting(false);
       // Don't clear the modal if we have results to show
