@@ -669,6 +669,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Start Flask server
             let app_dir = if cfg!(dev) {
@@ -687,25 +688,22 @@ pub fn run() {
             
             println!("App directory: {:?}", app_dir);
             
-            let flask_server = FlaskServer::new();
-            
-            match flask_server.start(app_dir.clone()) {
-                Ok(_) => println!("✓ Flask server started successfully"),
-                Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
-            }
+            // NOTE: Flask/MCP/Ollama servers commented out for manual startup during dev
+            // let flask_server = FlaskServer::new();
+            // 
+            // match flask_server.start(app_dir.clone()) {
+            //     Ok(_) => println!("✓ Flask server started successfully"),
+            //     Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
+            // }
+            // app.manage(flask_server);
 
-            // Store flask server in app state so it stays alive
-            app.manage(flask_server);
-
-            // Start Ollama serve (for local LLM inference)
-            println!("🦙 Starting Ollama serve...");
-            let ollama_server = OllamaServer::new();
-            match ollama_server.start() {
-                Ok(_) => {},
-                Err(e) => eprintln!("⚠️  Ollama startup issue: {}", e),
-            }
-            // Store ollama server in app state so it gets cleaned up on exit
-            app.manage(ollama_server);
+            // println!("🦙 Starting Ollama serve...");
+            // let ollama_server = OllamaServer::new();
+            // match ollama_server.start() {
+            //     Ok(_) => {},
+            //     Err(e) => eprintln!("⚠️  Ollama startup issue: {}", e),
+            // }
+            // app.manage(ollama_server);
             
             // Create and manage context state
             let context_state = ContextState::new();

@@ -4,10 +4,28 @@ Filesystem MCP Tools & Resources - Local file and directory operations.
 Write operations (tools): write_file, create_directory, delete_path, move_path, copy_path
 Read operations (resources): read_file, list_directory, file_exists, grep, read_pdf
 
-All operations are scoped to a configurable root (FILESYSTEM_ROOT or cwd).
+All operations are scoped to a user-chosen root directory persisted in the database.
+Raises RuntimeError if the user hasn't connected a folder yet.
 """
 import json
+import os
+import sys
+from pathlib import Path
 from typing import Dict, Optional
+
+# Use SQLCipher for encrypted database access (same as integration_dao / graph_dao)
+try:
+    from sqlcipher3 import dbapi2 as sqlite3
+except ImportError:
+    try:
+        from pysqlcipher3 import dbapi2 as sqlite3
+    except ImportError:
+        import sqlite3  # type: ignore[no-redef]
+
+# Add context-engine to path so we can import the key manager
+_context_engine_path = str(Path(__file__).resolve().parent.parent.parent.parent / "context-engine")
+if _context_engine_path not in sys.path:
+    sys.path.insert(0, _context_engine_path)
 
 from covalent_mcp.toolclasses.base import (
     MCPToolModule,
@@ -16,6 +34,36 @@ from covalent_mcp.toolclasses.base import (
 )
 from covalent_mcp.toolclasses.filesystem.filesystem_client import FilesystemClient
 from fastmcp import FastMCP
+
+
+def _get_filesystem_root_from_db() -> Optional[str]:
+    """Read the filesystem root path from the integration_tokens table in graph.db."""
+    # Use GRAPH_DB_PATH env var if set, otherwise fall back to context-engine/graph.db
+    project_root = Path(__file__).resolve().parent.parent.parent.parent
+    db_path = Path(os.environ.get("GRAPH_DB_PATH", str(project_root / "context-engine" / "graph.db")))
+    if not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=5.0)
+        # Set encryption key if using SQLCipher
+        try:
+            from security.key_manager import get_db_encryption_key
+            key = get_db_encryption_key()
+            conn.execute(f"PRAGMA key = '{key}'")
+        except ImportError:
+            pass  # No SQLCipher / key_manager available — DB is unencrypted
+        row = conn.execute(
+            "SELECT provider_metadata FROM integration_tokens WHERE provider = 'filesystem'"
+        ).fetchone()
+        conn.close()
+        if row and row[0]:
+            metadata = json.loads(row[0])
+            root = metadata.get("root_path")
+            if root and os.path.isdir(root):
+                return root
+    except Exception:
+        pass
+    return None
 
 
 class FilesystemToolModule(MCPToolModule):
@@ -38,10 +86,32 @@ class FilesystemToolModule(MCPToolModule):
 
     def __init__(self) -> None:
         self._client: Optional[FilesystemClient] = None
+        self._client_root: Optional[str] = None  # Track which root the client was created with
 
     def _ensure_client(self) -> FilesystemClient:
-        if self._client is None:
-            self._client = FilesystemClient()
+        """
+        Get or create the filesystem client.
+        Re-creates the client if the configured root has changed (e.g. user
+        connected a new folder via the UI).
+
+        Raises:
+            RuntimeError: If no filesystem root has been configured (user must
+                          pick a folder via the Integrations page first).
+        """
+        current_root = _get_filesystem_root_from_db()
+
+        if not current_root:
+            raise RuntimeError(
+                "Filesystem not connected. Please choose a folder in the Integrations page first."
+            )
+
+        if self._client is not None and self._client_root == current_root:
+            return self._client
+
+        # Root changed (or first init) -- create new client
+        self._client = FilesystemClient(root=current_root)
+        self._client_root = current_root
+        print(f"📁 FilesystemClient initialized with root: {self._client.root}")
         return self._client
 
     def get_display_schemas(self) -> Dict[str, ToolDisplaySchema]:
@@ -97,7 +167,7 @@ class FilesystemToolModule(MCPToolModule):
 
     def register(self, mcp: FastMCP) -> None:
         """Register filesystem tools (write operations) with the MCP server."""
-        client = self._ensure_client()
+        module = self
 
         @mcp.tool()
         def write_file(
@@ -118,6 +188,7 @@ class FilesystemToolModule(MCPToolModule):
             Returns:
                 Dict with success and message (or error).
             """
+            client = module._ensure_client()
             ok = client.write_file(path, content, encoding=encoding, create_dirs=create_dirs)
             if not ok:
                 return {"success": False, "error": "Write failed (path invalid or outside root)"}
@@ -135,6 +206,7 @@ class FilesystemToolModule(MCPToolModule):
             Returns:
                 Dict with success and message (or error).
             """
+            client = module._ensure_client()
             ok = client.create_directory(path, parents=parents)
             if not ok:
                 return {"success": False, "error": "Create failed (path invalid or outside root)"}
@@ -152,6 +224,7 @@ class FilesystemToolModule(MCPToolModule):
             Returns:
                 Dict with success and message (or error).
             """
+            client = module._ensure_client()
             ok, err = client.delete_path(path, recursive=recursive)
             if not ok:
                 return {"success": False, "error": err or "Delete failed"}
@@ -169,6 +242,7 @@ class FilesystemToolModule(MCPToolModule):
             Returns:
                 Dict with success and message (or error).
             """
+            client = module._ensure_client()
             ok, err = client.move_path(src, dst)
             if not ok:
                 return {"success": False, "error": err or "Move failed"}
@@ -186,6 +260,7 @@ class FilesystemToolModule(MCPToolModule):
             Returns:
                 Dict with success and message (or error).
             """
+            client = module._ensure_client()
             ok, err = client.copy_path(src, dst)
             if not ok:
                 return {"success": False, "error": err or "Copy failed"}
@@ -193,7 +268,7 @@ class FilesystemToolModule(MCPToolModule):
 
     def register_resources(self, mcp: FastMCP) -> None:
         """Register filesystem resources (read-only operations) with the MCP server."""
-        client = self._ensure_client()
+        module = self
 
         @mcp.resource("fs://read_file{?path,encoding}")
         def read_file(path: str = "", encoding: str = "utf-8") -> str:
@@ -209,6 +284,7 @@ class FilesystemToolModule(MCPToolModule):
             Returns:
                 JSON string with success and content (or error message).
             """
+            client = module._ensure_client()
             content = client.read_file(path, encoding=encoding)
             if content is None:
                 return json.dumps({"success": False, "error": "File not found or outside allowed root", "content": ""})
@@ -227,6 +303,7 @@ class FilesystemToolModule(MCPToolModule):
             Returns:
                 JSON string with success and entries (list of {name, path, is_dir}).
             """
+            client = module._ensure_client()
             entries = client.list_directory(path)
             if entries is None:
                 return json.dumps({"success": False, "error": "Directory not found or outside allowed root", "entries": []})
@@ -245,6 +322,7 @@ class FilesystemToolModule(MCPToolModule):
             Returns:
                 JSON string with success and exists (bool).
             """
+            client = module._ensure_client()
             exists = client.file_exists(path)
             return json.dumps({"success": True, "exists": exists})
 
@@ -273,6 +351,7 @@ class FilesystemToolModule(MCPToolModule):
             Returns:
                 JSON string with success, matches, and truncated flag.
             """
+            client = module._ensure_client()
             out = client.search_directory(
                 path=path,
                 pattern=pattern,
@@ -304,6 +383,7 @@ class FilesystemToolModule(MCPToolModule):
             Returns:
                 JSON string with structured PDF extraction (pages, total_pages, etc).
             """
+            client = module._ensure_client()
             result = client.read_pdf(path)
             if result is None:
                 return json.dumps({

@@ -150,9 +150,9 @@ def log_request(response):
         response.headers["X-Process-Time"] = f"{duration:.3f}s"
     return response
 
-# Connect to SQLite Database - use GRAPH_DB_PATH env var, or default to user data dir
-DATA_DIR = _get_data_dir()
-db_path = os.environ.get('GRAPH_DB_PATH', os.path.join(DATA_DIR, 'graph.db'))
+# Connect to SQLite Database - use GRAPH_DB_PATH env var, or default to context-engine/graph.db
+_default_db_path = os.path.join(os.path.dirname(__file__), '..', 'context-engine', 'graph.db')
+db_path = os.environ.get('GRAPH_DB_PATH', os.path.abspath(_default_db_path))
 
 # Auto-initialize database if it doesn't exist
 if not os.path.exists(db_path):
@@ -248,6 +248,13 @@ auth_dao.ensure_sessions_table()  # Create user_sessions table if needed
 integration_dao = IntegrationDAO(db_path)
 integration_dao.ensure_table()  # Create integration_tokens table if needed
 
+# Log filesystem root status on startup (MCP server reads directly from DB)
+_saved_fs_root = integration_dao.get_filesystem_root()
+if _saved_fs_root:
+    print(f"📁 Filesystem root configured: {_saved_fs_root}")
+else:
+    print(f"📁 Filesystem not connected (user must choose a folder in Integrations)")
+
 
 @app.route("/screen", methods=["POST"])
 def screen():
@@ -325,7 +332,7 @@ FULL CONTEXT DATA (JSON):
                 "id": "filesystem",
                 "name": "Filesystem",
                 "description": "Access local files and directories",
-                "connected": True,
+                "connected": statuses.get("filesystem", False),
             },
             {
                 "id": "github",
@@ -674,6 +681,18 @@ def logout():
     return jsonify({"ok": True, "deleted": session_deleted > 0, "integrations_deleted": tokens_deleted}), 200
 
 
+def _get_filesystem_description() -> str:
+    """Build a description string for the filesystem integration, showing the root path if connected."""
+    root = integration_dao.get_filesystem_root()
+    if root:
+        # Show abbreviated path for long paths
+        display_path = root
+        if len(display_path) > 50:
+            display_path = "..." + display_path[-47:]
+        return f"Access local files and directories ({display_path})"
+    return "Access local files and directories"
+
+
 # ========================
 # Integrations Endpoints
 # ========================
@@ -693,10 +712,9 @@ def integrations_status():
         {
             "id": "filesystem",
             "name": "Filesystem",
-            "description": "Access local files and directories",
+            "description": _get_filesystem_description(),
             "icon": "📁",
-            "connected": True,  # Always connected - uses local filesystem
-            "included": True,
+            "connected": statuses.get("filesystem", False),
         },
         {
             "id": "github",
@@ -730,6 +748,59 @@ def integrations_status():
     ]
     
     return jsonify({"integrations": integrations}), 200
+
+
+# ========================
+# Filesystem Endpoints
+# ========================
+
+@app.route("/integrations/filesystem/connect", methods=["POST"])
+def filesystem_connect():
+    """
+    Connect filesystem integration by saving the user-chosen root path.
+    Body: { "root_path": "/Users/someone/Documents" }
+    """
+    body = request.get_json() or {}
+    root_path = body.get("root_path", "").strip()
+
+    if not root_path:
+        return jsonify({"ok": False, "error": "root_path is required"}), 400
+
+    # Validate the path exists and is a directory
+    import os
+    if not os.path.isdir(root_path):
+        return jsonify({"ok": False, "error": "Path does not exist or is not a directory"}), 400
+
+    # Save to integration_tokens table
+    integration_dao.save_token(
+        provider="filesystem",
+        access_token="local",
+        scopes="read_write",
+        provider_metadata={"type": "local_filesystem", "root_path": root_path},
+    )
+
+    print(f"📁 Filesystem connected: root_path={root_path}")
+
+    return jsonify({"ok": True, "root_path": root_path}), 200
+
+
+@app.route("/integrations/filesystem/disconnect", methods=["POST"])
+def filesystem_disconnect():
+    """
+    Disconnect filesystem integration (remove root path).
+    """
+    deleted = integration_dao.delete_token("filesystem")
+    print(f"📁 Filesystem disconnected (deleted={deleted})")
+    return jsonify({"ok": True, "deleted": deleted > 0}), 200
+
+
+@app.route("/integrations/filesystem/root", methods=["GET"])
+def filesystem_root():
+    """
+    Get the current filesystem root path (if connected).
+    """
+    root = integration_dao.get_filesystem_root()
+    return jsonify({"connected": root is not None, "root_path": root}), 200
 
 
 # ========================
