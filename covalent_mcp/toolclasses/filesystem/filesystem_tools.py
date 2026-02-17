@@ -9,9 +9,23 @@ Raises RuntimeError if the user hasn't connected a folder yet.
 """
 import json
 import os
-import sqlite3
+import sys
 from pathlib import Path
 from typing import Dict, Optional
+
+# Use SQLCipher for encrypted database access (same as integration_dao / graph_dao)
+try:
+    from sqlcipher3 import dbapi2 as sqlite3
+except ImportError:
+    try:
+        from pysqlcipher3 import dbapi2 as sqlite3
+    except ImportError:
+        import sqlite3  # type: ignore[no-redef]
+
+# Add context-engine to path so we can import the key manager
+_context_engine_path = str(Path(__file__).resolve().parent.parent.parent.parent / "context-engine")
+if _context_engine_path not in sys.path:
+    sys.path.insert(0, _context_engine_path)
 
 from covalent_mcp.toolclasses.base import (
     MCPToolModule,
@@ -31,6 +45,13 @@ def _get_filesystem_root_from_db() -> Optional[str]:
         return None
     try:
         conn = sqlite3.connect(str(db_path), timeout=5.0)
+        # Set encryption key if using SQLCipher
+        try:
+            from security.key_manager import get_db_encryption_key
+            key = get_db_encryption_key()
+            conn.execute(f"PRAGMA key = '{key}'")
+        except ImportError:
+            pass  # No SQLCipher / key_manager available — DB is unencrypted
         row = conn.execute(
             "SELECT provider_metadata FROM integration_tokens WHERE provider = 'filesystem'"
         ).fetchone()
