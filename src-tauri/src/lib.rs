@@ -688,22 +688,21 @@ pub fn run() {
             
             println!("App directory: {:?}", app_dir);
             
-            // NOTE: Flask/MCP/Ollama servers commented out for manual startup during dev
-            // let flask_server = FlaskServer::new();
-            // 
-            // match flask_server.start(app_dir.clone()) {
-            //     Ok(_) => println!("✓ Flask server started successfully"),
-            //     Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
-            // }
-            // app.manage(flask_server);
+            let flask_server = FlaskServer::new();
+            
+            match flask_server.start(app_dir.clone()) {
+                Ok(_) => println!("✓ Flask server started successfully"),
+                Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
+            }
+            app.manage(flask_server);
 
-            // println!("🦙 Starting Ollama serve...");
-            // let ollama_server = OllamaServer::new();
-            // match ollama_server.start() {
-            //     Ok(_) => {},
-            //     Err(e) => eprintln!("⚠️  Ollama startup issue: {}", e),
-            // }
-            // app.manage(ollama_server);
+            println!("🦙 Starting Ollama serve...");
+            let ollama_server = OllamaServer::new();
+            match ollama_server.start() {
+                Ok(_) => {},
+                Err(e) => eprintln!("⚠️  Ollama startup issue: {}", e),
+            }
+            app.manage(ollama_server);
             
             // Create and manage context state
             let context_state = ContextState::new();
