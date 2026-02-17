@@ -1,6 +1,7 @@
 """
 Data Access Object for Integration operations.
-Handles OAuth tokens for third-party integrations (Google, GitHub, Notion).
+Handles OAuth tokens for third-party integrations (Google, GitHub, Notion)
+and local integrations like Filesystem.
 Single-user desktop app - no user_id needed.
 
 Database is encrypted using SQLCipher. Encryption key is stored in macOS Keychain.
@@ -72,9 +73,9 @@ class IntegrationDAO:
             )
             
             # Seed built-in integrations that don't require OAuth
-            # These are always "connected" - filesystem uses local access, perplexity uses API key
+            # Perplexity uses API key and is always connected
+            # Filesystem is NOT seeded here - user must pick a root folder via the UI
             builtin_integrations = [
-                ("filesystem", "built-in", None, None, "local", '{"type": "local_filesystem"}'),
                 ("perplexity", "api-key-based", None, None, "search", '{"type": "api_key"}'),
             ]
             for provider, access_token, refresh_token, expires_at, scopes, metadata in builtin_integrations:
@@ -200,6 +201,14 @@ class IntegrationDAO:
             return cursor.rowcount
         finally:
             conn.close()
+
+    def get_filesystem_root(self) -> Optional[str]:
+        """Get the configured filesystem root path, or None if not connected."""
+        token = self.get_token("filesystem")
+        if not token or not token.get("provider_metadata"):
+            return None
+        metadata = token["provider_metadata"]
+        return metadata.get("root_path") if isinstance(metadata, dict) else None
 
     def get_all_tokens(self) -> List[Dict[str, Any]]:
         """Get all integration tokens."""

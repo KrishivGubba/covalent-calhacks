@@ -1,7 +1,7 @@
 """
 Filesystem Client - Local file and directory operations with root-path enforcement.
 
-All operations are scoped to a configurable root directory (default: cwd).
+All operations are scoped to a configurable root directory.
 Paths cannot escape the root.
 """
 import os
@@ -9,11 +9,6 @@ import re
 import shutil
 from pathlib import Path
 from typing import Optional
-
-# Default root: cwd, or FILESYSTEM_ROOT env var
-def _default_root() -> Path:
-    root = os.environ.get("FILESYSTEM_ROOT") or os.getcwd()
-    return Path(root).resolve()
 
 
 class FilesystemClient:
@@ -24,15 +19,17 @@ class FilesystemClient:
     are rejected.
     """
 
-    def __init__(self, root: Optional[str] = None) -> None:
+    def __init__(self, root: str) -> None:
         """
         Initialize the filesystem client.
 
         Args:
-            root: Root directory for all operations. Defaults to FILESYSTEM_ROOT
-                  env var or current working directory.
+            root: Root directory for all operations. Must be provided.
+
+        Raises:
+            ValueError: If root is not a valid directory.
         """
-        self._root = Path(root).resolve() if root else _default_root()
+        self._root = Path(root).resolve()
         if not self._root.is_dir():
             raise ValueError(f"Filesystem root is not a directory: {self._root}")
 

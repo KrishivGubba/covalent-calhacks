@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { open } from '@tauri-apps/plugin-dialog';
 
 const BACKEND_URL = 'http://localhost:5001';
 
@@ -84,7 +85,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
       console.error('Failed to load MCP integrations:', error);
       // Fallback to default list on error
       setIntegrations([
-        { id: 'filesystem', name: 'Filesystem', description: 'Access local files and directories', connected: false, icon: '📁' },
+        { id: 'filesystem', name: 'Filesystem', description: 'Choose a folder to access local files and directories', connected: false, icon: '📁' },
         { id: 'github', name: 'GitHub', description: 'Access repositories, issues, and pull requests', connected: false, icon: '🐙' },
         { id: 'perplexity', name: 'Perplexity Search', description: 'AI-powered web search', connected: true, icon: '🔍', included: true },
         { id: 'notion', name: 'Notion', description: 'Access Notion workspaces and pages', connected: false, icon: '📝' },
@@ -440,9 +441,56 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
     }
   };
 
+  const handleConnectFilesystem = async () => {
+    console.log('handleConnectFilesystem called');
+    setConnectingId('filesystem');
+
+    try {
+      // Open native folder picker dialog (Finder on macOS)
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: 'Choose a folder for Covalent to access',
+      });
+
+      if (!selected) {
+        // User cancelled the dialog
+        console.log('Filesystem folder selection cancelled');
+        setConnectingId(null);
+        return;
+      }
+
+      const rootPath = typeof selected === 'string' ? selected : selected;
+      console.log('User selected folder:', rootPath);
+
+      // Send the selected path to the backend
+      const response = await fetch(`${BACKEND_URL}/integrations/filesystem/connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ root_path: rootPath }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.ok) {
+        throw new Error(result.error || 'Failed to connect filesystem');
+      }
+
+      console.log('Filesystem connected:', result.root_path);
+      loadIntegrations(); // Refresh the list
+    } catch (error) {
+      console.error('Failed to connect filesystem:', error);
+      alert('Failed to connect filesystem. Please try again.');
+    } finally {
+      setConnectingId(null);
+    }
+  };
+
   const handleConnect = async (id: string) => {
     console.log(`handleConnect called with id: ${id}, isAuthenticated: ${isAuthenticated}`);
-    if (id === 'google') {
+    if (id === 'filesystem') {
+      await handleConnectFilesystem();
+    } else if (id === 'google') {
       await handleConnectGoogle();
     } else if (id === 'github') {
       await handleConnectGithub();
@@ -455,7 +503,22 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   };
 
   const handleDisconnect = async (id: string) => {
-    if (id === 'google') {
+    if (id === 'filesystem') {
+      try {
+        const response = await fetch(`${BACKEND_URL}/integrations/filesystem/disconnect`, {
+          method: 'POST',
+        });
+        if (response.ok) {
+          console.log('Filesystem disconnected');
+          loadIntegrations();
+        } else {
+          alert('Failed to disconnect Filesystem');
+        }
+      } catch (error) {
+        console.error('Failed to disconnect Filesystem:', error);
+        alert('Failed to disconnect Filesystem');
+      }
+    } else if (id === 'google') {
       try {
         const response = await fetch(`${BACKEND_URL}/integrations/google/disconnect`, {
           method: 'POST',
@@ -565,23 +628,27 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
                 <button
                   style={{
                     ...styles.connectButton,
-                    ...(!isAuthenticated || connectingId === integration.id ? styles.buttonDisabled : {}),
+                    ...((!isAuthenticated && integration.id !== 'filesystem') || connectingId === integration.id ? styles.buttonDisabled : {}),
                   }}
                   onClick={() => handleConnect(integration.id)}
-                  disabled={!isAuthenticated || connectingId === integration.id}
-                  title={!isAuthenticated ? 'Please log in first' : undefined}
+                  disabled={(!isAuthenticated && integration.id !== 'filesystem') || connectingId === integration.id}
+                  title={!isAuthenticated && integration.id !== 'filesystem' ? 'Please log in first' : undefined}
                 >
-                  {connectingId === integration.id ? 'Connecting...' : 'Connect'}
+                  {connectingId === integration.id
+                    ? 'Connecting...'
+                    : integration.id === 'filesystem'
+                    ? 'Choose Folder'
+                    : 'Connect'}
                 </button>
               ) : (
                 <button
                   style={{
                     ...styles.disconnectButton,
-                    ...(isAuthenticated ? {} : styles.buttonDisabled),
+                    ...(isAuthenticated || integration.id === 'filesystem' ? {} : styles.buttonDisabled),
                   }}
                   onClick={() => handleDisconnect(integration.id)}
-                  disabled={!isAuthenticated}
-                  title={isAuthenticated ? undefined : 'Please log in first'}
+                  disabled={!isAuthenticated && integration.id !== 'filesystem'}
+                  title={!isAuthenticated && integration.id !== 'filesystem' ? 'Please log in first' : undefined}
                 >
                   Disconnect
                 </button>
