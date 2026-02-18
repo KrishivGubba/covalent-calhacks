@@ -5,6 +5,7 @@ import time
 import asyncio
 import json
 import platform
+import threading
 from datetime import datetime, timedelta
 
 from flask_cors import CORS
@@ -166,6 +167,51 @@ if not os.path.exists(db_path):
 os.environ.setdefault('GRAPH_DB_PATH', db_path)
 
 tree = Tree(db_path)
+
+
+# =============================================================================
+# BACKGROUND CLEANUP THREAD
+# =============================================================================
+
+# Cleanup configuration (from environment variables or defaults)
+CLEANUP_INTERVAL_SECONDS = int(os.environ.get('CLEANUP_INTERVAL_SECONDS', 3600))  # Default: 1 hour
+CLEANUP_THRESHOLD = int(os.environ.get('CLEANUP_THRESHOLD', 10))  # Default: 10 insertions
+
+
+def cleanup_background_thread():
+    """
+    Background thread that periodically cleans up graph nodes.
+    
+    This runs in a separate thread and performs I/O-bound operations (database
+    queries and LLM API calls), which release Python's GIL, allowing Flask to
+    continue handling requests concurrently.
+    """
+    print(f"[Cleanup] Background cleanup thread started (interval: {CLEANUP_INTERVAL_SECONDS}s, threshold: {CLEANUP_THRESHOLD})")
+    
+    while True:
+        try:
+            # Sleep first, then run cleanup
+            time.sleep(CLEANUP_INTERVAL_SECONDS)
+            
+            start_time = time.time()
+            print(f"[Cleanup] Starting scheduled cleanup at {datetime.now().isoformat()}")
+            
+            # Run the batch cleanup
+            cleaned_nodes = Tree.cleanup_nodes_batch(tree.dao, CLEANUP_THRESHOLD)
+            
+            elapsed = time.time() - start_time
+            print(f"[Cleanup] Completed: {len(cleaned_nodes)} nodes cleaned in {elapsed:.2f}s")
+            
+        except Exception as e:
+            print(f"[Cleanup] Error in background cleanup: {e}")
+            import traceback
+            traceback.print_exc()
+
+
+# Start the background cleanup thread as a daemon
+# Daemon threads automatically exit when the main program exits
+_cleanup_thread = threading.Thread(target=cleanup_background_thread, daemon=True, name="CleanupThread")
+_cleanup_thread.start()
 
 
 import requests as http_requests  # for server-side HTTP calls to Auth0
@@ -1649,6 +1695,45 @@ def graph_reset():
             tree = Tree(db_path)
         except Exception:
             pass
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/graph/cleanup", methods=["POST"])
+def trigger_cleanup():
+    """
+    Manually trigger graph node cleanup.
+    
+    This condenses redundant data in nodes that have exceeded the insertion threshold.
+    Useful for testing or on-demand cleanup outside the scheduled background thread.
+    
+    Request body (optional):
+        - threshold (int): Insertion count threshold for cleanup (default: 10)
+    
+    Returns:
+        - nodes_cleaned (int): Number of nodes that were cleaned
+        - node_uuids (list): UUIDs of cleaned nodes
+    """
+    try:
+        data = request.get_json() or {}
+        threshold = data.get("threshold", CLEANUP_THRESHOLD)
+        
+        start_time = time.time()
+        print(f"[Cleanup] Manual cleanup triggered (threshold: {threshold})")
+        
+        cleaned_nodes = Tree.cleanup_nodes_batch(tree.dao, threshold)
+        
+        elapsed = time.time() - start_time
+        print(f"[Cleanup] Manual cleanup completed: {len(cleaned_nodes)} nodes in {elapsed:.2f}s")
+        
+        return jsonify({
+            "nodes_cleaned": len(cleaned_nodes),
+            "node_uuids": cleaned_nodes,
+            "elapsed_seconds": round(elapsed, 2)
+        }), 200
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
