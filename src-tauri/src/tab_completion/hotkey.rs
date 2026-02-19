@@ -209,20 +209,23 @@ impl HotkeyHandler {
                         if let Some((suggestion, chars_to_erase)) = accept_data {
                             println!("✅ Option+Tab pressed - accepting suggestion (erasing {} chars)", chars_to_erase);
 
-                            // Call accept callback (lock released, no contention with state lock)
-                            if let Some(ref callback) = *handler.accept_callback.lock() {
-                                callback(suggestion, chars_to_erase);
+                            // Call accept callback with panic protection
+                            // Wrap in catch_unwind to prevent callback panics from killing CGEventTap thread
+                            let callback_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                if let Some(ref callback) = *handler.accept_callback.lock() {
+                                    callback(suggestion.clone(), chars_to_erase);
+                                }
+                            }));
+                            if let Err(e) = callback_result {
+                                eprintln!("🔴 PANIC in accept callback: {:?}", e);
                             }
 
-                            // Suppress Option+Tab by returning a synthetic event.
-                            // This avoids macOS interpreting the tap as suppressing input.
-                            if let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-                                if let Ok(new_event) = CGEvent::new_keyboard_event(source, 0x69 as CGKeyCode, true) {
-                                    new_event.set_flags(CGEventFlags::empty());
-                                    return Some(new_event);
-                                }
-                            }
-                            // Fallback: pass through original event unmodified
+                            println!("✅ Accept callback completed, returning event");
+
+                            // Pass through the original event instead of creating synthetic event.
+                            // Creating synthetic events was causing crashes on some macOS versions.
+                            // The Option key modifier will be stripped by the system anyway since
+                            // we're returning from an event tap.
                             return Some(event.clone());
                         } else if tab_debug_enabled() {
                             tab_debug_log("Option+Tab pressed with no active suggestion");
@@ -252,18 +255,36 @@ impl HotkeyHandler {
                             println!("❌ Escape pressed - dismissing suggestion");
 
                             // Build dismiss info and clear state in single lock acquisition
-                            let dismiss_info = handler.build_dismiss_info();
-                            handler.state.lock().clear();
+                            let dismiss_info = {
+                                let mut state = handler.state.lock();
+                                let info = if let (Some(suggestion), Some(shown_at)) = 
+                                    (state.current_suggestion.clone(), state.shown_at) {
+                                    Some(DismissInfo {
+                                        dismissed_text: suggestion,
+                                        time_shown_ms: shown_at.elapsed().as_millis() as u64,
+                                        chars_typed_after: state.chars_buffer.clone(),
+                                        chars_count: state.chars_typed,
+                                    })
+                                } else {
+                                    None
+                                };
+                                state.clear();
+                                info
+                            };
 
-                            // Call callbacks (state lock released, no contention)
+                            // Call callbacks with panic protection (state lock released)
                             if let Some(info) = dismiss_info {
-                                if let Some(ref callback) = *handler.dismiss_with_info_callback.lock() {
-                                    callback(info);
+                                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    if let Some(ref callback) = *handler.dismiss_with_info_callback.lock() {
+                                        callback(info);
+                                    }
+                                }));
+                            }
+                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                if let Some(ref callback) = *handler.dismiss_callback.lock() {
+                                    callback();
                                 }
-                            }
-                            if let Some(ref callback) = *handler.dismiss_callback.lock() {
-                                callback();
-                            }
+                            }));
                         } else {
                             // Any other key: update char counter and check grace period
                             let is_modifier = matches!(keycode,

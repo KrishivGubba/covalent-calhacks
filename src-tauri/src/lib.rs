@@ -884,67 +884,93 @@ pub fn run() {
                     let app_handle_for_accept = app.handle().clone();
                     let trigger_for_accept = trigger.clone();
                     hotkey_handler.set_accept_callback(move |text, chars_typed_during_grace| {
-                        // Get buffer suffix to detect overlap with prediction
-                        // Must do this BEFORE spawning thread while we still have sync access
-                        let buffer_suffix = trigger_for_accept.get_buffer_suffix(text.len());
+                        // Wrap entire callback in catch_unwind for safety
+                        let text_clone = text.clone();
+                        let trigger_clone = trigger_for_accept.clone();
+                        let wm_clone = window_manager_accept.clone();
+                        let app_handle_clone = app_handle_for_accept.clone();
 
-                        // Find overlap between what user typed and what prediction contains
-                        let overlap = find_overlap(&buffer_suffix, &text);
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                            eprintln!("🔵 Accept callback: computing overlap...");
+                            
+                            // Get buffer suffix to detect overlap with prediction
+                            // Must do this BEFORE spawning thread while we still have sync access
+                            let buffer_suffix = trigger_clone.get_buffer_suffix(text_clone.len());
 
-                        // Total chars to erase = overlap + chars typed during grace period
-                        let total_erase = overlap + chars_typed_during_grace;
+                            // Find overlap between what user typed and what prediction contains
+                            let overlap = find_overlap(&buffer_suffix, &text_clone);
 
-                        println!("✅ Accepting completion via hotkey (overlap: {}, grace: {}, total erase: {})",
-                                 overlap, chars_typed_during_grace, total_erase);
+                            // Total chars to erase = overlap + chars typed during grace period
+                            let total_erase = overlap + chars_typed_during_grace;
 
-                        // IMPORTANT: Spawn a thread to handle the accept logic.
-                        // The callback runs inside CGEventTap which must return quickly.
-                        // inject_with_backspace has 150ms+ of sleeps that would block the tap.
-                        let wm = window_manager_accept.clone();
-                        let app_handle = app_handle_for_accept.clone();
-                        let trigger = trigger_for_accept.clone();
+                            println!("✅ Accepting completion via hotkey (overlap: {}, grace: {}, total erase: {})",
+                                     overlap, chars_typed_during_grace, total_erase);
 
-                        std::thread::spawn(move || {
-                            println!("🧵 Accept thread started");
+                            eprintln!("🔵 Accept callback: spawning accept thread...");
 
-                            // Wait for user to release Option key before injecting.
-                            // Option+Tab accept fires while Option is still physically held;
-                            // if we inject immediately, AppleScript's Cmd+V paste could be
-                            // interpreted as Cmd+Option+V in some apps.
-                            std::thread::sleep(std::time::Duration::from_millis(150));
+                            // IMPORTANT: Spawn a thread to handle the accept logic.
+                            // The callback runs inside CGEventTap which must return quickly.
+                            // inject_with_backspace has 150ms+ of sleeps that would block the tap.
+                            let wm = wm_clone.clone();
+                            let app_handle = app_handle_clone.clone();
+                            let trigger = trigger_clone.clone();
+                            let text = text_clone.clone();
 
-                            // Inject the text with backspace for overlap + grace period chars
-                            println!("🧵 Injecting text...");
-                            if let Err(e) = tab_completion::injector::inject_with_backspace(text.clone(), total_erase) {
-                                eprintln!("⚠️  Failed to inject text: {}", e);
-                            }
-                            println!("🧵 Text injection complete");
+                            std::thread::spawn(move || {
+                                // Wrap the entire thread in catch_unwind
+                                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    println!("🧵 Accept thread started");
 
-                            // Hide completion windows BEFORE triggering new prediction
-                            // This prevents race condition where hide_all interferes with new show_suggestion
-                            println!("🧵 Hiding windows...");
-                            let wm_clone = wm.clone();
-                            let app_handle_clone = app_handle.clone();
-                            let _ = app_handle_clone.run_on_main_thread(move || {
-                                println!("🧵 [main thread] Hiding all windows");
-                                let _ = wm_clone.hide_all();
+                                    // Wait for user to release Option key before injecting.
+                                    // Option+Tab accept fires while Option is still physically held;
+                                    // if we inject immediately, AppleScript's Cmd+V paste could be
+                                    // interpreted as Cmd+Option+V in some apps.
+                                    std::thread::sleep(std::time::Duration::from_millis(150));
+
+                                    // Inject the text with backspace for overlap + grace period chars
+                                    println!("🧵 Injecting text...");
+                                    if let Err(e) = tab_completion::injector::inject_with_backspace(text.clone(), total_erase) {
+                                        eprintln!("⚠️  Failed to inject text: {}", e);
+                                    }
+                                    println!("🧵 Text injection complete");
+
+                                    // Hide completion windows BEFORE triggering new prediction
+                                    // This prevents race condition where hide_all interferes with new show_suggestion
+                                    println!("🧵 Hiding windows...");
+                                    let wm_clone = wm.clone();
+                                    let app_handle_clone = app_handle.clone();
+                                    let _ = app_handle_clone.run_on_main_thread(move || {
+                                        println!("🧵 [main thread] Hiding all windows");
+                                        let _ = wm_clone.hide_all();
+                                    });
+
+                                    // Small delay to ensure hide completes before new prediction cycle
+                                    std::thread::sleep(std::time::Duration::from_millis(50));
+
+                                    // Erase overlap + grace chars from buffer to keep it in sync with terminal.
+                                    // The injector already erased these chars from the terminal via backspaces;
+                                    // without this, the buffer accumulates duplicate chars (e.g. "git aadd"
+                                    // instead of "git add") and all subsequent predictions are garbage.
+                                    trigger.erase_from_buffer(total_erase);
+
+                                    // Update the trigger's buffer with the accepted text and re-trigger prediction
+                                    // NOTE: This spawns a thread with 300ms delay, then shows popup if prediction found
+                                    println!("🧵 Calling append_to_buffer...");
+                                    trigger.append_to_buffer(text.clone());
+                                    println!("🧵 Accept thread complete");
+                                }));
+                                
+                                if let Err(e) = result {
+                                    eprintln!("🔴 PANIC in accept thread: {:?}", e);
+                                }
                             });
 
-                            // Small delay to ensure hide completes before new prediction cycle
-                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            eprintln!("🔵 Accept callback: thread spawned, returning");
+                        }));
 
-                            // Erase overlap + grace chars from buffer to keep it in sync with terminal.
-                            // The injector already erased these chars from the terminal via backspaces;
-                            // without this, the buffer accumulates duplicate chars (e.g. "git aadd"
-                            // instead of "git add") and all subsequent predictions are garbage.
-                            trigger.erase_from_buffer(total_erase);
-
-                            // Update the trigger's buffer with the accepted text and re-trigger prediction
-                            // NOTE: This spawns a thread with 300ms delay, then shows popup if prediction found
-                            println!("🧵 Calling append_to_buffer...");
-                            trigger.append_to_buffer(text.clone());
-                            println!("🧵 Accept thread complete");
-                        });
+                        if let Err(e) = result {
+                            eprintln!("🔴 PANIC in accept callback outer: {:?}", e);
+                        }
                     });
 
                     let window_manager_dismiss = window_manager.clone();
