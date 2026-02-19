@@ -204,6 +204,14 @@ impl CompletionWindowManager {
             eprintln!("⚠️  Failed to set popup size: {}", e);
         }
 
+        // Show the window BEFORE eval so the WebView is active and not suspended.
+        // WKWebView pauses JS execution when a window is hidden; calling eval() on
+        // a hidden window either fails or silently no-ops, which means the popup
+        // content never updates and the window stays invisible.
+        if let Err(e) = window.show() {
+            eprintln!("⚠️  Failed to show popup window: {}", e);
+        }
+
         // Build payload
         let payload = CompletionPopupPayload {
             text: suggestion.text.clone(),
@@ -217,13 +225,9 @@ impl CompletionWindowManager {
         let js_code = format!("window.updatePopup({})", js_payload);
 
         if let Err(e) = window.eval(&js_code) {
+            // Non-fatal: window is already visible, content update failure just means
+            // the popup shows stale/empty text. Log and continue rather than bailing.
             eprintln!("⚠️  Failed to eval popup update: {}", e);
-            return Err(anyhow::anyhow!("Failed to eval popup update: {}", e));
-        }
-
-        // Show the window
-        if let Err(e) = window.show() {
-            eprintln!("⚠️  Failed to show popup window: {}", e);
         }
 
         // Make sure it's on top

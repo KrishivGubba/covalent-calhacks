@@ -836,27 +836,33 @@ pub fn run() {
                     let app_handle_for_callback = app.handle().clone();
                     trigger.set_suggestion_callback(move |suggestion| {
                         // Wrap in catch_unwind to prevent silent thread death.
-                        // A panic here (e.g. from byte-slicing non-ASCII) would kill the
-                        // spawned prediction thread, silently breaking the popup forever.
                         let hh = hotkey_handler_clone.clone();
                         let wm = window_manager_clone.clone();
                         let ah = app_handle_for_callback.clone();
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                            // Use eprintln (stderr) for diagnostics — stdout is garbled by
-                            // TerminalDisplay ANSI cursor save/restore escape sequences.
                             eprintln!("📤 [popup] Suggestion callback fired");
 
-                            // Update hotkey handler with new suggestion (thread-safe via parking_lot::Mutex)
-                            hh.set_suggestion(Some(suggestion.text.clone()));
-                            eprintln!("📤 [popup 1/3] set_suggestion done");
-
-                            // Dispatch UI operations to main thread to prevent crashes
+                            // IMPORTANT: Do NOT call hh.set_suggestion() here on the prediction
+                            // thread. After an accept, the CGEventTap hotkey thread is actively
+                            // processing rapid key events and briefly holds the same parking_lot
+                            // mutexes inside HotkeyHandler. This creates a deadlock: the prediction
+                            // thread blocks on hh.set_suggestion() while the CGEventTap thread
+                            // cycles through its locks, but new key events keep arriving and the
+                            // prediction thread never gets a turn.
+                            //
+                            // Fix: dispatch BOTH set_suggestion and show_suggestion to the main
+                            // thread. The main thread is never the CGEventTap thread, so there is
+                            // no lock contention. The main thread holds HotkeyHandler locks for
+                            // only microseconds; the CGEventTap thread contends briefly but never
+                            // deadlocks.
                             let window_manager = wm.clone();
                             let suggestion_clone = suggestion.clone();
                             let preview: String = suggestion.text.chars().take(30).collect();
-                            eprintln!("📤 [popup 2/3] Dispatching show_suggestion for: {}...", preview);
+                            eprintln!("📤 [popup 1/2] Dispatching to main thread for: {}...", preview);
                             if let Err(e) = ah.run_on_main_thread(move || {
-                                eprintln!("📤 [popup 3/3] Main thread executing show_suggestion");
+                                eprintln!("📤 [popup 2/2] Main thread: set_suggestion + show_suggestion");
+                                // Set suggestion on main thread to avoid deadlock with CGEventTap
+                                hh.set_suggestion(Some(suggestion_clone.text.clone()));
                                 if let Err(e) = window_manager.show_suggestion(&suggestion_clone) {
                                     eprintln!("⚠️  Failed to show completion: {}", e);
                                 }
