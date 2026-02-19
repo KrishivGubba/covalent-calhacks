@@ -354,12 +354,12 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
     }));
   };
 
-  // Legacy: single action param change
-  const _handleParamChange = (key: string, value: unknown) => {
-    setEditableParams(prev => ({ ...prev, [key]: value }));
-    // Also update the map for step 1 (backward compat)
-    handleStepParamChange(1, key, value);
-  };
+  // // Legacy: single action param change
+  // const _handleParamChange = (key: string, value: unknown) => {
+  //   setEditableParams(prev => ({ ...prev, [key]: value }));
+  //   // Also update the map for step 1 (backward compat)
+  //   handleStepParamChange(1, key, value);
+  // };
 
   const openEditModal = async (action: Action) => {
     setEditingAction(action);

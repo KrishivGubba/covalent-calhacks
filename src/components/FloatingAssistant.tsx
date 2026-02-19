@@ -257,9 +257,9 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
     await enableContextCollectionIfNotUserPaused();
   };
 
-  const _handleParamChange = (key: string, value: unknown) => {
-    setEditableParams(prev => ({ ...prev, [key]: value }));
-  };
+  // const _handleParamChange = (key: string, value: unknown) => {
+  //   setEditableParams(prev => ({ ...prev, [key]: value }));
+  // };
 
   const renderActionButton = (action: Action) => {
     const status = actionStatuses[action.id] || 'idle';
