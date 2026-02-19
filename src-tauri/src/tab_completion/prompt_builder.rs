@@ -47,7 +47,7 @@ fn looks_like_command(text: &str) -> bool {
 }
 
 /// Build prompt for terminal/shell command completion
-fn build_terminal_prompt(shell: &str, cwd: &str, text: &str, context: &CachedContext) -> String {
+fn build_terminal_prompt(_shell: &str, cwd: &str, text: &str, context: &CachedContext) -> String {
     let mut prompt = String::new();
 
     // Strong instruction with clear examples

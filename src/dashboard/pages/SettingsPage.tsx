@@ -6,10 +6,34 @@ const SettingsPage: React.FC = () => {
   const [newApp, setNewApp] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [tabCompletionEnabled, setTabCompletionEnabled] = useState(false);
+  const [tabCompletionLoading, setTabCompletionLoading] = useState(false);
 
   useEffect(() => {
     loadExcludedApps();
+    loadTabCompletionStatus();
   }, []);
+
+  const loadTabCompletionStatus = async () => {
+    try {
+      const status = await invoke<boolean>('get_tab_completion_status');
+      setTabCompletionEnabled(status);
+    } catch (error) {
+      console.error('Failed to get tab completion status:', error);
+    }
+  };
+
+  const handleTabCompletionToggle = async () => {
+    setTabCompletionLoading(true);
+    try {
+      const newState = await invoke<boolean>('toggle_tab_completion');
+      setTabCompletionEnabled(newState);
+    } catch (error) {
+      console.error('Failed to toggle tab completion:', error);
+    } finally {
+      setTabCompletionLoading(false);
+    }
+  };
 
   const loadExcludedApps = async () => {
     try {
@@ -83,6 +107,41 @@ const SettingsPage: React.FC = () => {
       <div style={styles.header}>
         <h1 style={styles.title}>Settings</h1>
         <p style={styles.subtitle}>Configure privacy and monitoring preferences</p>
+      </div>
+
+      <div style={styles.section}>
+        <h2 style={styles.sectionTitle}>Tab Autocomplete</h2>
+        <p style={styles.sectionDescription}>
+          Enable inline text predictions as you type. When enabled, Covalent will suggest completions based on your current context.
+        </p>
+        <div style={styles.card}>
+          <div style={styles.toggleRow}>
+            <div>
+              <div style={styles.toggleLabel}>Tab Autocomplete</div>
+              <div style={styles.toggleDescription}>
+                {tabCompletionEnabled ? 'Active — predictions will appear as you type' : 'Inactive — no predictions will be generated'}
+              </div>
+            </div>
+            <button
+              onClick={handleTabCompletionToggle}
+              disabled={tabCompletionLoading}
+              style={{
+                ...styles.toggleTrack,
+                backgroundColor: tabCompletionEnabled ? '#C5F467' : '#27272a',
+                opacity: tabCompletionLoading ? 0.6 : 1,
+                cursor: tabCompletionLoading ? 'not-allowed' : 'pointer',
+              }}
+              aria-label={tabCompletionEnabled ? 'Disable tab autocomplete' : 'Enable tab autocomplete'}
+            >
+              <div
+                style={{
+                  ...styles.toggleThumb,
+                  transform: tabCompletionEnabled ? 'translateX(22px)' : 'translateX(2px)',
+                }}
+              />
+            </button>
+          </div>
+        </div>
       </div>
 
       <div style={styles.section}>
@@ -315,6 +374,43 @@ const styles = {
   loadingText: {
     color: '#a1a1aa',
     fontSize: '0.95rem',
+  },
+  toggleRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '16px',
+  },
+  toggleLabel: {
+    fontSize: '0.95rem',
+    fontWeight: '500' as const,
+    color: '#ffffff',
+    marginBottom: '4px',
+  },
+  toggleDescription: {
+    fontSize: '0.85rem',
+    color: '#71717a',
+    lineHeight: '1.5',
+  },
+  toggleTrack: {
+    flexShrink: 0,
+    width: '48px',
+    height: '28px',
+    borderRadius: '14px',
+    border: 'none',
+    padding: 0,
+    position: 'relative' as const,
+    transition: 'background-color 0.2s ease',
+  },
+  toggleThumb: {
+    position: 'absolute' as const,
+    top: '3px',
+    width: '22px',
+    height: '22px',
+    borderRadius: '50%',
+    backgroundColor: '#ffffff',
+    boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+    transition: 'transform 0.2s ease',
   },
 };
 

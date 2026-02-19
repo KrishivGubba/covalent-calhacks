@@ -149,6 +149,7 @@ extern "C" {
 }
 
 /// Get the height of the main screen (needed for coordinate conversion)
+#[allow(dead_code)]
 #[cfg(target_os = "macos")]
 fn get_main_screen_height() -> f64 {
     unsafe {

@@ -10,6 +10,7 @@ pub struct CompletionWindowManager {
     app_handle: AppHandle,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 struct GhostTextPayload {
     text: String,
@@ -120,6 +121,7 @@ impl CompletionWindowManager {
     }
     
     /// Show ghost text overlay at cursor position
+    #[allow(dead_code)]
     fn show_ghost_text(&self, suggestion: &CompletionSuggestion, cursor_pos: CursorPosition) -> Result<()> {
         // Validate cursor position
         if cursor_pos.x < 0.0 || cursor_pos.y < 0.0 || 
@@ -204,6 +206,14 @@ impl CompletionWindowManager {
             eprintln!("⚠️  Failed to set popup size: {}", e);
         }
 
+        // Show the window BEFORE eval so the WebView is active and not suspended.
+        // WKWebView pauses JS execution when a window is hidden; calling eval() on
+        // a hidden window either fails or silently no-ops, which means the popup
+        // content never updates and the window stays invisible.
+        if let Err(e) = window.show() {
+            eprintln!("⚠️  Failed to show popup window: {}", e);
+        }
+
         // Build payload
         let payload = CompletionPopupPayload {
             text: suggestion.text.clone(),
@@ -217,13 +227,9 @@ impl CompletionWindowManager {
         let js_code = format!("window.updatePopup({})", js_payload);
 
         if let Err(e) = window.eval(&js_code) {
+            // Non-fatal: window is already visible, content update failure just means
+            // the popup shows stale/empty text. Log and continue rather than bailing.
             eprintln!("⚠️  Failed to eval popup update: {}", e);
-            return Err(anyhow::anyhow!("Failed to eval popup update: {}", e));
-        }
-
-        // Show the window
-        if let Err(e) = window.show() {
-            eprintln!("⚠️  Failed to show popup window: {}", e);
         }
 
         // Make sure it's on top
@@ -269,7 +275,6 @@ impl CompletionWindowManager {
         // Try to get primary monitor dimensions
         #[cfg(target_os = "macos")]
         {
-            use cocoa::appkit::NSScreen;
             use cocoa::base::nil;
             use cocoa::foundation::NSRect;
             use objc::{class, msg_send, sel, sel_impl};
@@ -560,6 +565,7 @@ impl CompletionWindowManager {
     }
     
     /// Get or create ghost text window
+    #[allow(dead_code)]
     fn get_or_create_ghost_window(&self) -> Result<WebviewWindow> {
         match self.app_handle.get_webview_window("ghost-text") {
             Some(window) => Ok(window),

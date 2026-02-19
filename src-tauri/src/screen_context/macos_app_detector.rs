@@ -8,6 +8,7 @@ use std::process::Command;
 
 use crate::screen_context::context_data::{AppInfo, BrowserType, IDEType};
 
+#[allow(dead_code)]
 pub struct MacOSAppDetector {
     workspace: id,
     cache: HashMap<u32, AppInfo>,
@@ -580,6 +581,7 @@ impl Default for MacOSAppDetector {
 }
 
 // Helper trait for NSString conversion
+#[allow(dead_code)]
 trait NSStringExt {
     fn to_string(self) -> String;
 }
