@@ -28,6 +28,7 @@ struct DevToolsTab {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct DevToolsRequest {
     id: u64,
     method: String,
@@ -35,6 +36,7 @@ struct DevToolsRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct DevToolsResponse {
     id: Option<u64>,
     result: Option<Value>,
