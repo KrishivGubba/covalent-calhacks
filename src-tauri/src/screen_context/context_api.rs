@@ -128,15 +128,16 @@ impl ContextApiClient {
             .await
             .context("Failed to send plan_action request to Flask API")?;
 
-        if response.status().is_success() {
-            let json_response: serde_json::Value = response
-                .json()
-                .await
+        // Accept 200 (success), 400 (bad request), and 500 (planning/MCP error) as
+        // structured responses — Flask always returns {status, error} JSON for errors
+        // so the frontend can surface the message cleanly.
+        let status = response.status();
+        if status.is_success() || status.as_u16() == 400 || status.as_u16() == 500 {
+            let body = response.text().await.unwrap_or_default();
+            let json_response: serde_json::Value = serde_json::from_str(&body)
                 .context("Failed to parse plan_action response from Flask API")?;
-            
             Ok(json_response)
         } else {
-            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             Err(anyhow::anyhow!(
                 "Flask API plan_action returned error status {}: {}",
@@ -164,15 +165,15 @@ impl ContextApiClient {
             .await
             .context("Failed to send execute_action request to Flask API")?;
 
-        if response.status().is_success() {
-            let json_response: serde_json::Value = response
-                .json()
-                .await
+        // Accept 200 (success) and 500 (tool error) as structured responses — Flask
+        // returns {status, error} JSON even on 500 so the caller can surface the message.
+        let status = response.status();
+        if status.is_success() || status.as_u16() == 500 {
+            let body = response.text().await.unwrap_or_default();
+            let json_response: serde_json::Value = serde_json::from_str(&body)
                 .context("Failed to parse execute_action response from Flask API")?;
-            
             Ok(json_response)
         } else {
-            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             Err(anyhow::anyhow!(
                 "Flask API execute_action returned error status {}: {}",
@@ -199,14 +200,14 @@ impl ContextApiClient {
             .await
             .context("Failed to send execute_action_chain request to Flask API")?;
 
-        // Handle both 200 (success) and 207 (partial success) as valid responses
+        // Accept 200 (all succeeded), 207 (partial), and 500 (all failed) as structured
+        // responses — the JSON body always contains {status, results, summary} in all
+        // three cases. Only treat non-parseable / unexpected failures as hard errors.
         let status = response.status();
-        if status.is_success() || status.as_u16() == 207 {
-            let json_response: serde_json::Value = response
-                .json()
-                .await
+        if status.is_success() || status.as_u16() == 207 || status.as_u16() == 500 {
+            let body = response.text().await.unwrap_or_default();
+            let json_response: serde_json::Value = serde_json::from_str(&body)
                 .context("Failed to parse execute_action_chain response from Flask API")?;
-            
             Ok(json_response)
         } else {
             let error_text = response.text().await.unwrap_or_default();

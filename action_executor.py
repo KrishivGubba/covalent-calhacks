@@ -932,6 +932,32 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
         # Execute the tool via LangChain's ainvoke
         result = await tool.ainvoke(parameters)
         
+        # Check if the tool itself reported a failure (MCP tools can return
+        # {success: false, ...} without raising an exception).
+        result_data = None
+        if isinstance(result, dict):
+            result_data = result
+        elif isinstance(result, str):
+            try:
+                import json as _json
+                result_data = _json.loads(result)
+            except (ValueError, TypeError):
+                pass
+
+        if isinstance(result_data, dict) and result_data.get("success") is False:
+            error_msg = (
+                result_data.get("error")
+                or result_data.get("message")
+                or result_data.get("detail")
+                or "Tool execution failed"
+            )
+            print(f"❌ Tool returned failure response: {error_msg}")
+            return {
+                "status": "error",
+                "result": None,
+                "error": error_msg,
+            }
+        
         print(f"✅ Tool execution completed")
         
         return {

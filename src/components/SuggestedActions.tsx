@@ -182,6 +182,15 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
         // #region agent log
         fetch('http://127.0.0.1:7243/ingest/7843b36f-61b5-435e-a971-922268939b8a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SuggestedActions.tsx:handleActionClick',message:'Plan received from Tauri',data:{status:plan.status,proposed_actions:plan.proposed_actions,displays:plan.displays,legacy_proposed_action:plan.proposed_action,all_keys:Object.keys(plan)},timestamp:Date.now(),hypothesisId:'H1,H2,H5'})}).catch(()=>{});
         // #endregion
+
+        if (plan.status === 'error') {
+          // Flask or MCP returned a structured error — show it in the error modal.
+          setPlanError(plan.error || 'Planning failed');
+          setActionStatuses(prev => ({ ...prev, [action.id]: 'idle' }));
+          await enableContextCollectionIfNotUserPaused();
+          return;
+        }
+
         setActionPlan(plan);
         setExecutionResults(null);
         setExecutionSummary(null);
@@ -205,18 +214,12 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
         
         // Keep status as 'playing' until user confirms or cancels
       } catch (error) {
+        // Network-level failure (Flask server down, connection refused, etc.)
         console.error(`❌ Action planning failed:`, error);
         setPlanError(String(error));
-        setActionStatuses(prev => ({ ...prev, [action.id]: 'error' }));
-        setPlanningAction(null);
-        
-        // Re-enable context collection on error (only if not user-paused)
+        setActionStatuses(prev => ({ ...prev, [action.id]: 'idle' }));
+        // Keep planningAction set so the error is visible in the loading/error modal.
         await enableContextCollectionIfNotUserPaused();
-        
-        // Reset to idle after 3 seconds on error
-        setTimeout(() => {
-          setActionStatuses(prev => ({ ...prev, [action.id]: 'idle' }));
-        }, 3000);
       }
     } else if (currentStatus === 'playing') {
       // Can't pause/reset while playing
@@ -937,16 +940,33 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
         </div>
       )}
 
-      {/* Loading state while planning */}
-      {planningAction && !actionPlan && !planError && (
+      {/* Loading / planning-error state */}
+      {planningAction && !actionPlan && (
         <div style={styles.modalOverlay}>
           <div style={styles.loadingModal}>
-            <div style={styles.loadingSpinner}>
-              <span style={styles.dot1}>.</span>
-              <span style={styles.dot2}>.</span>
-              <span style={styles.dot3}>.</span>
-            </div>
-            <p style={styles.loadingText}>Planning action...</p>
+            {planError ? (
+              <>
+                <div style={{ fontSize: '1.5rem', color: '#f87171', marginBottom: '0.75rem' }}>✕</div>
+                <p style={{ ...styles.loadingText, color: 'rgba(248, 113, 113, 0.95)', textAlign: 'center' as const, maxWidth: '320px' }}>
+                  {planError}
+                </p>
+                <button
+                  onClick={() => { setPlanningAction(null); setPlanError(null); }}
+                  style={{ marginTop: '1.25rem', padding: '8px 20px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.2)', backgroundColor: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.72)', fontSize: '0.9rem', cursor: 'pointer' }}
+                >
+                  Dismiss
+                </button>
+              </>
+            ) : (
+              <>
+                <div style={styles.loadingSpinner}>
+                  <span style={styles.dot1}>.</span>
+                  <span style={styles.dot2}>.</span>
+                  <span style={styles.dot3}>.</span>
+                </div>
+                <p style={styles.loadingText}>Planning action...</p>
+              </>
+            )}
           </div>
         </div>
       )}
