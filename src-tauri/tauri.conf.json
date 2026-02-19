@@ -100,13 +100,17 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "../dist-servers/flask-server/**/*": "servers/flask-server/",
+      "../dist-servers/mcp-server/**/*": "servers/mcp-server/"
+    },
     "createUpdaterArtifacts": true
   },
   "plugins": {
     "updater": {
-      "pubkey": "YOUR_PUBLIC_KEY_HERE",
+      "pubkey": "UPDATER_PUBKEY_PLACEHOLDER",
       "endpoints": [
-        "https://your-cloudfront-url.cloudfront.net/updates/{{target}}/{{arch}}/{{current_version}}"
+        "https://github.com/hem8705/covalent-calhacks/releases/latest/download/latest.json"
       ]
     }
   }

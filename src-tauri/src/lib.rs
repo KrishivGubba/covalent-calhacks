@@ -140,7 +140,26 @@ impl ContextState {
     }
 }
 
-// Flask server state management
+fn resolve_server_binary(app_dir: &PathBuf, server_name: &str, is_dev: bool) -> PathBuf {
+    if is_dev {
+        app_dir.join("dist-servers").join(server_name).join(server_name)
+    } else {
+        app_dir.join("servers").join(server_name).join(server_name)
+    }
+}
+
+fn ensure_executable(path: &PathBuf) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(path, perms);
+        }
+    }
+}
+
 struct FlaskServer {
     process: Arc<Mutex<Option<Child>>>,
 }
@@ -152,26 +171,39 @@ impl FlaskServer {
         }
     }
 
-    fn start(&self, app_dir: PathBuf) -> Result<(), String> {
-        let start_script = app_dir.join("start.sh");
-        
-        if !start_script.exists() {
-            return Err(format!("Flask start script not found at {:?}", start_script));
+    fn start(&self, app_dir: PathBuf, is_dev: bool) -> Result<(), String> {
+        let binary = resolve_server_binary(&app_dir, "flask-server", is_dev);
+
+        if !binary.exists() {
+            return Err(format!("Flask server binary not found at {:?}", binary));
         }
 
-        println!("Starting Flask server from {:?}", start_script);
-        
-        match Command::new("bash")
-            .arg(&start_script)
-            .current_dir(&app_dir)
-            .spawn()
-        {
+        ensure_executable(&binary);
+
+        let work_dir = binary.parent().unwrap().to_path_buf();
+        println!("Starting Flask server binary: {:?}", binary);
+
+        let mut cmd = Command::new(&binary);
+        cmd.current_dir(&work_dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        if let Ok(env_path) = std::fs::read_to_string(app_dir.join(".env")) {
+            for line in env_path.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = line.split_once('=') {
+                    cmd.env(key.trim(), value.trim());
+                }
+            }
+        }
+
+        match cmd.spawn() {
             Ok(child) => {
                 println!("Flask server started with PID: {:?}", child.id());
-                let mut process_guard = self.process.lock().unwrap();
-                *process_guard = Some(child);
-                
-                // Give server a moment to start up
+                *self.process.lock().unwrap() = Some(child);
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 Ok(())
             }
@@ -194,6 +226,77 @@ impl FlaskServer {
 }
 
 impl Drop for FlaskServer {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+struct McpServer {
+    process: Arc<Mutex<Option<Child>>>,
+}
+
+impl McpServer {
+    fn new() -> Self {
+        Self {
+            process: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn start(&self, app_dir: PathBuf, is_dev: bool) -> Result<(), String> {
+        let binary = resolve_server_binary(&app_dir, "mcp-server", is_dev);
+
+        if !binary.exists() {
+            return Err(format!("MCP server binary not found at {:?}", binary));
+        }
+
+        ensure_executable(&binary);
+
+        let work_dir = binary.parent().unwrap().to_path_buf();
+        println!("Starting MCP server binary: {:?}", binary);
+
+        let mut cmd = Command::new(&binary);
+        cmd.current_dir(&work_dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        if let Ok(env_path) = std::fs::read_to_string(app_dir.join(".env")) {
+            for line in env_path.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = line.split_once('=') {
+                    cmd.env(key.trim(), value.trim());
+                }
+            }
+        }
+
+        match cmd.spawn() {
+            Ok(child) => {
+                println!("MCP server started with PID: {:?}", child.id());
+                *self.process.lock().unwrap() = Some(child);
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("Failed to start MCP server: {}", e);
+                Err(format!("Failed to start MCP server: {}", e))
+            }
+        }
+    }
+
+    fn stop(&self) {
+        if let Ok(mut process_guard) = self.process.lock() {
+            if let Some(mut child) = process_guard.take() {
+                println!("Stopping MCP server (PID: {:?})", child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+}
+
+impl Drop for McpServer {
     fn drop(&mut self) {
         self.stop();
     }
@@ -740,36 +843,41 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // Start Flask server
-            let app_dir = if cfg!(dev) {
-                // In dev mode, use project root (parent of src-tauri)
+            let is_dev = cfg!(dev);
+            let app_dir = if is_dev {
                 std::env::current_dir()
                     .unwrap()
                     .parent()
                     .unwrap()
                     .to_path_buf()
             } else {
-                // In production, use resource directory
                 app.path()
                     .resource_dir()
                     .unwrap_or_else(|_| std::env::current_dir().unwrap())
             };
             
-            println!("App directory: {:?}", app_dir);
-            
+            println!("App directory: {:?} (dev={})", app_dir, is_dev);
+
+            // Start MCP server (must come before Flask since Flask may depend on it)
+            let mcp_server = McpServer::new();
+            match mcp_server.start(app_dir.clone(), is_dev) {
+                Ok(_) => println!("✓ MCP server started successfully"),
+                Err(e) => eprintln!("✗ Failed to start MCP server: {}", e),
+            }
+            app.manage(mcp_server);
+
             let flask_server = FlaskServer::new();
-            
-            match flask_server.start(app_dir.clone()) {
+            match flask_server.start(app_dir.clone(), is_dev) {
                 Ok(_) => println!("✓ Flask server started successfully"),
                 Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
             }
             app.manage(flask_server);
 
-            println!("🦙 Starting Ollama serve...");
+            println!("Starting Ollama serve...");
             let ollama_server = OllamaServer::new();
             match ollama_server.start() {
                 Ok(_) => {},
-                Err(e) => eprintln!("⚠️  Ollama startup issue: {}", e),
+                Err(e) => eprintln!("Ollama startup issue: {}", e),
             }
             app.manage(ollama_server);
             

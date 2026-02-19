@@ -66,6 +66,7 @@ covalent_mcp/toolclasses/google/oauth_secrets.json
 restart.sh
 
 dist/
+dist-servers/
 build/
 *.spec
 claude_api_usage_report_2026-02-12.txt

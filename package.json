@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:servers": "bash build_servers.sh",
+    "build:all": "npm run build:servers && npm run tauri build",
+    "release": "npm run build:servers && npm run tauri build",
+    "signer:generate": "npx tauri signer generate -w ~/.tauri/covalent.key"
   },
   "dependencies": {
     "@tauri-apps/api": "2.5.0",
