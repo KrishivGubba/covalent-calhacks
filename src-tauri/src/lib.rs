@@ -321,6 +321,75 @@ fn enable_context_collection_if_not_user_paused(state: tauri::State<ContextState
     state.enable_if_not_user_paused();
 }
 
+// --- Settings persistence helpers ---
+
+/// Returns the path to the shared settings JSON file, creating parent dirs if needed.
+fn settings_file_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    let dir = app.path().app_data_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("settings.json"))
+}
+
+/// Load the persisted settings JSON, returning a mutable Value (empty object on any error).
+fn load_settings(app: &tauri::AppHandle) -> serde_json::Value {
+    let path = match settings_file_path(app) {
+        Some(p) => p,
+        None => return serde_json::json!({}),
+    };
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+/// Persist a single key/value pair in the settings JSON file.
+fn save_setting(app: &tauri::AppHandle, key: &str, value: serde_json::Value) {
+    let path = match settings_file_path(app) {
+        Some(p) => p,
+        None => {
+            eprintln!("⚠️  Could not resolve settings file path");
+            return;
+        }
+    };
+    let mut settings = load_settings(app);
+    settings[key] = value;
+    match serde_json::to_string_pretty(&settings) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                eprintln!("⚠️  Failed to write settings file: {}", e);
+            }
+        }
+        Err(e) => eprintln!("⚠️  Failed to serialize settings: {}", e),
+    }
+}
+
+// Tab completion control commands
+#[tauri::command]
+fn get_tab_completion_status(trigger: tauri::State<std::sync::Arc<tab_completion::CompletionTrigger>>) -> bool {
+    trigger.is_tab_completion_enabled()
+}
+
+#[tauri::command]
+fn set_tab_completion_enabled(
+    app: tauri::AppHandle,
+    trigger: tauri::State<std::sync::Arc<tab_completion::CompletionTrigger>>,
+    enabled: bool,
+) {
+    trigger.set_tab_completion_enabled(enabled);
+    save_setting(&app, "tab_completion_enabled", serde_json::Value::Bool(enabled));
+}
+
+#[tauri::command]
+fn toggle_tab_completion(
+    app: tauri::AppHandle,
+    trigger: tauri::State<std::sync::Arc<tab_completion::CompletionTrigger>>,
+) -> bool {
+    let new_state = trigger.toggle_tab_completion();
+    save_setting(&app, "tab_completion_enabled", serde_json::Value::Bool(new_state));
+    new_state
+}
+
 // Plan action command - Phase 1 of new action flow
 // Returns action plan for user approval/editing before execution
 #[tauri::command]
@@ -923,6 +992,20 @@ pub fn run() {
                         eprintln!("   Hotkeys will not be available");
                     }
                     
+                    // Restore persisted tab completion enabled/disabled state
+                    {
+                        let settings = load_settings(app.handle());
+                        let persisted = settings
+                            .get("tab_completion_enabled")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false); // default OFF
+                        trigger.set_tab_completion_enabled(persisted);
+                        println!(
+                            "⚙️  Tab completion restored from settings: {}",
+                            if persisted { "ON" } else { "OFF" }
+                        );
+                    }
+
                     // Start listening for keystrokes
                     let trigger_clone = trigger.clone();
                     trigger_clone.start_listening();
@@ -996,6 +1079,9 @@ pub fn run() {
             disable_context_collection,
             get_context_collection_status,
             enable_context_collection_if_not_user_paused,
+            get_tab_completion_status,
+            set_tab_completion_enabled,
+            toggle_tab_completion,
             plan_action,
             execute_action,
             edit_action,

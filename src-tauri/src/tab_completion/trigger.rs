@@ -5,6 +5,7 @@ use rdev::{listen, Event, EventType, Key};
 #[cfg(target_os = "macos")]
 use super::macos_keyboard::{MacOSKeyboardListener, KeyboardEvent};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sha2::{Sha256, Digest};
 use tokio::runtime::Runtime;
@@ -31,6 +32,8 @@ pub struct CompletionTrigger {
     decline_context: Arc<Mutex<Option<DeclineContext>>>,
     /// Callback to get current recommended actions
     actions_getter: Arc<Mutex<Option<Box<dyn Fn() -> Vec<ActionSummary> + Send + Sync>>>>,
+    /// Whether tab completion is enabled (off by default)
+    is_enabled: Arc<AtomicBool>,
     #[cfg(target_os = "macos")]
     keyboard_listener: Arc<Mutex<Option<MacOSKeyboardListener>>>,
 }
@@ -147,9 +150,32 @@ impl CompletionTrigger {
             prediction_counter: Arc::new(Mutex::new(0)),
             decline_context: Arc::new(Mutex::new(None)),
             actions_getter: Arc::new(Mutex::new(None)),
+            is_enabled: Arc::new(AtomicBool::new(false)), // OFF by default
             #[cfg(target_os = "macos")]
             keyboard_listener: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// Returns whether tab completion is currently enabled.
+    pub fn is_tab_completion_enabled(&self) -> bool {
+        self.is_enabled.load(Ordering::Relaxed)
+    }
+
+    /// Enable or disable tab completion.
+    pub fn set_tab_completion_enabled(&self, enabled: bool) {
+        self.is_enabled.store(enabled, Ordering::Relaxed);
+        if enabled {
+            println!("🟢 Tab completion ENABLED");
+        } else {
+            println!("🔴 Tab completion DISABLED");
+        }
+    }
+
+    /// Toggle tab completion on/off and return the new state.
+    pub fn toggle_tab_completion(&self) -> bool {
+        let new_state = !self.is_tab_completion_enabled();
+        self.set_tab_completion_enabled(new_state);
+        new_state
     }
     
     /// Set callback for when a suggestion is generated (for UI integration)
@@ -321,6 +347,11 @@ impl CompletionTrigger {
         let mut last_event_time = Instant::now();
         let mut seen_any_event = false;
         loop {
+            // Skip all processing when tab completion is disabled
+            if !self.is_tab_completion_enabled() {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
             let listener_guard = self.keyboard_listener.lock();
             let listener = match listener_guard.as_ref() {
                 Some(l) => l,
@@ -511,6 +542,11 @@ impl CompletionTrigger {
     /// Handle keyboard events from rdev (non-macOS platforms)
     #[cfg(not(target_os = "macos"))]
     fn handle_event(&self, event: Event) {
+        // Skip if tab completion is disabled
+        if !self.is_tab_completion_enabled() {
+            return;
+        }
+
         match event.event_type {
             EventType::KeyPress(key) => {
                 // Capture all typeable characters
@@ -592,6 +628,11 @@ impl CompletionTrigger {
     }
     
     fn trigger_completion(&self) {
+        // Skip if tab completion is disabled
+        if !self.is_tab_completion_enabled() {
+            return;
+        }
+
         let text = self.text_buffer.lock().get_last_n(100); // Get more context
 
         // Use cached app name — updated by the background app detector thread.
