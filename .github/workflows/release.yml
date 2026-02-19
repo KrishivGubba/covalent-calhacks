@@ -18,15 +18,7 @@ env:
 
 jobs:
   build-servers:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: macos-latest
-            arch: aarch64-apple-darwin
-          - platform: macos-13
-            arch: x86_64-apple-darwin
-    runs-on: ${{ matrix.platform }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -46,21 +38,13 @@ jobs:
       - name: Upload server binaries
         uses: actions/upload-artifact@v4
         with:
-          name: servers-${{ matrix.arch }}
+          name: servers-aarch64-apple-darwin
           path: dist-servers/
           retention-days: 1
 
   build-tauri:
     needs: build-servers
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: macos-latest
-            rust-target: aarch64-apple-darwin
-          - platform: macos-13
-            rust-target: x86_64-apple-darwin
-    runs-on: ${{ matrix.platform }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -71,8 +55,6 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust-target }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -85,7 +67,7 @@ jobs:
       - name: Download server binaries
         uses: actions/download-artifact@v4
         with:
-          name: servers-${{ matrix.rust-target }}
+          name: servers-aarch64-apple-darwin
           path: dist-servers/
 
       - name: Restore executable permissions on server binaries
@@ -105,7 +87,6 @@ jobs:
           releaseBody: 'See the assets to download and install this version.'
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.rust-target }}
 
   publish-release:
     needs: build-tauri
