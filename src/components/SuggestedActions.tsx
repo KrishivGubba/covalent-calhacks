@@ -121,7 +121,7 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
   const [executionSummary, setExecutionSummary] = useState<ExecutionSummary | null>(null);
   
   // Legacy: single editableParams for backward compat
-  const [editableParams, setEditableParams] = useState<Record<string, unknown>>({});
+  const [_editableParams, setEditableParams] = useState<Record<string, unknown>>({});
   
   // Helper: Get normalized proposed actions array
   const getProposedActions = (plan: ActionPlan): ProposedAction[] => {
@@ -355,7 +355,7 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
   };
 
   // Legacy: single action param change
-  const handleParamChange = (key: string, value: unknown) => {
+  const _handleParamChange = (key: string, value: unknown) => {
     setEditableParams(prev => ({ ...prev, [key]: value }));
     // Also update the map for step 1 (backward compat)
     handleStepParamChange(1, key, value);

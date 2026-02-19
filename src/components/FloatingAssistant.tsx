@@ -34,7 +34,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
   const [planningAction, setPlanningAction] = useState<Action | null>(null);
   const [actionPlan, setActionPlan] = useState<ActionPlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
-  const [editableParams, setEditableParams] = useState<Record<string, unknown>>({});
+  const [_editableParams, setEditableParams] = useState<Record<string, unknown>>({});
   const [isExecuting, setIsExecuting] = useState(false);
   // Multi-action support
   const [editableParamsMap, setEditableParamsMap] = useState<Record<number, Record<string, unknown>>>({});
@@ -257,7 +257,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
     await enableContextCollectionIfNotUserPaused();
   };
 
-  const handleParamChange = (key: string, value: unknown) => {
+  const _handleParamChange = (key: string, value: unknown) => {
     setEditableParams(prev => ({ ...prev, [key]: value }));
   };
 
