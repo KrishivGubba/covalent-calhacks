@@ -108,7 +108,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "UPDATER_PUBKEY_PLACEHOLDER",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM4MjRBQUMxMEE4QzlDRTYKUldUbW5Jd0t3YW9rT000SWJ0RSt3elRsb21WWUJremloZHBhT3VVVUNaYWtwUWsraVZaZ1BOTFEK",
       "endpoints": [
         "https://github.com/hem8705/covalent-calhacks/releases/latest/download/latest.json"
       ]
