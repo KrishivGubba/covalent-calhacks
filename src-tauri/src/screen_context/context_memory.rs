@@ -225,7 +225,7 @@ impl ContextMemory {
 
         // Detect if this is a chain continuation or new chain
         let decision = self.detect_chain_or_antichain(&summary).await;
-        let is_new_chain = matches!(decision, ChainDecision::NewChain { .. });
+        let _is_new_chain = matches!(decision, ChainDecision::NewChain { .. });
 
         // Update chain ID based on decision
         match &decision {

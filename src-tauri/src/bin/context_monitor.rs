@@ -225,6 +225,7 @@ fn print_analysis(analysis: &ContextAnalysisOutput, iteration: u32) {
 }
 
 // Add some utility functions for enhanced output
+#[allow(dead_code)]
 fn print_banner() {
     println!("{}", r#"
  ____                     _            _   
@@ -238,6 +239,7 @@ fn print_banner() {
 }
 
 // Signal handler for graceful shutdown
+#[allow(dead_code)]
 async fn setup_signal_handler() -> Result<()> {
     #[cfg(unix)]
     {

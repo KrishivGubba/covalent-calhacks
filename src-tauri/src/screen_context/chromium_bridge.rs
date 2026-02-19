@@ -15,6 +15,7 @@ use crate::screen_context::context_data::{
     DOMData, FormData, InputData, LinkData, ScrollPosition, ViewportSize,
 };
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DevToolsTab {
     id: String,
@@ -42,6 +43,7 @@ struct DevToolsResponse {
     params: Option<Value>,
 }
 
+#[allow(dead_code)]
 pub struct ChromiumBridge {
     client: Client,
     debugging_port: u16,
@@ -70,6 +72,7 @@ impl ChromiumBridge {
     }
     
     /// Get list of available tabs
+    #[allow(private_interfaces)]
     pub async fn get_tabs(&self) -> Result<Vec<DevToolsTab>> {
         let url = format!("http://localhost:{}/json", self.debugging_port);
         

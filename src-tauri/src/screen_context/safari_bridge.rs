@@ -18,6 +18,7 @@ pub struct SafariTab {
     pub is_visible: bool,
 }
 
+#[allow(dead_code)]
 pub struct SafariBridge {
     use_javascript_osa: bool,
     timeout_duration: Duration,
@@ -389,10 +390,10 @@ impl SafariBridge {
         result
     }
     
-    fn parse_tabs_result(&self, result: &str) -> Result<Vec<SafariTab>> {
+    fn parse_tabs_result(&self, _result: &str) -> Result<Vec<SafariTab>> {
         // This is a simplified parser for AppleScript list results
         // In practice, you'd want more robust parsing
-        let mut tabs = Vec::new();
+        let tabs = Vec::new();
         
         // AppleScript returns lists in a specific format
         // For now, return empty vector as parsing AppleScript lists is complex

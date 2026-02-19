@@ -42,6 +42,7 @@ fn send_backspaces(count: usize) -> Result<()> {
         use core_graphics::event::{CGEvent, CGKeyCode, CGEventFlags};
         use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
+        #[allow(non_upper_case_globals)]
         const kVK_Delete: CGKeyCode = 0x33; // Backspace key
 
         let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
@@ -151,9 +152,6 @@ fn send_text_via_applescript(text: &str) -> Result<()> {
 }
 
 fn execute_applescript(script: &str) -> Result<()> {
-    use osascript::JavaScript;
-    
-    // Note: osascript crate actually supports AppleScript by default
     let result = std::process::Command::new("osascript")
         .arg("-e")
         .arg(script)
@@ -209,6 +207,7 @@ fn send_key_combo_native(_keycode: u16, _flags: u64) -> Result<()> {
     Err(anyhow::anyhow!("Native key injection only supported on macOS"))
 }
 
+#[allow(dead_code)]
 fn char_to_keycode(ch: char) -> Option<u16> {
     match ch {
         'a' => Some(kVK_ANSI_A),
@@ -255,45 +254,49 @@ fn char_to_keycode(ch: char) -> Option<u16> {
 }
 
 // macOS keycodes
-const kVK_ANSI_A: u16 = 0x00;
-const kVK_ANSI_B: u16 = 0x0B;
-const kVK_ANSI_C: u16 = 0x08;
-const kVK_ANSI_D: u16 = 0x02;
-const kVK_ANSI_E: u16 = 0x0E;
-const kVK_ANSI_F: u16 = 0x03;
-const kVK_ANSI_G: u16 = 0x05;
-const kVK_ANSI_H: u16 = 0x04;
-const kVK_ANSI_I: u16 = 0x22;
-const kVK_ANSI_J: u16 = 0x26;
-const kVK_ANSI_K: u16 = 0x28;
-const kVK_ANSI_L: u16 = 0x25;
-const kVK_ANSI_M: u16 = 0x2E;
-const kVK_ANSI_N: u16 = 0x2D;
-const kVK_ANSI_O: u16 = 0x1F;
-const kVK_ANSI_P: u16 = 0x23;
-const kVK_ANSI_Q: u16 = 0x0C;
-const kVK_ANSI_R: u16 = 0x0F;
-const kVK_ANSI_S: u16 = 0x01;
-const kVK_ANSI_T: u16 = 0x11;
-const kVK_ANSI_U: u16 = 0x20;
-const kVK_ANSI_V: u16 = 0x09;
-const kVK_ANSI_W: u16 = 0x0D;
-const kVK_ANSI_X: u16 = 0x07;
-const kVK_ANSI_Y: u16 = 0x10;
-const kVK_ANSI_Z: u16 = 0x06;
-const kVK_ANSI_0: u16 = 0x1D;
-const kVK_ANSI_1: u16 = 0x12;
-const kVK_ANSI_2: u16 = 0x13;
-const kVK_ANSI_3: u16 = 0x14;
-const kVK_ANSI_4: u16 = 0x15;
-const kVK_ANSI_5: u16 = 0x17;
-const kVK_ANSI_6: u16 = 0x16;
-const kVK_ANSI_7: u16 = 0x1A;
-const kVK_ANSI_8: u16 = 0x1C;
-const kVK_ANSI_9: u16 = 0x19;
-const kVK_Space: u16 = 0x31;
-const kVK_ANSI_Minus: u16 = 0x1B;
-const kVK_ANSI_Equal: u16 = 0x18;
+#[allow(dead_code, non_upper_case_globals)]
+mod keycodes {
+    pub const kVK_ANSI_A: u16 = 0x00;
+    pub const kVK_ANSI_B: u16 = 0x0B;
+    pub const kVK_ANSI_C: u16 = 0x08;
+    pub const kVK_ANSI_D: u16 = 0x02;
+    pub const kVK_ANSI_E: u16 = 0x0E;
+    pub const kVK_ANSI_F: u16 = 0x03;
+    pub const kVK_ANSI_G: u16 = 0x05;
+    pub const kVK_ANSI_H: u16 = 0x04;
+    pub const kVK_ANSI_I: u16 = 0x22;
+    pub const kVK_ANSI_J: u16 = 0x26;
+    pub const kVK_ANSI_K: u16 = 0x28;
+    pub const kVK_ANSI_L: u16 = 0x25;
+    pub const kVK_ANSI_M: u16 = 0x2E;
+    pub const kVK_ANSI_N: u16 = 0x2D;
+    pub const kVK_ANSI_O: u16 = 0x1F;
+    pub const kVK_ANSI_P: u16 = 0x23;
+    pub const kVK_ANSI_Q: u16 = 0x0C;
+    pub const kVK_ANSI_R: u16 = 0x0F;
+    pub const kVK_ANSI_S: u16 = 0x01;
+    pub const kVK_ANSI_T: u16 = 0x11;
+    pub const kVK_ANSI_U: u16 = 0x20;
+    pub const kVK_ANSI_V: u16 = 0x09;
+    pub const kVK_ANSI_W: u16 = 0x0D;
+    pub const kVK_ANSI_X: u16 = 0x07;
+    pub const kVK_ANSI_Y: u16 = 0x10;
+    pub const kVK_ANSI_Z: u16 = 0x06;
+    pub const kVK_ANSI_0: u16 = 0x1D;
+    pub const kVK_ANSI_1: u16 = 0x12;
+    pub const kVK_ANSI_2: u16 = 0x13;
+    pub const kVK_ANSI_3: u16 = 0x14;
+    pub const kVK_ANSI_4: u16 = 0x15;
+    pub const kVK_ANSI_5: u16 = 0x17;
+    pub const kVK_ANSI_6: u16 = 0x16;
+    pub const kVK_ANSI_7: u16 = 0x1A;
+    pub const kVK_ANSI_8: u16 = 0x1C;
+    pub const kVK_ANSI_9: u16 = 0x19;
+    pub const kVK_Space: u16 = 0x31;
+    pub const kVK_ANSI_Minus: u16 = 0x1B;
+    pub const kVK_ANSI_Equal: u16 = 0x18;
+}
+use keycodes::*;
 
 #[cfg(test)]
 mod tests {

@@ -6,11 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "macos")]
 use core_graphics::event::{
-    CGEvent, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
-    CGEventType, EventField, CGEventFlags, CGKeyCode,
+    CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+    CGEventType, EventField, CGEventFlags,
 };
-#[cfg(target_os = "macos")]
-use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
 /// Grace period in milliseconds - popup stays visible even if user keeps typing
 const SUGGESTION_GRACE_PERIOD_MS: u64 = 1000;
@@ -28,13 +26,45 @@ pub struct DismissInfo {
     pub chars_count: usize,
 }
 
+/// Consolidated suggestion state - protected by a SINGLE lock to avoid contention.
+/// Previously these were 4 separate mutexes, causing severe lock contention between
+/// the CGEventTap thread (processing keystrokes) and the main thread (updating state).
+/// With a single lock, each thread acquires/releases once instead of 4 times per operation.
+#[derive(Default)]
+struct SuggestionState {
+    current_suggestion: Option<String>,
+    shown_at: Option<Instant>,
+    chars_typed: usize,
+    chars_buffer: String,
+}
+
+impl SuggestionState {
+    fn clear(&mut self) {
+        self.current_suggestion = None;
+        self.shown_at = None;
+        self.chars_typed = 0;
+        self.chars_buffer.clear();
+    }
+
+    fn set(&mut self, text: Option<String>) {
+        if text.is_some() {
+            self.shown_at = Some(Instant::now());
+            self.chars_typed = 0;
+            self.chars_buffer.clear();
+        } else {
+            self.shown_at = None;
+            self.chars_typed = 0;
+            self.chars_buffer.clear();
+        }
+        self.current_suggestion = text;
+    }
+}
+
 /// Hotkey handler for accepting/dismissing completions
 pub struct HotkeyHandler {
-    current_suggestion: Arc<Mutex<Option<String>>>,
-    suggestion_shown_at: Arc<Mutex<Option<Instant>>>,
-    chars_typed_since_suggestion: Arc<Mutex<usize>>,
-    /// Buffer of chars typed since suggestion was shown
-    chars_buffer_since_suggestion: Arc<Mutex<String>>,
+    /// Consolidated suggestion state - single lock for all suggestion-related fields.
+    /// This dramatically reduces lock contention compared to 4 separate locks.
+    state: Arc<Mutex<SuggestionState>>,
     accept_callback: Arc<Mutex<Option<Box<dyn Fn(String, usize) + Send + Sync>>>>,
     dismiss_callback: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
     /// Enhanced dismiss callback with full decline info
@@ -44,37 +74,27 @@ pub struct HotkeyHandler {
 impl HotkeyHandler {
     pub fn new() -> Self {
         Self {
-            current_suggestion: Arc::new(Mutex::new(None)),
-            suggestion_shown_at: Arc::new(Mutex::new(None)),
-            chars_typed_since_suggestion: Arc::new(Mutex::new(0)),
-            chars_buffer_since_suggestion: Arc::new(Mutex::new(String::new())),
+            state: Arc::new(Mutex::new(SuggestionState::default())),
             accept_callback: Arc::new(Mutex::new(None)),
             dismiss_callback: Arc::new(Mutex::new(None)),
             dismiss_with_info_callback: Arc::new(Mutex::new(None)),
         }
     }
 
-    /// Set the current suggestion text and record when it was shown
+    /// Set the current suggestion text and record when it was shown.
+    /// Uses a SINGLE lock acquisition instead of 4 separate locks to minimize
+    /// contention with the CGEventTap thread that processes keystrokes.
     pub fn set_suggestion(&self, text: Option<String>) {
-        if text.is_some() {
-            if tab_debug_enabled() {
+        if tab_debug_enabled() {
+            if text.is_some() {
                 let snippet = text.as_ref().map(|t| t.chars().take(30).collect::<String>()).unwrap_or_default();
                 tab_debug_log(&format!("set_suggestion: Some('{}...')", snippet));
-            }
-            // Record timestamp and reset char counter when new suggestion appears
-            *self.suggestion_shown_at.lock() = Some(Instant::now());
-            *self.chars_typed_since_suggestion.lock() = 0;
-            *self.chars_buffer_since_suggestion.lock() = String::new();
-        } else {
-            if tab_debug_enabled() {
+            } else {
                 tab_debug_log("set_suggestion: None");
             }
-            // Clear timestamp when suggestion is cleared
-            *self.suggestion_shown_at.lock() = None;
-            *self.chars_typed_since_suggestion.lock() = 0;
-            *self.chars_buffer_since_suggestion.lock() = String::new();
         }
-        *self.current_suggestion.lock() = text;
+        // Single lock acquisition for all state updates
+        self.state.lock().set(text);
     }
 
     /// Set callback for when suggestion is accepted (includes chars to erase)
@@ -102,18 +122,17 @@ impl HotkeyHandler {
         *self.dismiss_with_info_callback.lock() = Some(Box::new(callback));
     }
 
-    /// Build DismissInfo from current state
+    /// Build DismissInfo from current state (single lock acquisition)
+    #[allow(dead_code)]
     fn build_dismiss_info(&self) -> Option<DismissInfo> {
-        let suggestion = self.current_suggestion.lock().clone()?;
-        let shown_at = (*self.suggestion_shown_at.lock())?;
-        let chars_count = *self.chars_typed_since_suggestion.lock();
-        let chars_typed_after = self.chars_buffer_since_suggestion.lock().clone();
-
+        let state = self.state.lock();
+        let suggestion = state.current_suggestion.clone()?;
+        let shown_at = state.shown_at?;
         Some(DismissInfo {
             dismissed_text: suggestion,
             time_shown_ms: shown_at.elapsed().as_millis() as u64,
-            chars_typed_after,
-            chars_count,
+            chars_typed_after: state.chars_buffer.clone(),
+            chars_count: state.chars_typed,
         })
     }
     
@@ -162,7 +181,7 @@ impl HotkeyHandler {
                 // Use autoreleasepool and return its result
                 autoreleasepool(|| {
                     let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u16;
-                    let _flags = event.get_flags();
+                    let flags = event.get_flags();
                     
                     // Check for Option+Tab (keycode 0x30 with Option/Alt flag)
                     // We use Option+Tab instead of Cmd+Tab because Cmd+Tab is a
@@ -170,43 +189,57 @@ impl HotkeyHandler {
                     // to flag the entire process and auto-disable ALL event taps
                     // (both hotkey and keyboard listener), permanently breaking
                     // tab completion until app restart.
-                    let flags = event.get_flags();
                     let option_pressed = flags.contains(CGEventFlags::CGEventFlagAlternate);
                     let is_opt_tab = keycode == 0x30 && option_pressed;
 
                     if is_opt_tab {
-                        if let Some(suggestion) = handler.current_suggestion.lock().clone() {
-                            let chars_to_erase = *handler.chars_typed_since_suggestion.lock();
+                        // Single lock acquisition for accept: extract data, clear state, release lock
+                        let accept_data = {
+                            let mut state = handler.state.lock();
+                            if let Some(suggestion) = state.current_suggestion.take() {
+                                let chars_to_erase = state.chars_typed;
+                                state.clear();
+                                Some((suggestion, chars_to_erase))
+                            } else {
+                                None
+                            }
+                        };
+
+                        if let Some((suggestion, chars_to_erase)) = accept_data {
                             println!("✅ Option+Tab pressed - accepting suggestion (erasing {} chars)", chars_to_erase);
 
-                            // Call accept callback with suggestion and char count
-                            if let Some(ref callback) = *handler.accept_callback.lock() {
-                                callback(suggestion, chars_to_erase);
-                            }
-
-                            // Clear suggestion state
-                            *handler.current_suggestion.lock() = None;
-                            *handler.suggestion_shown_at.lock() = None;
-                            *handler.chars_typed_since_suggestion.lock() = 0;
-                            *handler.chars_buffer_since_suggestion.lock() = String::new();
-
-                            // Suppress Option+Tab by returning a synthetic event.
-                            // This avoids macOS interpreting the tap as suppressing input.
-                            if let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-                                if let Ok(new_event) = CGEvent::new_keyboard_event(source, 0x69 as CGKeyCode, true) {
-                                    new_event.set_flags(CGEventFlags::empty());
-                                    return Some(new_event);
+                            // Call accept callback with panic protection
+                            // Wrap in catch_unwind to prevent callback panics from killing CGEventTap thread
+                            let callback_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                if let Some(ref callback) = *handler.accept_callback.lock() {
+                                    callback(suggestion.clone(), chars_to_erase);
                                 }
+                            }));
+                            if let Err(e) = callback_result {
+                                eprintln!("🔴 PANIC in accept callback: {:?}", e);
                             }
-                            // Fallback: pass through original event unmodified
+
+                            println!("✅ Accept callback completed, returning event");
+
+                            // Pass through the original event instead of creating synthetic event.
+                            // Creating synthetic events was causing crashes on some macOS versions.
+                            // The Option key modifier will be stripped by the system anyway since
+                            // we're returning from an event tap.
                             return Some(event.clone());
                         } else if tab_debug_enabled() {
                             tab_debug_log("Option+Tab pressed with no active suggestion");
                         }
                     }
 
-                    // Check if we have an active suggestion
-                    let has_suggestion = handler.current_suggestion.lock().is_some();
+                    // Single lock acquisition to check state and handle keypress
+                    let (has_suggestion, is_escape, _chars_typed, within_grace_period) = {
+                        let state = handler.state.lock();
+                        let has = state.current_suggestion.is_some();
+                        let grace = state.shown_at
+                            .map(|t| t.elapsed().as_millis() < SUGGESTION_GRACE_PERIOD_MS as u128)
+                            .unwrap_or(false);
+                        (has, keycode == 0x35, state.chars_typed, grace)
+                    };
 
                     if has_suggestion {
                         if tab_debug_enabled() {
@@ -216,66 +249,62 @@ impl HotkeyHandler {
                                 flags.bits()
                             ));
                         }
-                        // Check for Escape key (keycode 0x35)
-                        if keycode == 0x35 {
+
+                        if is_escape {
                             println!("❌ Escape pressed - dismissing suggestion");
 
-                            // Build dismiss info before clearing state
-                            let dismiss_info = handler.build_dismiss_info();
+                            // Build dismiss info and clear state in single lock acquisition
+                            let dismiss_info = {
+                                let mut state = handler.state.lock();
+                                let info = if let (Some(suggestion), Some(shown_at)) = 
+                                    (state.current_suggestion.clone(), state.shown_at) {
+                                    Some(DismissInfo {
+                                        dismissed_text: suggestion,
+                                        time_shown_ms: shown_at.elapsed().as_millis() as u64,
+                                        chars_typed_after: state.chars_buffer.clone(),
+                                        chars_count: state.chars_typed,
+                                    })
+                                } else {
+                                    None
+                                };
+                                state.clear();
+                                info
+                            };
 
-                            // Call enhanced dismiss callback with info (for retry predictions)
+                            // Call callbacks with panic protection (state lock released)
                             if let Some(info) = dismiss_info {
-                                if let Some(ref callback) = *handler.dismiss_with_info_callback.lock() {
-                                    callback(info);
+                                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    if let Some(ref callback) = *handler.dismiss_with_info_callback.lock() {
+                                        callback(info);
+                                    }
+                                }));
+                            }
+                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                if let Some(ref callback) = *handler.dismiss_callback.lock() {
+                                    callback();
                                 }
-                            }
-
-                            // Call legacy dismiss callback
-                            if let Some(ref callback) = *handler.dismiss_callback.lock() {
-                                callback();
-                            }
-
-                            // Clear suggestion state
-                            *handler.current_suggestion.lock() = None;
-                            *handler.suggestion_shown_at.lock() = None;
-                            *handler.chars_typed_since_suggestion.lock() = 0;
-                            *handler.chars_buffer_since_suggestion.lock() = String::new();
-
-                            // Let Escape pass through
-                        }
-                        // Any other key: check grace period before dismissing
-                        else {
-                            // Ignore modifier keys (Shift, Cmd, Ctrl, Option)
+                            }));
+                        } else {
+                            // Any other key: update char counter and check grace period
                             let is_modifier = matches!(keycode,
                                 0x37 | 0x38 | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x3F // Cmd, Shift, Option, Ctrl
                             );
 
                             if !is_modifier {
-                                // Increment char counter
-                                *handler.chars_typed_since_suggestion.lock() += 1;
-                                let chars_typed = *handler.chars_typed_since_suggestion.lock();
-
-                                // Try to capture the actual character typed
-                                // Map common keycodes to characters for tracking
-                                if let Some(ch) = keycode_to_char(keycode) {
-                                    handler.chars_buffer_since_suggestion.lock().push(ch);
-                                }
-
-                                // Check if we're still within the grace period
-                                let within_grace_period = if let Some(shown_at) = *handler.suggestion_shown_at.lock() {
-                                    shown_at.elapsed().as_millis() < SUGGESTION_GRACE_PERIOD_MS as u128
-                                } else {
-                                    false
+                                // Single lock acquisition for keystroke tracking
+                                let updated_chars = {
+                                    let mut state = handler.state.lock();
+                                    state.chars_typed += 1;
+                                    if let Some(ch) = keycode_to_char(keycode) {
+                                        state.chars_buffer.push(ch);
+                                    }
+                                    state.chars_typed
                                 };
 
                                 if within_grace_period {
-                                    println!("⏳ Key pressed during grace period ({} chars typed)", chars_typed);
-                                    // Don't dismiss - let the key pass through
-                                } else {
-                                    // Keep suggestion active even after grace period so user can still accept.
-                                    if tab_debug_enabled() {
-                                        tab_debug_log("grace expired: keeping suggestion active");
-                                    }
+                                    println!("⏳ Key pressed during grace period ({} chars typed)", updated_chars);
+                                } else if tab_debug_enabled() {
+                                    tab_debug_log("grace expired: keeping suggestion active");
                                 }
                             }
                         }

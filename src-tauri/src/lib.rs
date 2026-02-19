@@ -321,6 +321,75 @@ fn enable_context_collection_if_not_user_paused(state: tauri::State<ContextState
     state.enable_if_not_user_paused();
 }
 
+// --- Settings persistence helpers ---
+
+/// Returns the path to the shared settings JSON file, creating parent dirs if needed.
+fn settings_file_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    let dir = app.path().app_data_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("settings.json"))
+}
+
+/// Load the persisted settings JSON, returning a mutable Value (empty object on any error).
+fn load_settings(app: &tauri::AppHandle) -> serde_json::Value {
+    let path = match settings_file_path(app) {
+        Some(p) => p,
+        None => return serde_json::json!({}),
+    };
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+/// Persist a single key/value pair in the settings JSON file.
+fn save_setting(app: &tauri::AppHandle, key: &str, value: serde_json::Value) {
+    let path = match settings_file_path(app) {
+        Some(p) => p,
+        None => {
+            eprintln!("⚠️  Could not resolve settings file path");
+            return;
+        }
+    };
+    let mut settings = load_settings(app);
+    settings[key] = value;
+    match serde_json::to_string_pretty(&settings) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                eprintln!("⚠️  Failed to write settings file: {}", e);
+            }
+        }
+        Err(e) => eprintln!("⚠️  Failed to serialize settings: {}", e),
+    }
+}
+
+// Tab completion control commands
+#[tauri::command]
+fn get_tab_completion_status(trigger: tauri::State<std::sync::Arc<tab_completion::CompletionTrigger>>) -> bool {
+    trigger.is_tab_completion_enabled()
+}
+
+#[tauri::command]
+fn set_tab_completion_enabled(
+    app: tauri::AppHandle,
+    trigger: tauri::State<std::sync::Arc<tab_completion::CompletionTrigger>>,
+    enabled: bool,
+) {
+    trigger.set_tab_completion_enabled(enabled);
+    save_setting(&app, "tab_completion_enabled", serde_json::Value::Bool(enabled));
+}
+
+#[tauri::command]
+fn toggle_tab_completion(
+    app: tauri::AppHandle,
+    trigger: tauri::State<std::sync::Arc<tab_completion::CompletionTrigger>>,
+) -> bool {
+    let new_state = trigger.toggle_tab_completion();
+    save_setting(&app, "tab_completion_enabled", serde_json::Value::Bool(new_state));
+    new_state
+}
+
 // Plan action command - Phase 1 of new action flow
 // Returns action plan for user approval/editing before execution
 #[tauri::command]
@@ -767,27 +836,33 @@ pub fn run() {
                     let app_handle_for_callback = app.handle().clone();
                     trigger.set_suggestion_callback(move |suggestion| {
                         // Wrap in catch_unwind to prevent silent thread death.
-                        // A panic here (e.g. from byte-slicing non-ASCII) would kill the
-                        // spawned prediction thread, silently breaking the popup forever.
                         let hh = hotkey_handler_clone.clone();
                         let wm = window_manager_clone.clone();
                         let ah = app_handle_for_callback.clone();
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                            // Use eprintln (stderr) for diagnostics — stdout is garbled by
-                            // TerminalDisplay ANSI cursor save/restore escape sequences.
                             eprintln!("📤 [popup] Suggestion callback fired");
 
-                            // Update hotkey handler with new suggestion (thread-safe via parking_lot::Mutex)
-                            hh.set_suggestion(Some(suggestion.text.clone()));
-                            eprintln!("📤 [popup 1/3] set_suggestion done");
-
-                            // Dispatch UI operations to main thread to prevent crashes
+                            // IMPORTANT: Do NOT call hh.set_suggestion() here on the prediction
+                            // thread. After an accept, the CGEventTap hotkey thread is actively
+                            // processing rapid key events and briefly holds the same parking_lot
+                            // mutexes inside HotkeyHandler. This creates a deadlock: the prediction
+                            // thread blocks on hh.set_suggestion() while the CGEventTap thread
+                            // cycles through its locks, but new key events keep arriving and the
+                            // prediction thread never gets a turn.
+                            //
+                            // Fix: dispatch BOTH set_suggestion and show_suggestion to the main
+                            // thread. The main thread is never the CGEventTap thread, so there is
+                            // no lock contention. The main thread holds HotkeyHandler locks for
+                            // only microseconds; the CGEventTap thread contends briefly but never
+                            // deadlocks.
                             let window_manager = wm.clone();
                             let suggestion_clone = suggestion.clone();
                             let preview: String = suggestion.text.chars().take(30).collect();
-                            eprintln!("📤 [popup 2/3] Dispatching show_suggestion for: {}...", preview);
+                            eprintln!("📤 [popup 1/2] Dispatching to main thread for: {}...", preview);
                             if let Err(e) = ah.run_on_main_thread(move || {
-                                eprintln!("📤 [popup 3/3] Main thread executing show_suggestion");
+                                eprintln!("📤 [popup 2/2] Main thread: set_suggestion + show_suggestion");
+                                // Set suggestion on main thread to avoid deadlock with CGEventTap
+                                hh.set_suggestion(Some(suggestion_clone.text.clone()));
                                 if let Err(e) = window_manager.show_suggestion(&suggestion_clone) {
                                     eprintln!("⚠️  Failed to show completion: {}", e);
                                 }
@@ -809,67 +884,93 @@ pub fn run() {
                     let app_handle_for_accept = app.handle().clone();
                     let trigger_for_accept = trigger.clone();
                     hotkey_handler.set_accept_callback(move |text, chars_typed_during_grace| {
-                        // Get buffer suffix to detect overlap with prediction
-                        // Must do this BEFORE spawning thread while we still have sync access
-                        let buffer_suffix = trigger_for_accept.get_buffer_suffix(text.len());
+                        // Wrap entire callback in catch_unwind for safety
+                        let text_clone = text.clone();
+                        let trigger_clone = trigger_for_accept.clone();
+                        let wm_clone = window_manager_accept.clone();
+                        let app_handle_clone = app_handle_for_accept.clone();
 
-                        // Find overlap between what user typed and what prediction contains
-                        let overlap = find_overlap(&buffer_suffix, &text);
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                            eprintln!("🔵 Accept callback: computing overlap...");
+                            
+                            // Get buffer suffix to detect overlap with prediction
+                            // Must do this BEFORE spawning thread while we still have sync access
+                            let buffer_suffix = trigger_clone.get_buffer_suffix(text_clone.len());
 
-                        // Total chars to erase = overlap + chars typed during grace period
-                        let total_erase = overlap + chars_typed_during_grace;
+                            // Find overlap between what user typed and what prediction contains
+                            let overlap = find_overlap(&buffer_suffix, &text_clone);
 
-                        println!("✅ Accepting completion via hotkey (overlap: {}, grace: {}, total erase: {})",
-                                 overlap, chars_typed_during_grace, total_erase);
+                            // Total chars to erase = overlap + chars typed during grace period
+                            let total_erase = overlap + chars_typed_during_grace;
 
-                        // IMPORTANT: Spawn a thread to handle the accept logic.
-                        // The callback runs inside CGEventTap which must return quickly.
-                        // inject_with_backspace has 150ms+ of sleeps that would block the tap.
-                        let wm = window_manager_accept.clone();
-                        let app_handle = app_handle_for_accept.clone();
-                        let trigger = trigger_for_accept.clone();
+                            println!("✅ Accepting completion via hotkey (overlap: {}, grace: {}, total erase: {})",
+                                     overlap, chars_typed_during_grace, total_erase);
 
-                        std::thread::spawn(move || {
-                            println!("🧵 Accept thread started");
+                            eprintln!("🔵 Accept callback: spawning accept thread...");
 
-                            // Wait for user to release Option key before injecting.
-                            // Option+Tab accept fires while Option is still physically held;
-                            // if we inject immediately, AppleScript's Cmd+V paste could be
-                            // interpreted as Cmd+Option+V in some apps.
-                            std::thread::sleep(std::time::Duration::from_millis(150));
+                            // IMPORTANT: Spawn a thread to handle the accept logic.
+                            // The callback runs inside CGEventTap which must return quickly.
+                            // inject_with_backspace has 150ms+ of sleeps that would block the tap.
+                            let wm = wm_clone.clone();
+                            let app_handle = app_handle_clone.clone();
+                            let trigger = trigger_clone.clone();
+                            let text = text_clone.clone();
 
-                            // Inject the text with backspace for overlap + grace period chars
-                            println!("🧵 Injecting text...");
-                            if let Err(e) = tab_completion::injector::inject_with_backspace(text.clone(), total_erase) {
-                                eprintln!("⚠️  Failed to inject text: {}", e);
-                            }
-                            println!("🧵 Text injection complete");
+                            std::thread::spawn(move || {
+                                // Wrap the entire thread in catch_unwind
+                                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    println!("🧵 Accept thread started");
 
-                            // Hide completion windows BEFORE triggering new prediction
-                            // This prevents race condition where hide_all interferes with new show_suggestion
-                            println!("🧵 Hiding windows...");
-                            let wm_clone = wm.clone();
-                            let app_handle_clone = app_handle.clone();
-                            let _ = app_handle_clone.run_on_main_thread(move || {
-                                println!("🧵 [main thread] Hiding all windows");
-                                let _ = wm_clone.hide_all();
+                                    // Wait for user to release Option key before injecting.
+                                    // Option+Tab accept fires while Option is still physically held;
+                                    // if we inject immediately, AppleScript's Cmd+V paste could be
+                                    // interpreted as Cmd+Option+V in some apps.
+                                    std::thread::sleep(std::time::Duration::from_millis(150));
+
+                                    // Inject the text with backspace for overlap + grace period chars
+                                    println!("🧵 Injecting text...");
+                                    if let Err(e) = tab_completion::injector::inject_with_backspace(text.clone(), total_erase) {
+                                        eprintln!("⚠️  Failed to inject text: {}", e);
+                                    }
+                                    println!("🧵 Text injection complete");
+
+                                    // Hide completion windows BEFORE triggering new prediction
+                                    // This prevents race condition where hide_all interferes with new show_suggestion
+                                    println!("🧵 Hiding windows...");
+                                    let wm_clone = wm.clone();
+                                    let app_handle_clone = app_handle.clone();
+                                    let _ = app_handle_clone.run_on_main_thread(move || {
+                                        println!("🧵 [main thread] Hiding all windows");
+                                        let _ = wm_clone.hide_all();
+                                    });
+
+                                    // Small delay to ensure hide completes before new prediction cycle
+                                    std::thread::sleep(std::time::Duration::from_millis(50));
+
+                                    // Erase overlap + grace chars from buffer to keep it in sync with terminal.
+                                    // The injector already erased these chars from the terminal via backspaces;
+                                    // without this, the buffer accumulates duplicate chars (e.g. "git aadd"
+                                    // instead of "git add") and all subsequent predictions are garbage.
+                                    trigger.erase_from_buffer(total_erase);
+
+                                    // Update the trigger's buffer with the accepted text and re-trigger prediction
+                                    // NOTE: This spawns a thread with 300ms delay, then shows popup if prediction found
+                                    println!("🧵 Calling append_to_buffer...");
+                                    trigger.append_to_buffer(text.clone());
+                                    println!("🧵 Accept thread complete");
+                                }));
+                                
+                                if let Err(e) = result {
+                                    eprintln!("🔴 PANIC in accept thread: {:?}", e);
+                                }
                             });
 
-                            // Small delay to ensure hide completes before new prediction cycle
-                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            eprintln!("🔵 Accept callback: thread spawned, returning");
+                        }));
 
-                            // Erase overlap + grace chars from buffer to keep it in sync with terminal.
-                            // The injector already erased these chars from the terminal via backspaces;
-                            // without this, the buffer accumulates duplicate chars (e.g. "git aadd"
-                            // instead of "git add") and all subsequent predictions are garbage.
-                            trigger.erase_from_buffer(total_erase);
-
-                            // Update the trigger's buffer with the accepted text and re-trigger prediction
-                            // NOTE: This spawns a thread with 300ms delay, then shows popup if prediction found
-                            println!("🧵 Calling append_to_buffer...");
-                            trigger.append_to_buffer(text.clone());
-                            println!("🧵 Accept thread complete");
-                        });
+                        if let Err(e) = result {
+                            eprintln!("🔴 PANIC in accept callback outer: {:?}", e);
+                        }
                     });
 
                     let window_manager_dismiss = window_manager.clone();
@@ -923,6 +1024,20 @@ pub fn run() {
                         eprintln!("   Hotkeys will not be available");
                     }
                     
+                    // Restore persisted tab completion enabled/disabled state
+                    {
+                        let settings = load_settings(app.handle());
+                        let persisted = settings
+                            .get("tab_completion_enabled")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false); // default OFF
+                        trigger.set_tab_completion_enabled(persisted);
+                        println!(
+                            "⚙️  Tab completion restored from settings: {}",
+                            if persisted { "ON" } else { "OFF" }
+                        );
+                    }
+
                     // Start listening for keystrokes
                     let trigger_clone = trigger.clone();
                     trigger_clone.start_listening();
@@ -996,6 +1111,9 @@ pub fn run() {
             disable_context_collection,
             get_context_collection_status,
             enable_context_collection_if_not_user_paused,
+            get_tab_completion_status,
+            set_tab_completion_enabled,
+            toggle_tab_completion,
             plan_action,
             execute_action,
             edit_action,

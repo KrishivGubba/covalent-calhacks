@@ -1,12 +1,10 @@
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use image::DynamicImage;
-use crate::screen_context::ocr_tesseract::{TesseractEngine, ScreenRegion, OCRResult};
+use crate::screen_context::ocr_tesseract::{TesseractEngine, ScreenRegion};
 use crate::screen_context::chromium_bridge::ChromiumBridge;
 use crate::screen_context::context_data::{RawContext, AppInfo, DOMData, OCRData, SystemState, UITree, VisualData};
-
-// Constants
-const MIN_OCR_REGION_SIZE: u32 = 100;
-const MAIN_CONTENT_THRESHOLD: f32 = 0.6;
 
 pub struct ContextCollector {
     ocr_engine: TesseractEngine,

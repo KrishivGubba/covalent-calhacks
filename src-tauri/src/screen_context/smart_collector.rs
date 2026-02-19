@@ -1,11 +1,9 @@
-use anyhow::{Context as AnyhowContext, Result};
-use crossbeam::channel::{self, Receiver, Sender};
-use futures::future::{join_all, select_all};
-use futures::FutureExt;
+use anyhow::Result;
+use futures::future::join_all;
 use std::collections::{BinaryHeap, HashMap};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
@@ -14,7 +12,7 @@ use tokio::time::timeout;
 use crate::screen_context::accessibility_bridge::AccessibilityBridge;
 use crate::screen_context::chromium_bridge::ChromiumBridge;
 use crate::screen_context::context_data::{
-    ActivityMetrics, CollectionError, CollectionMetadata, CollectionTask, DataSourceAttempt,
+    CollectionMetadata, CollectionTask,
     DataSourceType, RawContext,
 };
 use crate::screen_context::macos_app_detector::MacOSAppDetector;
@@ -22,6 +20,7 @@ use crate::screen_context::ocr_tesseract::TesseractEngine;
 use crate::screen_context::safari_bridge::SafariBridge;
 use crate::screen_context::screen_capture::ScreenCapture;
 
+#[allow(dead_code)]
 pub struct SmartCollector {
     app_detector: Arc<Mutex<MacOSAppDetector>>,
     chromium_bridge: Arc<ChromiumBridge>,
@@ -45,6 +44,7 @@ pub struct SmartCollector {
     collection_stats: Arc<Mutex<CollectionStats>>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct CachedResult {
     data: CachedData,
@@ -205,6 +205,7 @@ impl SmartCollector {
     
     // Private implementation methods
     
+    #[allow(dead_code)]
     async fn build_collection_plan(&self) -> Vec<CollectionTask> {
         let available_sources = self.check_available_sources().await;
         let mut tasks = Vec::new();
@@ -659,6 +660,7 @@ impl SmartCollector {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct CollectionResult {
     success: bool,

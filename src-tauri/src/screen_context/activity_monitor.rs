@@ -61,6 +61,7 @@ pub enum ActivityEventType {
     WindowFocused { app_name: String, window_title: String },
 }
 
+#[allow(dead_code)]
 pub struct ActivityMonitor {
     // Event tracking
     recent_events: Arc<Mutex<VecDeque<ActivityEvent>>>,
@@ -97,6 +98,7 @@ pub struct ActivityMonitor {
     event_receiver: Arc<Mutex<Option<std::sync::mpsc::Receiver<ActivityEvent>>>>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ContextEntry {
     app_name: String,

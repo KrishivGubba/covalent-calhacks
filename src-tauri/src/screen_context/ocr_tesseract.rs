@@ -89,6 +89,7 @@ pub struct Region {
 }
 
 // Cached OCR result with TTL
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct CachedResult {
     result: OCRResult,

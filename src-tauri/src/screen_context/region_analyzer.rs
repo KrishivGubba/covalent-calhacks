@@ -1,5 +1,5 @@
 use anyhow::Result;
-use image::{DynamicImage, ImageBuffer, Rgb};
+use image::DynamicImage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

@@ -14,6 +14,7 @@ use crate::screen_context::macos_app_detector::MacOSAppDetector;
 use crate::screen_context::smart_collector::SmartCollector;
 
 /// Enhanced ContextCollector that integrates all macOS-specific functionality
+#[allow(dead_code)]
 pub struct EnhancedContextCollector {
     smart_collector: Arc<SmartCollector>,
     activity_monitor: Arc<ActivityMonitor>,
@@ -24,6 +25,7 @@ pub struct EnhancedContextCollector {
     context_memory: Arc<ContextMemory>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct CollectionHistoryEntry {
     timestamp: Instant,

@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::screen_context::chromium_bridge::DOMChangeAnalysis;
 use crate::screen_context::context_data::RawContext;
-use crate::screen_context::context_type::{ContextType, IntentAnalysis};
+use crate::screen_context::context_type::ContextType;
 use crate::screen_context::region_analyzer::RegionChangeAnalysis;
 use crate::screen_context::screen_capture::ScreenCapture;
 use crate::ai_provider::{LLMProvider, ClaudeProvider};
