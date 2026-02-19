@@ -6,6 +6,7 @@ use crate::screen_context::context_data::{
 };
 
 // Simplified accessibility bridge for compilation
+#[allow(dead_code)]
 pub struct AccessibilityBridge {
     cache: HashMap<String, AccessibleElement>,
 }

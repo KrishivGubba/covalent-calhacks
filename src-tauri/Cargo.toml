@@ -65,3 +65,6 @@ arboard = "3.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 lazy_static = "1.4"
 rdev = "0.5"
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ["cfg(feature, values(\"cargo-clippy\"))"] }

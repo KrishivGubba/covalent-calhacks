@@ -6,11 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "macos")]
 use core_graphics::event::{
-    CGEvent, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
-    CGEventType, EventField, CGEventFlags, CGKeyCode,
+    CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+    CGEventType, EventField, CGEventFlags,
 };
-#[cfg(target_os = "macos")]
-use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
 /// Grace period in milliseconds - popup stays visible even if user keeps typing
 const SUGGESTION_GRACE_PERIOD_MS: u64 = 1000;
@@ -125,6 +123,7 @@ impl HotkeyHandler {
     }
 
     /// Build DismissInfo from current state (single lock acquisition)
+    #[allow(dead_code)]
     fn build_dismiss_info(&self) -> Option<DismissInfo> {
         let state = self.state.lock();
         let suggestion = state.current_suggestion.clone()?;
@@ -233,7 +232,7 @@ impl HotkeyHandler {
                     }
 
                     // Single lock acquisition to check state and handle keypress
-                    let (has_suggestion, is_escape, chars_typed, within_grace_period) = {
+                    let (has_suggestion, is_escape, _chars_typed, within_grace_period) = {
                         let state = handler.state.lock();
                         let has = state.current_suggestion.is_some();
                         let grace = state.shown_at

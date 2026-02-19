@@ -3,14 +3,14 @@ use parking_lot::Mutex;
 #[cfg(not(target_os = "macos"))]
 use rdev::{listen, Event, EventType, Key};
 #[cfg(target_os = "macos")]
-use super::macos_keyboard::{MacOSKeyboardListener, KeyboardEvent};
+use super::macos_keyboard::MacOSKeyboardListener;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sha2::{Sha256, Digest};
 use tokio::runtime::Runtime;
 
-use super::cache::{CacheResult, MultiTierCache, CachedContext, AppContext, current_timestamp};
+use super::cache::{CacheResult, MultiTierCache, CachedContext, current_timestamp};
 use super::model::MODEL;
 use super::api_client::{TabCompletionApiClient, PredictionRequest, ContextUpdateRequest, DeclineFeedbackRequest};
 use super::decline::{DeclineContext, ActionSummary, EnrichedPredictionContext};
@@ -111,6 +111,7 @@ impl TextBuffer {
         }
     }
     
+    #[allow(dead_code)]
     fn clear(&mut self) {
         self.buffer.clear();
         self.last_update = None;
@@ -796,7 +797,7 @@ impl CompletionTrigger {
         runtime: Arc<Runtime>,
         app: String,
         text: String,
-        prediction: String,
+        _prediction: String,
         activity_id: String,
     ) {
         const FLASK_UPDATE_INTERVAL: usize = 10; // Send to Flask every 10 predictions
@@ -838,9 +839,9 @@ impl CompletionTrigger {
         text: &str,
         callback_ref: Arc<Mutex<Option<Arc<dyn Fn(CompletionSuggestion) + Send + Sync>>>>,
         has_callback: bool,
-        api_client: Arc<TabCompletionApiClient>,
-        runtime: Arc<Runtime>,
-        prediction_counter: Arc<Mutex<usize>>,
+        _api_client: Arc<TabCompletionApiClient>,
+        _runtime: Arc<Runtime>,
+        _prediction_counter: Arc<Mutex<usize>>,
         decline_context: Option<DeclineContext>,
         actions: Vec<ActionSummary>,
     ) {

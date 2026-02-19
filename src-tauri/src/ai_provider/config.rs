@@ -20,6 +20,7 @@ struct ModelTaskConfig {
     api_key_env: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ProviderSettingsEntry {
     #[serde(default = "default_timeout")]

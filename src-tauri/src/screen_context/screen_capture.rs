@@ -88,6 +88,7 @@ impl Region {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct CachedScreenshot {
     image: DynamicImage,
@@ -101,6 +102,7 @@ impl CachedScreenshot {
     }
 }
 
+#[allow(dead_code)]
 pub struct ScreenCapture {
     cache: Arc<Mutex<LruCache<String, CachedScreenshot>>>,
     cache_ttl: Duration,
@@ -306,7 +308,7 @@ impl ScreenCapture {
             for &display_id in &display_list {
                 let bounds = CGDisplayBounds(display_id);
                 let width = CGDisplayPixelsWide(display_id);
-                let height = CGDisplayPixelsHigh(display_id);
+                let _height = CGDisplayPixelsHigh(display_id);
                 
                 // Calculate scale factor (for Retina displays)
                 let scale_factor = width as f64 / bounds.size.width;

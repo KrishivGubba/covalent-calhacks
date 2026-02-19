@@ -10,6 +10,7 @@ pub struct CompletionWindowManager {
     app_handle: AppHandle,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 struct GhostTextPayload {
     text: String,
@@ -120,6 +121,7 @@ impl CompletionWindowManager {
     }
     
     /// Show ghost text overlay at cursor position
+    #[allow(dead_code)]
     fn show_ghost_text(&self, suggestion: &CompletionSuggestion, cursor_pos: CursorPosition) -> Result<()> {
         // Validate cursor position
         if cursor_pos.x < 0.0 || cursor_pos.y < 0.0 || 
@@ -273,7 +275,6 @@ impl CompletionWindowManager {
         // Try to get primary monitor dimensions
         #[cfg(target_os = "macos")]
         {
-            use cocoa::appkit::NSScreen;
             use cocoa::base::nil;
             use cocoa::foundation::NSRect;
             use objc::{class, msg_send, sel, sel_impl};
@@ -564,6 +565,7 @@ impl CompletionWindowManager {
     }
     
     /// Get or create ghost text window
+    #[allow(dead_code)]
     fn get_or_create_ghost_window(&self) -> Result<WebviewWindow> {
         match self.app_handle.get_webview_window("ghost-text") {
             Some(window) => Ok(window),

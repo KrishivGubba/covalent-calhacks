@@ -1,4 +1,3 @@
-use anyhow::Result;
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -217,7 +216,7 @@ impl MultiTierCache {
                     let activity_type = ActivityType::from_app(app_name);
 
                     // Extract learned patterns from graph nodes
-                    let mut learned_patterns = Vec::new();
+                    let learned_patterns: Vec<Pattern> = Vec::new();
                     let mut recent_actions = Vec::new();
 
                     for node in &nodes {

@@ -26,6 +26,7 @@ pub mod context_memory;
 
 // Legacy modules (can be uncommented when ready to use)
 // pub mod capture;
+#[allow(non_snake_case)]
 pub mod contextCollector;
 // pub mod hybrid_llm;
 // pub mod intent_analyzer;
