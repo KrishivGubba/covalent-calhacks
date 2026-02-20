@@ -14,6 +14,8 @@ interface FloatingAssistantProps {
 type ViewState = 'collapsed' | 'expanded';
 type ActionStatus = 'idle' | 'playing' | 'done';
 
+const USER_ID_KEY = 'covalent_user_id';
+
 const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({ 
   actions, 
   isRunning, 
@@ -22,6 +24,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
 }) => {
   const [viewState, setViewState] = useState<ViewState>('collapsed');
   const [actionStatuses, setActionStatuses] = useState<Record<string, ActionStatus>>({});
+  const [isAuthenticated, setIsAuthenticated] = useState(() => !!localStorage.getItem(USER_ID_KEY));
   const [isAnimating, setIsAnimating] = useState(false);
   const [hoveredActionId, setHoveredActionId] = useState<string | null>(null);
   const [editingAction, setEditingAction] = useState<Action | null>(null);
@@ -46,6 +49,16 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
     fetch('http://127.0.0.1:7243/ingest/7843b36f-61b5-435e-a971-922268939b8a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'FloatingAssistant.tsx:mount',message:'UPDATED FLOATING ASSISTANT MOUNTED',data:{},timestamp:Date.now(),hypothesisId:'verify'})}).catch(()=>{});
   }, []);
   // #endregion
+
+  useEffect(() => {
+    const checkAuth = () => setIsAuthenticated(!!localStorage.getItem(USER_ID_KEY));
+    window.addEventListener('storage', checkAuth);
+    const interval = setInterval(checkAuth, 5000);
+    return () => {
+      window.removeEventListener('storage', checkAuth);
+      clearInterval(interval);
+    };
+  }, []);
 
   // Helper: Get normalized proposed actions array
   const getProposedActions = (plan: ActionPlan): ProposedAction[] => {
@@ -445,36 +458,44 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
             </button>
           </div>
           <div style={styles.actionsList}>
-            {actions.map((action) => {
-              const isHovered = hoveredActionId === action.id;
-              return (
-                <div 
-                  key={action.id} 
-                  style={{
-                    ...styles.actionItem,
-                    maxHeight: isHovered ? '300px' : '60px',
-                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                    overflow: 'hidden',
-                  }}
-                  onMouseEnter={() => setHoveredActionId(action.id)}
-                  onMouseLeave={() => setHoveredActionId(null)}
-                >
-                  <div style={styles.actionText}>
-                    <h4 style={styles.actionTitle}>{action.title}</h4>
-                    <p style={{
-                      ...styles.actionDescription,
-                      maxHeight: isHovered ? '200px' : '0px',
-                      opacity: isHovered ? 1 : 0,
+            {!isAuthenticated ? (
+              <div style={styles.loginPrompt}>
+                Please log in from the dashboard to get started.
+              </div>
+            ) : actions.length === 0 ? (
+              <div style={styles.emptyActions}>No actions at the moment</div>
+            ) : (
+              actions.map((action) => {
+                const isHovered = hoveredActionId === action.id;
+                return (
+                  <div 
+                    key={action.id} 
+                    style={{
+                      ...styles.actionItem,
+                      maxHeight: isHovered ? '300px' : '60px',
                       transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
                       overflow: 'hidden',
-                    }}>
-                      {action.description}
-                    </p>
+                    }}
+                    onMouseEnter={() => setHoveredActionId(action.id)}
+                    onMouseLeave={() => setHoveredActionId(null)}
+                  >
+                    <div style={styles.actionText}>
+                      <h4 style={styles.actionTitle}>{action.title}</h4>
+                      <p style={{
+                        ...styles.actionDescription,
+                        maxHeight: isHovered ? '200px' : '0px',
+                        opacity: isHovered ? 1 : 0,
+                        transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                        overflow: 'hidden',
+                      }}>
+                        {action.description}
+                      </p>
+                    </div>
+                    {renderActionButton(action)}
                   </div>
-                  {renderActionButton(action)}
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </div>
       )}
@@ -967,6 +988,20 @@ const styles = {
     display: 'flex',
     flexDirection: 'column' as const,
     gap: '0.75rem',
+  },
+  loginPrompt: {
+    textAlign: 'center' as const,
+    padding: '1.5rem 1rem',
+    color: '#ffffff',
+    fontSize: '0.9rem',
+    fontWeight: '500' as const,
+    lineHeight: '1.5',
+  },
+  emptyActions: {
+    textAlign: 'center' as const,
+    padding: '1.5rem 1rem',
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: '0.9rem',
   },
   actionItem: {
     display: 'flex',
