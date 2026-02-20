@@ -171,7 +171,7 @@ impl FlaskServer {
         }
     }
 
-    fn start(&self, app_dir: PathBuf, is_dev: bool) -> Result<(), String> {
+    fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>) -> Result<(), String> {
         let binary = resolve_server_binary(&app_dir, "flask-server", is_dev);
 
         if !binary.exists() {
@@ -198,6 +198,12 @@ impl FlaskServer {
                     cmd.env(key.trim(), value.trim());
                 }
             }
+        }
+
+        if let Some(dir) = data_dir {
+            let db_path = dir.join("graph.db");
+            cmd.env("GRAPH_DB_PATH", db_path.to_string_lossy().as_ref());
+            cmd.env("COVALENT_DATA_DIR", dir.to_string_lossy().as_ref());
         }
 
         match cmd.spawn() {
@@ -242,7 +248,7 @@ impl McpServer {
         }
     }
 
-    fn start(&self, app_dir: PathBuf, is_dev: bool) -> Result<(), String> {
+    fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>) -> Result<(), String> {
         let binary = resolve_server_binary(&app_dir, "mcp-server", is_dev);
 
         if !binary.exists() {
@@ -269,6 +275,12 @@ impl McpServer {
                     cmd.env(key.trim(), value.trim());
                 }
             }
+        }
+
+        if let Some(dir) = data_dir {
+            let db_path = dir.join("graph.db");
+            cmd.env("GRAPH_DB_PATH", db_path.to_string_lossy().as_ref());
+            cmd.env("COVALENT_DATA_DIR", dir.to_string_lossy().as_ref());
         }
 
         match cmd.spawn() {
@@ -829,12 +841,15 @@ fn get_mcp_integrations() -> Result<Vec<serde_json::Value>, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Load environment variables from .env file
-    if let Err(e) = dotenvy::dotenv() {
-        eprintln!("⚠️  Warning: Could not load .env file: {}", e);
-        eprintln!("   Make sure ANTHROPIC_API_KEY is set in your environment or .env file");
-    } else {
-        println!("✓ Loaded environment variables from .env file");
+    // In dev mode, load .env from CWD (project root). 
+    // In production, we load from resource_dir inside .setup() below.
+    if cfg!(dev) {
+        if let Err(e) = dotenvy::dotenv() {
+            eprintln!("⚠️  Warning: Could not load .env file: {}", e);
+            eprintln!("   Make sure ANTHROPIC_API_KEY is set in your environment or .env file");
+        } else {
+            println!("✓ Loaded environment variables from .env file");
+        }
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -858,16 +873,50 @@ pub fn run() {
             
             println!("App directory: {:?} (dev={})", app_dir, is_dev);
 
+            // In production, load .env from the resource directory into the Rust process
+            if !is_dev {
+                let env_file = app_dir.join(".env");
+                if env_file.exists() {
+                    match dotenvy::from_path(&env_file) {
+                        Ok(_) => println!("✓ Loaded .env from resource dir: {:?}", env_file),
+                        Err(e) => eprintln!("⚠️  Failed to load .env from {:?}: {}", env_file, e),
+                    }
+                } else {
+                    eprintln!("⚠️  No .env found at {:?}", env_file);
+                }
+            }
+
+            // Compute writable data directory for the database.
+            // In dev: None (servers use their default project-relative paths).
+            // In production: ~/Library/Application Support/com.hem.src-tauri/
+            let data_dir: Option<PathBuf> = if is_dev {
+                None
+            } else {
+                match app.path().app_data_dir() {
+                    Ok(dir) => {
+                        if let Err(e) = std::fs::create_dir_all(&dir) {
+                            eprintln!("⚠️  Failed to create data dir {:?}: {}", dir, e);
+                        }
+                        println!("📁 Production data directory: {:?}", dir);
+                        Some(dir)
+                    }
+                    Err(e) => {
+                        eprintln!("⚠️  Could not resolve app data dir: {}", e);
+                        None
+                    }
+                }
+            };
+
             // Start MCP server (must come before Flask since Flask may depend on it)
             let mcp_server = McpServer::new();
-            match mcp_server.start(app_dir.clone(), is_dev) {
+            match mcp_server.start(app_dir.clone(), is_dev, data_dir.as_ref()) {
                 Ok(_) => println!("✓ MCP server started successfully"),
                 Err(e) => eprintln!("✗ Failed to start MCP server: {}", e),
             }
             app.manage(mcp_server);
 
             let flask_server = FlaskServer::new();
-            match flask_server.start(app_dir.clone(), is_dev) {
+            match flask_server.start(app_dir.clone(), is_dev, data_dir.as_ref()) {
                 Ok(_) => println!("✓ Flask server started successfully"),
                 Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
             }
@@ -921,7 +970,11 @@ pub fn run() {
             
             // Initialize tab completion system
             println!("⌨️  Initializing tab completion system...");
-            let graph_db_path = app_dir.clone().join("server/graph.db");
+            let graph_db_path = if let Some(ref dir) = data_dir {
+                dir.join("graph.db")
+            } else {
+                app_dir.clone().join("context-engine/graph.db")
+            };
             let graph_db_path_str = graph_db_path.to_string_lossy().to_string();
             
             match tab_completion::initialize(graph_db_path_str) {
