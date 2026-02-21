@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::claude::ClaudeProvider;
 use super::config::ProviderConfig;
+use super::gateway::GatewayProvider;
 use super::ollama::OllamaProvider;
 use super::openai::OpenAIProvider;
 use super::traits::LLMProvider;
@@ -28,6 +29,17 @@ impl FallbackProvider {
         // Build providers based on fallback chain
         for provider_name in &config.fallback_chain {
             match provider_name.as_str() {
+                "gateway" => {
+                    match GatewayProvider::new_with_config(config) {
+                        Ok(gateway) => {
+                            println!("✓ Gateway/Bedrock provider initialized (JWT fetched per-request)");
+                            providers.push(Arc::new(gateway));
+                        }
+                        Err(e) => {
+                            eprintln!("⚠️  Gateway provider unavailable ({})", e);
+                        }
+                    }
+                }
                 "claude" | "anthropic" => {
                     if let Ok(claude) = ClaudeProvider::new_with_config(config) {
                         println!("✓ Claude provider initialized");

@@ -786,14 +786,25 @@ fn set_excluded_apps(
 }
 
 #[tauri::command]
-fn get_auth_status() -> Result<serde_json::Value, String> {
-    // TODO: Implement actual auth status check
+async fn get_auth_status() -> Result<serde_json::Value, String> {
     println!("🔐 Checking auth status");
-    Ok(serde_json::json!({
-        "authenticated": false,
-        "user": null,
-        "message": "Authentication not yet implemented"
-    }))
+
+    let flask_base_url = std::env::var("FLASK_BASE_URL")
+        .unwrap_or_else(|_| "http://localhost:5001".to_string());
+
+    match crate::ai_provider::auth::fetch_current_session(&flask_base_url).await {
+        Some(session) => Ok(serde_json::json!({
+            "authenticated": true,
+            "user": session.user_info,
+            "user_id": session.user_id,
+            "expired": session.expired,
+        })),
+        None => Ok(serde_json::json!({
+            "authenticated": false,
+            "user": null,
+            "user_id": null,
+        })),
+    }
 }
 
 // Open dashboard and navigate to history page

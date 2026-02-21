@@ -631,6 +631,49 @@ def get_session():
     return jsonify({"session": session, "expired": False}), 200
 
 
+@app.route("/auth/current", methods=["GET"])
+def get_current_session():
+    """
+    Return the active Auth0 session for the logged-in desktop user.
+
+    Designed for internal callers (e.g. Rust) that need a JWT without knowing
+    the user_id upfront.  Single-user desktop app: returns the most recently
+    updated session, or unauthenticated if none exist.
+
+    Returns:
+      { "authenticated": bool, "access_token": str|null,
+        "user_id": str|null, "user_info": dict|null, "expired": bool }
+    """
+    sessions = auth_dao.get_all_sessions()
+    if not sessions:
+        return jsonify({"authenticated": False, "access_token": None,
+                        "user_id": None, "user_info": None, "expired": False}), 200
+
+    # Pick the most recently updated session (single-user desktop, there's usually one)
+    sessions_sorted = sorted(sessions, key=lambda s: s.get("updated_at") or "", reverse=True)
+    session = auth_dao.get_session(sessions_sorted[0]["user_id"])
+    if not session:
+        return jsonify({"authenticated": False, "access_token": None,
+                        "user_id": None, "user_info": None, "expired": False}), 200
+
+    expired = False
+    if session.get("expires_at"):
+        try:
+            expires = datetime.fromisoformat(session["expires_at"])
+            if datetime.utcnow() > expires:
+                expired = True
+        except ValueError:
+            pass
+
+    return jsonify({
+        "authenticated": True,
+        "expired": expired,
+        "access_token": session.get("access_token"),
+        "user_id": session.get("user_id"),
+        "user_info": session.get("user_info"),
+    }), 200
+
+
 @app.route("/auth/session/refresh", methods=["POST"])
 def refresh_session():
     """
