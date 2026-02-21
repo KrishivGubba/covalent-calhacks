@@ -155,6 +155,16 @@ impl ContextLoop {
             println!("  ⏸️  Skipping context collection while Covalent is focused");
             return Ok(());
         }
+
+        // Check if the active app is in the user-configured excluded list
+        if let Some(ref state) = self.context_state {
+            let app_name = &raw_context.app_info.name;
+            let bundle_id = &raw_context.app_info.bundle_id;
+            if state.is_app_excluded(app_name, bundle_id) {
+                println!("  🚫 App '{}' ({}) is excluded from context collection - skipping", app_name, bundle_id);
+                return Ok(());
+            }
+        }
         
         // Display detailed raw context
         println!("  📋 Raw Context Data:");

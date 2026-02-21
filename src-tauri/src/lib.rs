@@ -5,7 +5,7 @@ pub mod tab_completion;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{Manager, Emitter};
 use std::process::{Child, Command};
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}};
 use std::path::PathBuf;
 
 /// Find the overlap between the end of the buffer and the start of the prediction.
@@ -43,6 +43,8 @@ pub struct ContextState {
     // Tracks if user manually paused (vs automatic pause for action execution)
     // When true, we should NOT auto-resume after actions complete
     pub user_paused: Arc<AtomicBool>,
+    // List of app names/bundle IDs excluded from context collection
+    pub excluded_apps: Arc<RwLock<Vec<String>>>,
 }
 
 // Store for suggested actions
@@ -97,7 +99,29 @@ impl ContextState {
         Self {
             is_enabled: Arc::new(AtomicBool::new(true)), // Enabled by default
             user_paused: Arc::new(AtomicBool::new(false)), // Not manually paused by default
+            excluded_apps: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+
+    pub fn get_excluded_apps(&self) -> Vec<String> {
+        self.excluded_apps.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set_excluded_apps_list(&self, apps: Vec<String>) {
+        if let Ok(mut list) = self.excluded_apps.write() {
+            *list = apps;
+        }
+    }
+
+    /// Returns true if the given app name or bundle ID is in the excluded list (case-insensitive).
+    pub fn is_app_excluded(&self, name: &str, bundle_id: &str) -> bool {
+        let list = self.excluded_apps.read().unwrap_or_else(|e| e.into_inner());
+        let name_lower = name.to_lowercase();
+        let bundle_lower = bundle_id.to_lowercase();
+        list.iter().any(|entry| {
+            let entry_lower = entry.to_lowercase();
+            entry_lower == name_lower || entry_lower == bundle_lower
+        })
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -724,16 +748,40 @@ fn get_memory_graph_data() -> Result<MemoryGraphData, String> {
 }
 
 #[tauri::command]
-fn get_excluded_apps() -> Result<Vec<String>, String> {
-    // TODO: Read from settings/config
-    println!("🔒 Fetching excluded apps");
-    Ok(vec![])
+fn get_excluded_apps(
+    app: tauri::AppHandle,
+    state: tauri::State<ContextState>,
+) -> Result<Vec<String>, String> {
+    let settings = load_settings(&app);
+    if let Some(arr) = settings.get("excluded_apps").and_then(|v| v.as_array()) {
+        let apps: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        // Keep ContextState in sync
+        state.set_excluded_apps_list(apps.clone());
+        println!("🔒 Loaded {} excluded apps from settings", apps.len());
+        Ok(apps)
+    } else {
+        // No excluded apps saved yet — return empty list
+        Ok(vec![])
+    }
 }
 
 #[tauri::command]
-fn set_excluded_apps(apps: Vec<String>) -> Result<(), String> {
-    // TODO: Save to settings/config
-    println!("🔒 Setting excluded apps: {:?}", apps);
+fn set_excluded_apps(
+    app: tauri::AppHandle,
+    state: tauri::State<ContextState>,
+    apps: Vec<String>,
+) -> Result<(), String> {
+    // Persist to settings.json
+    let json_arr: serde_json::Value = serde_json::Value::Array(
+        apps.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
+    );
+    save_setting(&app, "excluded_apps", json_arr);
+    // Update live state so context loop sees change immediately
+    state.set_excluded_apps_list(apps.clone());
+    println!("🔒 Saved {} excluded apps", apps.len());
     Ok(())
 }
 
@@ -932,6 +980,38 @@ pub fn run() {
             
             // Create and manage context state
             let context_state = ContextState::new();
+
+            // Load excluded apps from settings (or seed defaults on first run)
+            {
+                let handle = app.handle().clone();
+                let settings = load_settings(&handle);
+                let excluded = if let Some(arr) = settings.get("excluded_apps").and_then(|v| v.as_array()) {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<String>>()
+                } else {
+                    // First-run defaults — privacy-sensitive apps are blocked out of the box
+                    let defaults = vec![
+                        "Keychain Access".to_string(),
+                        "Passwords".to_string(),
+                        "1Password".to_string(),
+                        "Bitwarden".to_string(),
+                        "LastPass".to_string(),
+                        "Dashlane".to_string(),
+                        "1Password 7 - Password Manager".to_string(),
+                    ];
+                    // Persist defaults so the UI reflects them immediately
+                    let json_arr = serde_json::Value::Array(
+                        defaults.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
+                    );
+                    save_setting(&handle, "excluded_apps", json_arr);
+                    println!("🔒 Seeded default excluded apps ({} entries)", defaults.len());
+                    defaults
+                };
+                context_state.set_excluded_apps_list(excluded.clone());
+                println!("🔒 Excluded apps loaded: {:?}", excluded);
+            }
+
             app.manage(context_state.clone());
             
             // Create and manage actions store
