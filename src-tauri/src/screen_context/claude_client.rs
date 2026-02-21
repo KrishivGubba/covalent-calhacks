@@ -89,13 +89,20 @@ impl ClaudeClient {
         user_prompt: &str,
         screenshot_base64: &str,
     ) -> Result<String> {
+        // Detect media type from base64 prefix (JPEG starts with /9j/, PNG with iVBORw0KGgo)
+        let media_type = if screenshot_base64.starts_with("/9j/") {
+            "image/jpeg"
+        } else {
+            "image/png"
+        };
+        
         let messages = vec![ClaudeMessage {
             role: "user".to_string(),
             content: vec![
                 ContentBlock::Image {
                     source: ImageSource {
                         source_type: "base64".to_string(),
-                        media_type: "image/png".to_string(),
+                        media_type: media_type.to_string(),
                         data: screenshot_base64.to_string(),
                     },
                 },

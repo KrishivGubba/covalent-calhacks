@@ -264,8 +264,26 @@ impl LLMAnalyzer {
             return self.generate_fallback_description(metadata);
         }
         
+        // Compress if image exceeds 5MB (Claude API limit)
+        const MAX_IMAGE_SIZE: usize = 5 * 1024 * 1024; // 5MB
+        let image_bytes = if png_bytes.len() > MAX_IMAGE_SIZE {
+            eprintln!("📦 Screenshot too large ({:.2}MB), compressing...", png_bytes.len() as f64 / 1024.0 / 1024.0);
+            match Self::compress_screenshot(&screenshot, MAX_IMAGE_SIZE) {
+                Ok(compressed) => {
+                    eprintln!("✅ Compressed to {:.2}MB", compressed.len() as f64 / 1024.0 / 1024.0);
+                    compressed
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Compression failed: {}, falling back to metadata-only analysis", e);
+                    return self.generate_fallback_description(metadata);
+                }
+            }
+        } else {
+            png_bytes
+        };
+        
         // Encode to base64
-        let screenshot_base64 = ClaudeProvider::encode_image_to_base64(&png_bytes);
+        let screenshot_base64 = ClaudeProvider::encode_image_to_base64(&image_bytes);
         
         let system_prompt = "You are an AI assistant that analyzes user activity and context. \
             Generate a concise, natural description of what the user is currently doing. \
@@ -319,6 +337,45 @@ impl LLMAnalyzer {
         
         eprintln!("📝 Generated fallback description: {}", description);
         Ok(description)
+    }
+    
+    /// Compress screenshot to fit within size limit using JPEG encoding and resizing
+    /// Uses fast Nearest neighbor interpolation for speed
+    fn compress_screenshot(image: &image::DynamicImage, max_size: usize) -> Result<Vec<u8>> {
+        let mut scale = 1.0f32;
+        let mut current_image = image.clone();
+        
+        // Try progressively smaller scales until we're under the limit
+        // Start with JPEG at quality 85, then reduce scale if needed
+        for attempt in 0..5 {
+            let quality = 85 - (attempt * 10).min(35); // 85, 75, 65, 55, 50
+            
+            let mut jpeg_bytes = Vec::new();
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_bytes, quality as u8);
+            
+            if current_image.write_with_encoder(encoder).is_ok() && jpeg_bytes.len() <= max_size {
+                return Ok(jpeg_bytes);
+            }
+            
+            // Reduce scale for next attempt (0.75, 0.56, 0.42, 0.32)
+            scale *= 0.75;
+            let new_width = (image.width() as f32 * scale) as u32;
+            let new_height = (image.height() as f32 * scale) as u32;
+            
+            // Use Nearest for speed, Triangle for better quality but still fast
+            current_image = image.resize(new_width, new_height, image::imageops::FilterType::Triangle);
+        }
+        
+        // Final attempt with aggressive compression
+        let mut jpeg_bytes = Vec::new();
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_bytes, 50);
+        current_image.write_with_encoder(encoder)?;
+        
+        if jpeg_bytes.len() <= max_size {
+            Ok(jpeg_bytes)
+        } else {
+            anyhow::bail!("Could not compress image below {}MB", max_size / 1024 / 1024)
+        }
     }
     
     /// Build comprehensive metadata string for Claude

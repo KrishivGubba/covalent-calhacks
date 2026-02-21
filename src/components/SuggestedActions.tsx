@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { disableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
 import { notifyPlanReady, notifyExecutionStatus } from '../utils/actionNotifications';
+
+const USER_ID_KEY = 'covalent_user_id';
 
 export interface Action {
   id: string;
@@ -102,6 +104,18 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
     fetch('http://127.0.0.1:7243/ingest/7843b36f-61b5-435e-a971-922268939b8a',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SuggestedActions.tsx:mount',message:'NEW MULTI-ACTION COMPONENT MOUNTED v2',data:{hasExecutionResults:typeof useState !== 'undefined'},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
   }, []);
   // #endregion
+  const [isAuthenticated, setIsAuthenticated] = useState(() => !!localStorage.getItem(USER_ID_KEY));
+
+  useEffect(() => {
+    const checkAuth = () => setIsAuthenticated(!!localStorage.getItem(USER_ID_KEY));
+    window.addEventListener('storage', checkAuth);
+    const interval = setInterval(checkAuth, 5000);
+    return () => {
+      window.removeEventListener('storage', checkAuth);
+      clearInterval(interval);
+    };
+  }, []);
+
   const [actionStatuses, setActionStatuses] = useState<Record<string, ActionStatus>>({});
   const [editingAction, setEditingAction] = useState<Action | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -121,7 +135,7 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
   const [executionSummary, setExecutionSummary] = useState<ExecutionSummary | null>(null);
   
   // Legacy: single editableParams for backward compat
-  const [editableParams, setEditableParams] = useState<Record<string, unknown>>({});
+  const [_editableParams, setEditableParams] = useState<Record<string, unknown>>({});
   
   // Helper: Get normalized proposed actions array
   const getProposedActions = (plan: ActionPlan): ProposedAction[] => {
@@ -357,12 +371,12 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
     }));
   };
 
-  // Legacy: single action param change
-  const handleParamChange = (key: string, value: unknown) => {
-    setEditableParams(prev => ({ ...prev, [key]: value }));
-    // Also update the map for step 1 (backward compat)
-    handleStepParamChange(1, key, value);
-  };
+  // // Legacy: single action param change
+  // const _handleParamChange = (key: string, value: unknown) => {
+  //   setEditableParams(prev => ({ ...prev, [key]: value }));
+  //   // Also update the map for step 1 (backward compat)
+  //   handleStepParamChange(1, key, value);
+  // };
 
   const openEditModal = async (action: Action) => {
     setEditingAction(action);
@@ -508,7 +522,9 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
     <div style={styles.container}>
       <h2 style={styles.heading}>Looks like you could use some help with...</h2>
       <div style={styles.actionsContainer}>
-        {actions.length === 0 ? (
+        {!isAuthenticated ? (
+          <p style={styles.emptyState}>Please log in from the dashboard to get started.</p>
+        ) : actions.length === 0 ? (
           <p style={styles.emptyState}>No actions at the moment</p>
         ) : (
           actions.map((action) => (

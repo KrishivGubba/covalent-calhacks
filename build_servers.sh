@@ -1,12 +1,16 @@
 #!/bin/bash
 # Build standalone executables for the Flask and MCP servers using PyInstaller.
 # Run from the project root with the venv activated.
+# Output goes to dist-servers/ (dist/ is reserved for Vite frontend build).
 
 set -e
+
+DIST_DIR="dist-servers"
 
 echo "=== Building Flask server ==="
 pyinstaller server/app.py \
   --name flask-server \
+  --distpath "$DIST_DIR" \
   --paths=context-engine \
   --paths=server \
   --paths=llm-interactions \
@@ -34,6 +38,7 @@ echo ""
 echo "=== Building MCP server ==="
 pyinstaller run_mcp.py \
   --name mcp-server \
+  --distpath "$DIST_DIR" \
   --paths=. \
   --paths=server \
   --hidden-import=server.auth_dao \
@@ -48,5 +53,5 @@ pyinstaller run_mcp.py \
 
 echo ""
 echo "=== Build complete ==="
-echo "Flask server: dist/flask-server/flask-server"
-echo "MCP server:   dist/mcp-server/mcp-server"
+echo "Flask server: $DIST_DIR/flask-server/flask-server"
+echo "MCP server:   $DIST_DIR/mcp-server/mcp-server"
