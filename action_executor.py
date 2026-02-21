@@ -96,14 +96,6 @@ MCP_SERVERS = {
     },
 }
 
-# region agent log
-import json as _json
-try:
-    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-        _f.write(_json.dumps({"id":"mcp_config","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:89","message":"MCP server configuration loaded","data":{"MCP_PORT":MCP_PORT,"MCP_SERVERS":MCP_SERVERS},"runId":"initial","hypothesisId":"H1,H2,H3"}) + '\n')
-except: pass
-# endregion
-
 # Tool Routing Configuration
 TOOL_CACHE_DIR = Path.home() / ".cache" / "covalent_action_executor"
 TOP_K_TOOLS = 15  # Number of relevant tools/resources to select
@@ -183,31 +175,9 @@ async def get_mcp_client(max_retries: int = 3):
         _client_lock = asyncio.Lock()
 
     async with _client_lock:
-        # region agent log
-        import json as _json
-        try:
-            with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-                _f.write(_json.dumps({"id":"mcp_client_entry","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:178","message":"Entering get_mcp_client","data":{"max_retries":max_retries,"client_exists":_mcp_client is not None,"MCP_SERVERS":MCP_SERVERS},"runId":"initial","hypothesisId":"H1,H2,H3,H4"}) + '\n')
-        except: pass
-        # endregion
-        
         for attempt in range(max_retries):
-            # region agent log
-            try:
-                with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-                    _f.write(_json.dumps({"id":f"mcp_attempt_{attempt}","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:179","message":f"Connection attempt {attempt+1}/{max_retries}","data":{"attempt":attempt,"max_retries":max_retries},"runId":"initial","hypothesisId":"H3,H4"}) + '\n')
-            except: pass
-            # endregion
-            
             try:
                 if _mcp_client is None:
-                    # region agent log
-                    try:
-                        with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-                            _f.write(_json.dumps({"id":f"mcp_client_create_{attempt}","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:182","message":"Creating MultiServerMCPClient","data":{"MCP_SERVERS":MCP_SERVERS},"runId":"initial","hypothesisId":"H1,H2,H3"}) + '\n')
-                    except: pass
-                    # endregion
-                    
                     _mcp_client = MultiServerMCPClient(MCP_SERVERS)
 
                     # Fetch tools (write operations)
@@ -236,36 +206,15 @@ async def get_mcp_client(max_retries: int = 3):
                             )
 
                     print(f"✅ MCP client initialized: {len(_all_tools)} tools, {len(_all_resources)} resources")
-                    
-                # region agent log
-                try:
-                    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-                        _f.write(_json.dumps({"id":"mcp_success","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:209","message":"MCP client initialized successfully","data":{"tools_count":len(_all_tools),"resources_count":len(_all_resources),"attempt":attempt},"runId":"initial","hypothesisId":"H4"}) + '\n')
-                except: pass
-                # endregion
-                
+
                 return _mcp_client, _all_tools, _all_resources
             except Exception as e:
-                # region agent log
-                try:
-                    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-                        _f.write(_json.dumps({"id":f"mcp_error_{attempt}","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:212","message":"MCP connection attempt failed","data":{"attempt":attempt,"max_retries":max_retries,"error_type":type(e).__name__,"error_message":str(e)[:200],"will_retry":attempt < max_retries - 1},"runId":"initial","hypothesisId":"H1,H2,H3,H4,H5"}) + '\n')
-                except: pass
-                # endregion
-                
                 _mcp_client = None
                 _all_tools = None
                 _all_resources = None
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1 * (attempt + 1))
                 else:
-                    # region agent log
-                    try:
-                        with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-                            _f.write(_json.dumps({"id":"mcp_final_failure","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:218","message":"All MCP connection attempts exhausted","data":{"total_attempts":max_retries,"final_error":str(e)[:500]},"runId":"initial","hypothesisId":"H1,H2,H3,H4,H5"}) + '\n')
-                    except: pass
-                    # endregion
-                    
                     raise ConnectionError(f"Failed to connect to MCP server after {max_retries} attempts: {e}")
 
 
@@ -957,12 +906,29 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
                 "result": None,
                 "error": error_msg,
             }
-        
+
+        # Handle list-of-content-blocks response from some MCP adapters:
+        # langchain_mcp_adapters sometimes returns [TextContent(type='text', text='{"..."}')]
+        if isinstance(result, list) and result_data is None:
+            texts = []
+            for item in result:
+                text = getattr(item, 'text', None) or (item.get('text') if isinstance(item, dict) else None)
+                if text:
+                    texts.append(text)
+            combined = "\n".join(texts) if texts else str(result)
+            try:
+                result_data = _json.loads(combined)
+            except (ValueError, TypeError):
+                result_data = {"message": combined} if combined else None
+
+        # Prefer the parsed/structured result over the raw string
+        final_result = result_data if result_data is not None else result
+
         print(f"✅ Tool execution completed")
         
         return {
             "status": "success",
-            "result": result,
+            "result": final_result,
             "error": None
         }
         
@@ -970,6 +936,11 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
         print(f"❌ Error executing action: {e}")
         import traceback
         traceback.print_exc()
+        _err_msg = str(e)
+        _is_connect_err = "ConnectError" in type(e).__name__ or "connection" in _err_msg.lower() or "All connection attempts failed" in _err_msg
+        if _is_connect_err:
+            _hint = f"MCP server unreachable at http://localhost:{MCP_PORT}/mcp. Start it with: bash covalent_mcp/start_mcp.sh (or use start_servers.sh)"
+            return {"status": "error", "result": None, "error": _hint}
         return {
             "status": "error",
             "result": None,
