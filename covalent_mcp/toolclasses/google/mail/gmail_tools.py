@@ -32,10 +32,9 @@ class GmailToolModule(MCPToolModule):
         self._client = None
     
     def _ensure_client(self) -> GmailService:
-        """Ensure Gmail client is initialized with credentials from database."""
-        if self._client is None:
-            # GmailService reads token from database via get_credentials_from_db()
-            self._client = GmailService()
+        """Ensure Gmail client is initialized with fresh credentials from database."""
+        # Re-create on every call so token refresh is picked up
+        self._client = GmailService()
         return self._client
 
     def get_display_schemas(self) -> Dict[str, ToolDisplaySchema]:

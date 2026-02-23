@@ -67,6 +67,8 @@ restart.sh
 
 dist/
 dist-servers/
+src-tauri/servers/
+src-tauri/.env
 build/
 *.spec
 claude_api_usage_report_2026-02-12.txt
