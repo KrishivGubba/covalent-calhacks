@@ -27,7 +27,7 @@ load_dotenv()
 
 # Path to integration DB for reading access token
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-DB_PATH = os.path.join(PROJECT_ROOT, 'context-engine', 'graph.db')
+DB_PATH = os.environ.get('GRAPH_DB_PATH', os.path.join(PROJECT_ROOT, 'context-engine', 'graph.db'))
 
 # Lambda Gateway URL for secure token operations (client_secret lives here)
 LAMBDA_GATEWAY_URL = os.getenv("LAMBDA_GATEWAY_URL", "https://gtfrn4otol.execute-api.us-east-1.amazonaws.com")

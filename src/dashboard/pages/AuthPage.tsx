@@ -192,35 +192,44 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
   };
 
   const handleLogin = async () => {
+    console.log('[AuthPage] handleLogin called');
+    console.log('[AuthPage] AUTH0_CLIENT_ID:', AUTH0_CLIENT_ID ? `${AUTH0_CLIENT_ID.substring(0, 8)}...` : 'MISSING');
+    console.log('[AuthPage] SERVER_BASE:', SERVER_BASE);
     if (!AUTH0_CLIENT_ID) {
       alert('Auth0 is not configured. Set VITE_AUTH0_CLIENT_ID in .env.');
       return;
     }
     setAuthError(null);
     try {
-      // Build Auth0 URL (also stores state + code_verifier in sessionStorage)
+      console.log('[AuthPage] Building Auth0 URL...');
       const url = await buildAuth0AuthorizeUrl();
+      console.log('[AuthPage] Auth0 URL built:', url?.substring(0, 80) + '...');
       const state = sessionStorage.getItem('auth0_state');
       const codeVerifier = sessionStorage.getItem('auth0_code_verifier');
+      console.log('[AuthPage] state:', state ? 'present' : 'MISSING');
+      console.log('[AuthPage] codeVerifier:', codeVerifier ? 'present' : 'MISSING');
       if (!state || !codeVerifier) {
         setAuthError('Failed to generate auth session. Please try again.');
         return;
       }
 
-      // Send code_verifier to backend so it can do the token exchange
+      console.log('[AuthPage] Sending /auth/start to', `${SERVER_BASE}/auth/start`);
       const startRes = await fetch(`${SERVER_BASE}/auth/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ state, code_verifier: codeVerifier }),
       });
+      console.log('[AuthPage] /auth/start response status:', startRes.status);
       if (!startRes.ok) {
         const errData = await startRes.json().catch(() => ({}));
+        console.error('[AuthPage] /auth/start error:', errData);
         setAuthError(errData.error || 'Failed to start auth session');
         return;
       }
 
-      // Open Auth0 login in browser
+      console.log('[AuthPage] Opening Auth0 URL in browser...');
       await openUrl(url);
+      console.log('[AuthPage] Auth0 URL opened, starting poll...');
       setPolling(true);
 
       const started = Date.now();
@@ -273,8 +282,8 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
       };
       setTimeout(poll, POLL_INTERVAL_MS);
     } catch (error) {
-      console.error('Failed to open auth URL:', error);
-      alert('Could not open login page. Check the console.');
+      console.error('[AuthPage] handleLogin error:', error);
+      alert(`Could not open login page: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 

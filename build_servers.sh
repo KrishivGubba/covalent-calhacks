@@ -41,9 +41,13 @@ pyinstaller run_mcp.py \
   --distpath "$DIST_DIR" \
   --paths=. \
   --paths=server \
+  --paths=context-engine \
   --hidden-import=server.auth_dao \
   --hidden-import=server.integration_dao \
   --hidden-import=auth_dao \
+  --hidden-import=security \
+  --hidden-import=security.key_manager \
+  --hidden-import=security.validation \
   --hidden-import=pypdf \
   --hidden-import=googleapiclient.discovery \
   --hidden-import=google.auth.transport.requests \

@@ -34,10 +34,9 @@ class DriveToolModule(MCPToolModule):
         self._client = None
     
     def _ensure_client(self) -> DriveService:
-        """Ensure Drive client is initialized with credentials from database."""
-        if self._client is None:
-            # DriveService reads token from database via get_credentials_from_db()
-            self._client = DriveService()
+        """Ensure Drive client is initialized with fresh credentials from database."""
+        # Re-create on every call so token refresh is picked up
+        self._client = DriveService()
         return self._client
 
     # -----------------------------------------------------------------
