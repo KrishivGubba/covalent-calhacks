@@ -21,18 +21,31 @@ def _get_auth_token() -> Optional[str]:
     """Get auth token from database for Perplexity API calls."""
     try:
         from auth_dao import AuthDAO
-        db_path = _PROJECT_ROOT / "context-engine" / "graph.db"
+        db_path = os.environ.get('GRAPH_DB_PATH', str(_PROJECT_ROOT / "context-engine" / "graph.db"))
+        print(f"🔑 [Perplexity] Looking for auth token in DB: {db_path}")
+        print(f"   DB exists: {os.path.exists(db_path)}")
+        print(f"   GRAPH_DB_PATH env: {os.environ.get('GRAPH_DB_PATH', '(not set)')}")
+        
         auth_dao = AuthDAO(str(db_path))
         
         sessions = auth_dao.get_all_sessions()
         if not sessions:
+            print("   ⚠️  No user sessions found in DB")
             return None
         
+        print(f"   Found {len(sessions)} session(s), user: {sessions[0]['user_id'][:30]}...")
         session = auth_dao.get_session(sessions[0]["user_id"])
         if session and session.get("access_token"):
-            return session["access_token"]
+            token = session["access_token"]
+            print(f"   ✅ Got access token: {token[:20]}...")
+            return token
+        
+        print("   ⚠️  Session exists but no access_token")
         return None
-    except Exception:
+    except Exception as e:
+        print(f"   ❌ _get_auth_token FAILED: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -53,10 +66,12 @@ class PerplexitySearchToolModule(MCPToolModule):
         self.client = None
     
     def _ensure_client(self) -> PerplexitySearchClient:
-        """Ensure Perplexity Search client is initialized with auth token."""
+        """Ensure Perplexity Search client is initialized with a fresh auth token."""
+        auth_token = _get_auth_token()
         if self.client is None:
-            auth_token = _get_auth_token()
             self.client = PerplexitySearchClient(auth_token=auth_token)
+        else:
+            self.client.auth_token = auth_token
         return self.client
 
     def register(self, mcp: FastMCP) -> None:

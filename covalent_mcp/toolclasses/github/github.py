@@ -19,16 +19,16 @@ from fastmcp import FastMCP
 
 def _get_db_path() -> Path:
     """Get path to the graph.db database."""
-    # Try context-engine location first (default location)
-    db_path = Path(__file__).parent.parent.parent.parent / "context-engine" / "graph.db"
-    if db_path.exists():
-        return db_path
-    
-    # Try environment variable
+    # Prefer GRAPH_DB_PATH env var (set by Tauri in production)
     if os.getenv("GRAPH_DB_PATH"):
         db_path = Path(os.getenv("GRAPH_DB_PATH"))
         if db_path.exists():
             return db_path
+
+    # Fall back to dev-relative path
+    db_path = Path(__file__).parent.parent.parent.parent / "context-engine" / "graph.db"
+    if db_path.exists():
+        return db_path
     
     raise FileNotFoundError(
         "Database not found. Ensure graph.db exists in context-engine/ "
@@ -60,18 +60,21 @@ class GitHubToolModule(MCPToolModule):
         return self._dao
     
     def _ensure_client(self) -> GitHubClient:
-        """Ensure GitHub client is initialized with token from database."""
+        """Ensure GitHub client is initialized with a fresh token from database."""
+        dao = self._get_dao()
+        token_data = dao.get_token("github")
+        
+        if not token_data or not token_data.get("access_token"):
+            raise RuntimeError(
+                "No GitHub token found in database. "
+                "Please authenticate via the server's OAuth flow first."
+            )
+        
+        token = token_data["access_token"]
         if self._client is None:
-            dao = self._get_dao()
-            token_data = dao.get_token("github")
-            
-            if not token_data or not token_data.get("access_token"):
-                raise RuntimeError(
-                    "No GitHub token found in database. "
-                    "Please authenticate via the server's OAuth flow first."
-                )
-            
-            self._client = GitHubClient(access_token=token_data["access_token"])
+            self._client = GitHubClient(access_token=token)
+        else:
+            self._client.access_token = token
         return self._client
     
     def register(self, mcp: FastMCP) -> None:

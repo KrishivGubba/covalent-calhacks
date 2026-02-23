@@ -1,5 +1,5 @@
 use anyhow::{Result, Context as AnyhowContext};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 use std::sync::{Arc, Mutex};
 
 /// Direct SQLite access to graph.db for fast context retrieval
@@ -24,9 +24,11 @@ pub struct DataEntry {
 }
 
 impl GraphDatabase {
-    /// Create a new GraphDatabase connection
+    /// Open an existing graph.db (read-write, but never create the file).
+    /// Flask/Python owns database creation with SQLCipher encryption.
     pub fn new(db_path: String) -> Result<Self> {
-        let conn = Connection::open(&db_path)
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(&db_path, flags)
             .with_context(|| format!("Failed to open graph.db at: {}", db_path))?;
 
         Ok(Self {

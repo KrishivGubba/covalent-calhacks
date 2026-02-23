@@ -168,8 +168,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         INSERT OR IGNORE INTO integration_tokens (provider, access_token, scopes, provider_metadata)
-        VALUES ('filesystem', 'built-in', 'local', '{"type": "local_filesystem"}'),
-               ('perplexity', 'api-key-based', 'search', '{"type": "api_key"}');
+        VALUES ('perplexity', 'api-key-based', 'search', '{"type": "api_key"}');
         """
     )
 

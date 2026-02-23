@@ -167,13 +167,14 @@ def log_request(response):
 _default_db_path = os.path.join(os.path.dirname(__file__), '..', 'context-engine', 'graph.db')
 db_path = os.environ.get('GRAPH_DB_PATH', os.path.abspath(_default_db_path))
 
-# Auto-initialize database if it doesn't exist
-if not os.path.exists(db_path):
-    ensure_parent_dir(db_path)
-    with _encrypted_conn() as conn:
-        create_schema(conn)
-    os.chmod(db_path, 0o600)
-    log.info(f"Initialized encrypted database at: {db_path}")
+# Auto-initialize database schema (idempotent — uses CREATE TABLE IF NOT EXISTS)
+ensure_parent_dir(db_path)
+with _encrypted_conn() as conn:
+    create_schema(conn)
+    # Filesystem should not be pre-seeded — user must pick a folder first
+    conn.execute("DELETE FROM integration_tokens WHERE provider = 'filesystem' AND provider_metadata = '{\"type\": \"local_filesystem\"}'")
+    conn.commit()
+log.info(f"Database schema ensured at: {db_path}")
 
 # Set env var so downstream modules (MCP tools, etc.) can find the DB
 os.environ.setdefault('GRAPH_DB_PATH', db_path)

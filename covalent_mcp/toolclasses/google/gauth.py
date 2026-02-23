@@ -58,16 +58,16 @@ LAMBDA_GATEWAY_URL = os.getenv("LAMBDA_GATEWAY_URL", "https://gtfrn4otol.execute
 
 def _get_db_path() -> Path:
     """Get path to the graph.db database."""
-    # Try context-engine location first (default location)
-    db_path = Path(__file__).parent.parent.parent.parent / "context-engine" / "graph.db"
-    if db_path.exists():
-        return db_path
-    
-    # Try environment variable
+    # Prefer GRAPH_DB_PATH env var (set by Tauri in production)
     if os.getenv("GRAPH_DB_PATH"):
         db_path = Path(os.getenv("GRAPH_DB_PATH"))
         if db_path.exists():
             return db_path
+
+    # Fall back to dev-relative path
+    db_path = Path(__file__).parent.parent.parent.parent / "context-engine" / "graph.db"
+    if db_path.exists():
+        return db_path
     
     raise FileNotFoundError(
         "Database not found. Ensure graph.db exists in context-engine/ "

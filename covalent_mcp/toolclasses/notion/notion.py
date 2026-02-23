@@ -27,7 +27,7 @@ load_dotenv()
 
 # Path to integration DB for reading access token
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-DB_PATH = os.path.join(PROJECT_ROOT, 'context-engine', 'graph.db')
+DB_PATH = os.environ.get('GRAPH_DB_PATH', os.path.join(PROJECT_ROOT, 'context-engine', 'graph.db'))
 
 sys.path.insert(0, PROJECT_ROOT)
 from logger import get_logger
