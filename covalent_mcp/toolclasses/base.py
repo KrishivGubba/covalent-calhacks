@@ -4,7 +4,14 @@ Base MCP Tool Module - Abstract base class for all tool modules.
 All tool modules MUST inherit from this and implement the register() method.
 This enforces the contract that every tool module must define how to register its tools.
 """
+import sys
+from pathlib import Path
 from abc import ABC, abstractmethod
+
+_project_root = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
@@ -154,7 +161,7 @@ async def resolve_display_fields(
             if resolved_values is None:
                 resolved_values = {}
         except Exception as e:
-            print(f"Warning: resolve function failed for {schema.tool_name}: {e}")
+            log.warning(f"Warning: resolve function failed for {schema.tool_name}: {e}")
             resolved_values = {}
 
     # Build the display fields with values populated

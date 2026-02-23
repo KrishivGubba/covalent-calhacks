@@ -2,6 +2,13 @@ import boto3
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 import os
+import sys
+from pathlib import Path
+
+_project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
 
 # Load environment variables from .env file
 load_dotenv()
@@ -32,7 +39,7 @@ try:
  )
  # Extract and print the response text.
  response_text = response["output"]["message"]["content"][0]["text"]
- print(response_text)
+ log.info(response_text)
 except (ClientError, Exception) as e:
- print(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
+ log.error(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
  exit(1)

@@ -5,6 +5,13 @@ Exposes Google Drive operations as MCP tools and resources for LLM agents.
 Token is managed by the server via OAuth flow - MCP reads token from database.
 """
 import json
+import sys
+from pathlib import Path
+
+_project_root = Path(__file__).resolve().parent.parent.parent.parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
 from typing import Dict, Optional
 from covalent_mcp.toolclasses.base import (
     MCPToolModule,
@@ -59,7 +66,7 @@ class DriveToolModule(MCPToolModule):
                 "file_type": meta.get("mimeType", ""),
             }
         except Exception as e:
-            print(f"Warning: failed to resolve Drive file details for {file_id}: {e}")
+            log.warning(f"Warning: failed to resolve Drive file details for {file_id}: {e}")
             return {"file_name": "(could not load file info)"}
 
     # -----------------------------------------------------------------

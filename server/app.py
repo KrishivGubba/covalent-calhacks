@@ -17,8 +17,13 @@ if not getattr(sys, 'frozen', False):
 else:
     load_dotenv()  # pick up any .env next to the executable, or rely on env vars
 
-# Add context-engine to path
+# Add project root and context-engine to path
+_project_root = os.path.join(os.path.dirname(__file__), '..')
+sys.path.insert(0, os.path.abspath(_project_root))
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'context-engine'))
+
+from logger import get_logger
+log = get_logger()
 from graph import Tree
 from auth_dao import AuthDAO
 from integration_dao import IntegrationDAO
@@ -136,7 +141,14 @@ def _resolve_tool_display(proposed_action: dict, loop=None) -> dict:
 
 app = Flask(__name__)
 CORS(app)
-print("Starting Flask app")
+
+
+# TODO: figure out if we even need this
+import logging as _logging
+_logging.getLogger('werkzeug').setLevel(_logging.INFO)
+app.logger.setLevel(_logging.INFO)
+
+log.info("Starting Flask app")
 
 
 @app.before_request
@@ -161,7 +173,7 @@ if not os.path.exists(db_path):
     with _encrypted_conn() as conn:
         create_schema(conn)
     os.chmod(db_path, 0o600)
-    print(f"Initialized encrypted database at: {db_path}")
+    log.info(f"Initialized encrypted database at: {db_path}")
 
 # Set env var so downstream modules (MCP tools, etc.) can find the DB
 os.environ.setdefault('GRAPH_DB_PATH', db_path)
@@ -186,7 +198,7 @@ def cleanup_background_thread():
     queries and LLM API calls), which release Python's GIL, allowing Flask to
     continue handling requests concurrently.
     """
-    print(f"[Cleanup] Background cleanup thread started (interval: {CLEANUP_INTERVAL_SECONDS}s, threshold: {CLEANUP_THRESHOLD})")
+    log.info(f"[Cleanup] Background cleanup thread started (interval: {CLEANUP_INTERVAL_SECONDS}s, threshold: {CLEANUP_THRESHOLD})")
     
     while True:
         try:
@@ -194,16 +206,16 @@ def cleanup_background_thread():
             time.sleep(CLEANUP_INTERVAL_SECONDS)
             
             start_time = time.time()
-            print(f"[Cleanup] Starting scheduled cleanup at {datetime.now().isoformat()}")
+            log.info(f"[Cleanup] Starting scheduled cleanup at {datetime.now().isoformat()}")
             
             # Run the batch cleanup
             cleaned_nodes = Tree.cleanup_nodes_batch(tree.dao, CLEANUP_THRESHOLD)
             
             elapsed = time.time() - start_time
-            print(f"[Cleanup] Completed: {len(cleaned_nodes)} nodes cleaned in {elapsed:.2f}s")
+            log.info(f"[Cleanup] Completed: {len(cleaned_nodes)} nodes cleaned in {elapsed:.2f}s")
             
         except Exception as e:
-            print(f"[Cleanup] Error in background cleanup: {e}")
+            log.error(f"[Cleanup] Error in background cleanup: {e}")
             import traceback
             traceback.print_exc()
 
@@ -278,10 +290,10 @@ def _ensure_auth_table_schema():
         for col_name, col_type in needed:
             if col_name not in existing_cols:
                 conn.execute(f"ALTER TABLE auth_pending ADD COLUMN {col_name} {col_type}")
-                print(f"🔧 Added column {col_name} to auth_pending table")
+                log.info(f"🔧 Added column {col_name} to auth_pending table")
         conn.commit()
     except Exception as e:
-        print(f"⚠️  Failed to migrate auth_pending table: {e}")
+        log.warning(f"⚠️  Failed to migrate auth_pending table: {e}")
     finally:
         conn.close()
 
@@ -297,16 +309,16 @@ integration_dao.ensure_table()  # Create integration_tokens table if needed
 # Log filesystem root status on startup (MCP server reads directly from DB)
 _saved_fs_root = integration_dao.get_filesystem_root()
 if _saved_fs_root:
-    print(f"📁 Filesystem root configured: {_saved_fs_root}")
+    log.info(f"📁 Filesystem root configured: {_saved_fs_root}")
 else:
-    print(f"📁 Filesystem not connected (user must choose a folder in Integrations)")
+    log.info(f"📁 Filesystem not connected (user must choose a folder in Integrations)")
 
 
 @app.route("/screen", methods=["POST"])
 def screen():
     try:
         body = request.get_json()
-        print("🔍 DEBUG: Screen endpoint called with body:", body)
+        log.debug("🔍 DEBUG: Screen endpoint called with body: " + str(body))
         
         # Import json for parsing
         import json
@@ -320,7 +332,7 @@ def screen():
                 else:
                     full_context_data = body["data"]
             except json.JSONDecodeError:
-                print("⚠️ Warning: Could not parse 'data' field, using top-level fields")
+                log.warning("⚠️ Warning: Could not parse 'data' field, using top-level fields")
                 full_context_data = body
         else:
             full_context_data = body
@@ -367,7 +379,7 @@ FULL CONTEXT DATA (JSON):
 
 === END CONTEXT DATA ==="""
         
-        print(f"📊 Comprehensive context length: {len(comprehensive_context_str)} chars")
+        log.info(f"📊 Comprehensive context length: {len(comprehensive_context_str)} chars")
         
         # Get MCP integration statuses (so LLM knows which actions are available)
         statuses = integration_dao.get_all_statuses()
@@ -409,19 +421,19 @@ FULL CONTEXT DATA (JSON):
         # Filter to only connected MCPs
         connected_mcps = [mcp for mcp in available_mcps if mcp["connected"]]
         
-        print(f"Available MCPs: {[mcp['name'] for mcp in connected_mcps]}")
+        log.info(f"Available MCPs: {[mcp['name'] for mcp in connected_mcps]}")
         
         # Convert the entire body to JSON string for storage in the data parameter
         data_str = json.dumps(body, ensure_ascii=False)
         
         # Call learn function with comprehensive context - returns dict with structure info and actions
-        print(f"\n📍 DEBUG: Calling tree.learn_with_structure() with comprehensive context...")
+        log.debug(f"\n📍 DEBUG: Calling tree.learn_with_structure() with comprehensive context...")
         result = tree.learn_with_structure(comprehensive_context_str, data_str, available_mcps=connected_mcps)
-        print(f"📍 DEBUG: Operation: {result['operation']}, Confidence: {result['confidence']}")
+        log.debug(f"📍 DEBUG: Operation: {result['operation']}, Confidence: {result['confidence']}")
         
         # Extract recent actions from the result
         recent_actions = result.get("actions", [])
-        print(f"📍 DEBUG: Got {len(recent_actions)} recent actions")
+        log.debug(f"📍 DEBUG: Got {len(recent_actions)} recent actions")
 
         # Format actions for frontend
         # Tuple format: (UUID, Action_name, Action_plan, Node_UUID, last_selected)
@@ -449,7 +461,7 @@ FULL CONTEXT DATA (JSON):
             "action_uuid": primary_action["action_uuid"] if primary_action else None
         }), 200
     except Exception as e:
-        print(f"Error in /screen endpoint: {e}")
+        log.error(f"Error in /screen endpoint: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -474,7 +486,7 @@ def auth_start():
     if not state or not code_verifier:
         return jsonify({"error": "state and code_verifier are required"}), 400
     auth_dao.save_code_verifier(state, code_verifier)
-    print(f"🔐 Auth start: stored code_verifier for state={state[:8]}...")
+    log.info(f"🔐 Auth start: stored code_verifier for state={state[:8]}...")
     return jsonify({"ok": True}), 200
 
 
@@ -497,7 +509,13 @@ def auth_callback():
     # If Auth0 returned an error
     if error:
         auth_dao.save_auth_result(state, error=error, error_description=error_description)
-        print(f"🔐 Auth callback error: {error} - {error_description}")
+        log.error(f"🔐 Auth callback error: {error} - {error_description}")
+        log.authentication("login_failed", {
+            "error": error,
+            "error_description": error_description,
+            "auth_provider": "auth0",
+            "stage": "callback",
+        })
         return render_error(error_description or error), 200
 
     if not code:
@@ -512,7 +530,7 @@ def auth_callback():
 
     # Exchange code for tokens (server-side, no CORS issues)
     try:
-        print(f"🔐 Exchanging code for tokens (state={state[:8]}...)...")
+        log.info(f"🔐 Exchanging code for tokens (state={state[:8]}...)...")
         token_response = http_requests.post(
             f"https://{AUTH0_DOMAIN}/oauth/token",
             data={
@@ -531,7 +549,13 @@ def auth_callback():
             err = token_data.get("error", "token_exchange_failed")
             err_desc = token_data.get("error_description", "Token exchange failed")
             auth_dao.save_auth_result(state, error=err, error_description=err_desc)
-            print(f"🔐 Token exchange failed: {err} - {err_desc}")
+            log.error(f"🔐 Token exchange failed: {err} - {err_desc}")
+            log.authentication("login_failed", {
+                "error": err,
+                "error_description": err_desc,
+                "auth_provider": "auth0",
+                "stage": "token_exchange",
+            })
             return render_error(err_desc), 200
 
         access_token = token_data.get("access_token")
@@ -539,7 +563,7 @@ def auth_callback():
         refresh_token = token_data.get("refresh_token")
         expires_in = token_data.get("expires_in", 86400)  # Default 24 hours
 
-        print(f"🔐 Tokens received. Fetching user info...")
+        log.info(f"🔐 Tokens received. Fetching user info...")
 
         # Fetch user info
         user_info = None
@@ -551,9 +575,9 @@ def auth_callback():
             )
             if userinfo_response.ok:
                 user_info = userinfo_response.json()
-                print(f"🔐 User info: {user_info.get('email', user_info.get('sub', 'unknown'))}")
+                log.info(f"🔐 User info: {user_info.get('email', user_info.get('sub', 'unknown'))}")
         except Exception as e:
-            print(f"🔐 Failed to fetch user info: {e}")
+            log.error(f"🔐 Failed to fetch user info: {e}")
 
         auth_dao.save_auth_result(
             state,
@@ -574,15 +598,31 @@ def auth_callback():
                 expires_at=expires_at,
                 user_info=user_info,
             )
-            print(f"🔐 Saved persistent session for user={user_info['sub']}")
+            log.set_user_id(user_info["sub"])
+            log.info(f"🔐 Saved persistent session for user={user_info['sub']}")
+            log.authentication("login", {
+                "user_id": user_info["sub"],
+                "email": user_info.get("email"),
+                "name": user_info.get("name"),
+                "email_verified": user_info.get("email_verified"),
+                "auth_provider": "auth0",
+                "has_refresh_token": refresh_token is not None,
+            })
 
-        print(f"🔐 Auth complete for state={state[:8]}...")
+        log.info(f"🔐 Auth complete for state={state[:8]}...")
         return load_html_template('auth_success.html'), 200
 
     except Exception as e:
         import traceback
         traceback.print_exc()
         auth_dao.save_auth_result(state, error="exception", error_description=str(e))
+        log.authentication("login_failed", {
+            "error": "exception",
+            "error_description": str(e),
+            "error_type": type(e).__name__,
+            "auth_provider": "auth0",
+            "stage": "exception",
+        })
         return render_error(f"An error occurred: {e}"), 200
 
 
@@ -667,7 +707,13 @@ def refresh_session():
         if not token_response.ok or "error" in token_data:
             err = token_data.get("error", "refresh_failed")
             err_desc = token_data.get("error_description", "Token refresh failed")
-            print(f"🔐 Token refresh failed: {err} - {err_desc}")
+            log.error(f"🔐 Token refresh failed: {err} - {err_desc}")
+            log.authentication("token_refresh_failed", {
+                "user_id": user_id,
+                "error": err,
+                "error_description": err_desc,
+                "auth_provider": "auth0",
+            })
             return jsonify({"error": err, "error_description": err_desc}), 400
 
         new_access_token = token_data.get("access_token")
@@ -688,7 +734,12 @@ def refresh_session():
         else:
             auth_dao.update_access_token(user_id, new_access_token, expires_at)
 
-        print(f"🔐 Refreshed access token for user={user_id}")
+        log.info(f"🔐 Refreshed access token for user={user_id}")
+        log.authentication("token_refreshed", {
+            "user_id": user_id,
+            "auth_provider": "auth0",
+            "refresh_token_rotated": new_refresh_token is not None,
+        })
         
         return jsonify({
             "access_token": new_access_token,
@@ -723,7 +774,16 @@ def logout():
     
     tokens_deleted = google_deleted + github_deleted + notion_deleted
     
-    print(f"🔐 Logged out user={user_id} (session={session_deleted}, google={google_deleted}, github={github_deleted}, notion={notion_deleted})")
+    log.info(f"🔐 Logged out user={user_id} (session={session_deleted}, google={google_deleted}, github={github_deleted}, notion={notion_deleted})")
+    log.set_user_id(user_id)
+    log.authentication("logout", {
+        "user_id": user_id,
+        "session_deleted": session_deleted > 0,
+        "google_token_deleted": google_deleted > 0,
+        "github_token_deleted": github_deleted > 0,
+        "notion_token_deleted": notion_deleted > 0,
+        "integrations_revoked_count": tokens_deleted,
+    })
     return jsonify({"ok": True, "deleted": session_deleted > 0, "integrations_deleted": tokens_deleted}), 200
 
 
@@ -825,7 +885,11 @@ def filesystem_connect():
         provider_metadata={"type": "local_filesystem", "root_path": root_path},
     )
 
-    print(f"📁 Filesystem connected: root_path={root_path}")
+    log.info(f"📁 Filesystem connected: root_path={root_path}")
+    log.integration("filesystem_connected", {
+        "root_path": root_path,
+        "integration": "filesystem",
+    })
 
     return jsonify({"ok": True, "root_path": root_path}), 200
 
@@ -836,7 +900,11 @@ def filesystem_disconnect():
     Disconnect filesystem integration (remove root path).
     """
     deleted = integration_dao.delete_token("filesystem")
-    print(f"📁 Filesystem disconnected (deleted={deleted})")
+    log.info(f"📁 Filesystem disconnected (deleted={deleted})")
+    log.integration("filesystem_disconnected", {
+        "integration": "filesystem",
+        "deleted": deleted > 0,
+    })
     return jsonify({"ok": True, "deleted": deleted > 0}), 200
 
 
@@ -877,7 +945,7 @@ def google_auth_start():
         "status": "pending",
         "created_at": datetime.utcnow().isoformat(),
     }
-    print(f"🔷 Google auth start: stored code_verifier for state={state[:8]}...")
+    log.info(f"🔷 Google auth start: stored code_verifier for state={state[:8]}...")
     return jsonify({"ok": True}), 200
 
 
@@ -904,7 +972,13 @@ def google_auth_callback():
         google_auth_pending[state]["status"] = "error"
         google_auth_pending[state]["error"] = error
         google_auth_pending[state]["error_description"] = request.args.get("error_description", error)
-        print(f"🔷 Google callback error: {error}")
+        log.error(f"🔷 Google callback error: {error}")
+        log.integration("google_connect_failed", {
+            "integration": "google",
+            "error": error,
+            "error_description": request.args.get("error_description", error),
+            "stage": "oauth_callback",
+        })
         return render_error(request.args.get("error_description", error)), 200
     
     if not code:
@@ -930,7 +1004,7 @@ def google_auth_callback():
     
     # Exchange code for tokens via Lambda (keeps client_secret secure on server)
     try:
-        print(f"🔷 Exchanging Google code for tokens via Lambda (state={state[:8]}...)...")
+        log.info(f"🔷 Exchanging Google code for tokens via Lambda (state={state[:8]}...)...")
         token_response = http_requests.post(
             f"{LAMBDA_GATEWAY_URL}/integrations/google/exchange",
             json={
@@ -952,7 +1026,13 @@ def google_auth_callback():
             google_auth_pending[state]["status"] = "error"
             google_auth_pending[state]["error"] = err
             google_auth_pending[state]["error_description"] = err_desc
-            print(f"🔷 Google token exchange failed: {err} - {err_desc}")
+            log.error(f"🔷 Google token exchange failed: {err} - {err_desc}")
+            log.integration("google_connect_failed", {
+                "integration": "google",
+                "error": err,
+                "error_description": err_desc,
+                "stage": "token_exchange",
+            })
             return render_error(err_desc), 200
         
         access_token = token_data.get("access_token")
@@ -973,9 +1053,9 @@ def google_auth_callback():
             if userinfo_response.ok:
                 user_info = userinfo_response.json()
                 user_email = user_info.get("email")
-                print(f"🔷 Google user: {user_email}")
+                log.info(f"🔷 Google user: {user_email}")
         except Exception as e:
-            print(f"🔷 Failed to fetch Google user info: {e}")
+            log.error(f"🔷 Failed to fetch Google user info: {e}")
         
         # Save to integration_tokens table
         integration_dao.save_token(
@@ -991,7 +1071,13 @@ def google_auth_callback():
         google_auth_pending[state]["status"] = "ready"
         google_auth_pending[state]["email"] = user_email
         
-        print(f"🔷 Google auth complete for state={state[:8]}...")
+        log.info(f"🔷 Google auth complete for state={state[:8]}...")
+        log.integration("google_connected", {
+            "integration": "google",
+            "email": user_email,
+            "scopes": scope,
+            "has_refresh_token": refresh_token is not None,
+        })
         return load_html_template('auth_success.html'), 200
         
     except Exception as e:
@@ -1000,6 +1086,13 @@ def google_auth_callback():
         google_auth_pending[state]["status"] = "error"
         google_auth_pending[state]["error"] = "exception"
         google_auth_pending[state]["error_description"] = str(e)
+        log.integration("google_connect_failed", {
+            "integration": "google",
+            "error": "exception",
+            "error_description": str(e),
+            "error_type": type(e).__name__,
+            "stage": "exception",
+        })
         return render_error(f"An error occurred: {e}"), 200
 
 
@@ -1040,7 +1133,11 @@ def google_disconnect():
     Disconnect Google integration (delete tokens).
     """
     deleted = integration_dao.delete_token("google")
-    print(f"🔷 Google disconnected (deleted={deleted})")
+    log.info(f"🔷 Google disconnected (deleted={deleted})")
+    log.integration("google_disconnected", {
+        "integration": "google",
+        "deleted": deleted > 0,
+    })
     return jsonify({"ok": True, "deleted": deleted > 0}), 200
 
 
@@ -1091,7 +1188,7 @@ def google_refresh_token():
         if not token_response.ok or "error" in new_token_data:
             err = new_token_data.get("error", "refresh_failed")
             err_desc = new_token_data.get("error_description", "Token refresh failed")
-            print(f"🔷 Google token refresh failed: {err} - {err_desc}")
+            log.error(f"🔷 Google token refresh failed: {err} - {err_desc}")
             return jsonify({"error": err, "error_description": err_desc}), 400
         
         new_access_token = new_token_data.get("access_token")
@@ -1099,7 +1196,7 @@ def google_refresh_token():
         expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
         
         integration_dao.update_access_token("google", new_access_token, expires_at)
-        print(f"🔷 Google access token refreshed")
+        log.info(f"🔷 Google access token refreshed")
         
         return jsonify({
             "access_token": new_access_token,
@@ -1140,7 +1237,7 @@ def github_auth_start():
         "status": "pending",
         "created_at": datetime.utcnow().isoformat(),
     }
-    print(f"🔷 GitHub auth start: stored code_verifier for state={state[:8]}...")
+    log.info(f"🔷 GitHub auth start: stored code_verifier for state={state[:8]}...")
     return jsonify({"ok": True}), 200
 
 
@@ -1168,7 +1265,13 @@ def github_auth_callback():
         github_auth_pending[state]["status"] = "error"
         github_auth_pending[state]["error"] = error
         github_auth_pending[state]["error_description"] = error_description or error
-        print(f"🔷 GitHub callback error: {error}")
+        log.error(f"🔷 GitHub callback error: {error}")
+        log.integration("github_connect_failed", {
+            "integration": "github",
+            "error": error,
+            "error_description": error_description or error,
+            "stage": "oauth_callback",
+        })
         return render_error(error_description or error), 200
     
     if not code:
@@ -1194,7 +1297,7 @@ def github_auth_callback():
     
     # Exchange code for tokens via Lambda
     try:
-        print(f"🔷 Exchanging GitHub code for tokens via Lambda (state={state[:8]}...)...")
+        log.info(f"🔷 Exchanging GitHub code for tokens via Lambda (state={state[:8]}...)...")
         token_response = http_requests.post(
             f"{LAMBDA_GATEWAY_URL}/integrations/github/exchange",
             json={
@@ -1216,7 +1319,13 @@ def github_auth_callback():
             github_auth_pending[state]["status"] = "error"
             github_auth_pending[state]["error"] = err
             github_auth_pending[state]["error_description"] = err_desc
-            print(f"🔷 GitHub token exchange failed: {err} - {err_desc}")
+            log.error(f"🔷 GitHub token exchange failed: {err} - {err_desc}")
+            log.integration("github_connect_failed", {
+                "integration": "github",
+                "error": err,
+                "error_description": err_desc,
+                "stage": "token_exchange",
+            })
             return render_error(err_desc), 200
         
         access_token = token_data.get("access_token")
@@ -1239,9 +1348,9 @@ def github_auth_callback():
                 user_info = userinfo_response.json()
                 username = user_info.get("login")
                 user_email = user_info.get("email")
-                print(f"🔷 GitHub user: {username} ({user_email})")
+                log.info(f"🔷 GitHub user: {username} ({user_email})")
         except Exception as e:
-            print(f"🔷 Failed to fetch GitHub user info: {e}")
+            log.error(f"🔷 Failed to fetch GitHub user info: {e}")
         
         # Save to integration_tokens table
         # GitHub tokens don't expire, so expires_at is None
@@ -1258,7 +1367,13 @@ def github_auth_callback():
         github_auth_pending[state]["status"] = "ready"
         github_auth_pending[state]["username"] = username
         
-        print(f"🔷 GitHub auth complete for state={state[:8]}...")
+        log.info(f"🔷 GitHub auth complete for state={state[:8]}...")
+        log.integration("github_connected", {
+            "integration": "github",
+            "username": username,
+            "email": user_email,
+            "scopes": scope,
+        })
         return load_html_template('auth_success.html'), 200
         
     except Exception as e:
@@ -1267,6 +1382,13 @@ def github_auth_callback():
         github_auth_pending[state]["status"] = "error"
         github_auth_pending[state]["error"] = "exception"
         github_auth_pending[state]["error_description"] = str(e)
+        log.integration("github_connect_failed", {
+            "integration": "github",
+            "error": "exception",
+            "error_description": str(e),
+            "error_type": type(e).__name__,
+            "stage": "exception",
+        })
         return render_error(f"An error occurred: {e}"), 200
 
 
@@ -1307,7 +1429,11 @@ def github_disconnect():
     Disconnect GitHub integration (delete tokens).
     """
     deleted = integration_dao.delete_token("github")
-    print(f"🔷 GitHub disconnected (deleted={deleted})")
+    log.info(f"🔷 GitHub disconnected (deleted={deleted})")
+    log.integration("github_disconnected", {
+        "integration": "github",
+        "deleted": deleted > 0,
+    })
     return jsonify({"ok": True, "deleted": deleted > 0}), 200
 
 
@@ -1339,7 +1465,7 @@ def notion_auth_start():
         "status": "pending",
         "created_at": datetime.utcnow().isoformat(),
     }
-    print(f"🔷 Notion auth start: stored state={state[:8]}...")
+    log.info(f"🔷 Notion auth start: stored state={state[:8]}...")
     return jsonify({"ok": True}), 200
 
 
@@ -1368,7 +1494,13 @@ def notion_auth_callback():
         notion_auth_pending[state]["status"] = "error"
         notion_auth_pending[state]["error"] = error
         notion_auth_pending[state]["error_description"] = request.args.get("error_description", error)
-        print(f"🔷 Notion callback error: {error}")
+        log.error(f"🔷 Notion callback error: {error}")
+        log.integration("notion_connect_failed", {
+            "integration": "notion",
+            "error": error,
+            "error_description": request.args.get("error_description", error),
+            "stage": "oauth_callback",
+        })
         return render_error(request.args.get("error_description", error)), 200
     
     if not code:
@@ -1387,7 +1519,7 @@ def notion_auth_callback():
     
     # Exchange code for tokens via Lambda
     try:
-        print(f"🔷 Exchanging Notion code for tokens via Lambda (state={state[:8]}...)...")
+        log.info(f"🔷 Exchanging Notion code for tokens via Lambda (state={state[:8]}...)...")
         token_response = http_requests.post(
             f"{LAMBDA_GATEWAY_URL}/integrations/notion/exchange",
             json={
@@ -1408,7 +1540,13 @@ def notion_auth_callback():
             notion_auth_pending[state]["status"] = "error"
             notion_auth_pending[state]["error"] = err
             notion_auth_pending[state]["error_description"] = err_desc
-            print(f"🔷 Notion token exchange failed: {err} - {err_desc}")
+            log.error(f"🔷 Notion token exchange failed: {err} - {err_desc}")
+            log.integration("notion_connect_failed", {
+                "integration": "notion",
+                "error": err,
+                "error_description": err_desc,
+                "stage": "token_exchange",
+            })
             return render_error(err_desc), 200
         
         access_token = token_data.get("access_token")
@@ -1436,7 +1574,14 @@ def notion_auth_callback():
         notion_auth_pending[state]["status"] = "ready"
         notion_auth_pending[state]["workspace_name"] = workspace_name
         
-        print(f"🔷 Notion auth complete: workspace={workspace_name}")
+        log.info(f"🔷 Notion auth complete: workspace={workspace_name}")
+        log.integration("notion_connected", {
+            "integration": "notion",
+            "workspace_name": workspace_name,
+            "workspace_id": workspace_id,
+            "bot_id": bot_id,
+            "has_refresh_token": refresh_token is not None,
+        })
         return load_html_template('auth_success.html'), 200
         
     except Exception as e:
@@ -1445,6 +1590,13 @@ def notion_auth_callback():
         notion_auth_pending[state]["status"] = "error"
         notion_auth_pending[state]["error"] = "exception"
         notion_auth_pending[state]["error_description"] = str(e)
+        log.integration("notion_connect_failed", {
+            "integration": "notion",
+            "error": "exception",
+            "error_description": str(e),
+            "error_type": type(e).__name__,
+            "stage": "exception",
+        })
         return render_error(f"An error occurred: {e}"), 200
 
 
@@ -1483,7 +1635,11 @@ def notion_disconnect():
     Disconnect Notion integration (delete tokens).
     """
     deleted = integration_dao.delete_token("notion")
-    print(f"🔷 Notion disconnected (deleted={deleted})")
+    log.info(f"🔷 Notion disconnected (deleted={deleted})")
+    log.integration("notion_disconnected", {
+        "integration": "notion",
+        "deleted": deleted > 0,
+    })
     return jsonify({"ok": True, "deleted": deleted > 0}), 200
 
 
@@ -1534,7 +1690,7 @@ def notion_refresh_token():
         if not token_response.ok or "error" in new_token_data:
             err = new_token_data.get("error", "refresh_failed")
             err_desc = new_token_data.get("error_description", "Token refresh failed")
-            print(f"🔷 Notion token refresh failed: {err} - {err_desc}")
+            log.error(f"🔷 Notion token refresh failed: {err} - {err_desc}")
             return jsonify({"error": err, "error_description": err_desc}), 400
         
         new_access_token = new_token_data.get("access_token")
@@ -1554,7 +1710,7 @@ def notion_refresh_token():
                 expires_at=expires_at,
             )
         
-        print(f"🔷 Notion access token refreshed")
+        log.info(f"🔷 Notion access token refreshed")
         
         return jsonify({
             "access_token": new_access_token,
@@ -1675,12 +1831,12 @@ def graph_reset():
         graph_tables = ["data_table", "action_table", "node_counters", "node_table"]
         for table in graph_tables:
             cursor.execute(f"DELETE FROM {table}")
-            print(f"🗑️  Cleared table: {table}")
+            log.info(f"🗑️  Cleared table: {table}")
 
         conn.commit()
         conn.close()
 
-        print("✅ Graph tables cleared (auth/integration tables preserved)")
+        log.info("✅ Graph tables cleared (auth/integration tables preserved)")
 
         # Re-create the Tree object pointing at the DB
         tree = Tree(db_path)
@@ -1718,12 +1874,12 @@ def trigger_cleanup():
         threshold = data.get("threshold", CLEANUP_THRESHOLD)
         
         start_time = time.time()
-        print(f"[Cleanup] Manual cleanup triggered (threshold: {threshold})")
+        log.info(f"[Cleanup] Manual cleanup triggered (threshold: {threshold})")
         
         cleaned_nodes = Tree.cleanup_nodes_batch(tree.dao, threshold)
         
         elapsed = time.time() - start_time
-        print(f"[Cleanup] Manual cleanup completed: {len(cleaned_nodes)} nodes in {elapsed:.2f}s")
+        log.info(f"[Cleanup] Manual cleanup completed: {len(cleaned_nodes)} nodes in {elapsed:.2f}s")
         
         return jsonify({
             "nodes_cleaned": len(cleaned_nodes),
@@ -1823,7 +1979,7 @@ def trigger_cleanup():
 #                     duration_ms=duration_ms
 #                 )
 #             except Exception as log_err:
-#                 print(f"⚠️ Failed to log action history: {log_err}")
+#                 log.warning(f"⚠️ Failed to log action history: {log_err}")
 #             
 #             return jsonify({
 #                 "message": "Action triggered successfully",
@@ -1845,7 +2001,7 @@ def trigger_cleanup():
 #                     duration_ms=duration_ms
 #                 )
 #             except Exception as log_err:
-#                 print(f"⚠️ Failed to log action history: {log_err}")
+#                 log.warning(f"⚠️ Failed to log action history: {log_err}")
 #             
 #             return jsonify({"message": "Action triggered but no result returned"}), 200
 #     except Exception as e:
@@ -1868,7 +2024,7 @@ def trigger_cleanup():
 #                 duration_ms=duration_ms
 #             )
 #         except Exception as log_err:
-#             print(f"⚠️ Failed to log action history: {log_err}")
+#             log.warning(f"⚠️ Failed to log action history: {log_err}")
 #         
 #         return jsonify({"error": str(e)}), 500
 
@@ -1925,7 +2081,7 @@ def plan_action_endpoint():
                 "error": "Failed to retrieve action details"
             }), 400
         
-        print(f"📋 Planning action: {action_text[:100]}...")
+        log.info(f"📋 Planning action: {action_text[:100]}...")
         
         # Run the research + planning async function
         loop = asyncio.new_event_loop()
@@ -1974,7 +2130,7 @@ def plan_action_endpoint():
                     **display_info
                 })
             except Exception as display_err:
-                print(f"Warning: display schema resolution failed for {action.get('tool_name')}: {display_err}")
+                log.warning(f"Warning: display schema resolution failed for {action.get('tool_name')}: {display_err}")
                 # Add fallback display info
                 displays.append({
                     "step_id": action.get("step_id", len(displays) + 1),
@@ -2048,7 +2204,7 @@ def plan_action_direct_endpoint():
                 "error": "action_text is required"
             }), 400
         
-        print(f"📋 Planning action (direct): {action_text[:100]}...")
+        log.info(f"📋 Planning action (direct): {action_text[:100]}...")
         
         # Run the research + planning async function
         loop = asyncio.new_event_loop()
@@ -2095,7 +2251,7 @@ def plan_action_direct_endpoint():
                     **display_info
                 })
             except Exception as display_err:
-                print(f"Warning: display schema resolution failed for {action.get('tool_name')}: {display_err}")
+                log.warning(f"Warning: display schema resolution failed for {action.get('tool_name')}: {display_err}")
                 displays.append({
                     "step_id": action.get("step_id", len(displays) + 1),
                     "display_name": action.get("tool_name", "Unknown").replace("_", " ").title(),
@@ -2169,6 +2325,7 @@ def execute_action_endpoint():
     """
     start_time = time.perf_counter()
     action_uuid = ""
+    action_data = None
     
     try:
         body = request.get_json()
@@ -2179,7 +2336,7 @@ def execute_action_endpoint():
         
         if actions and isinstance(actions, list):
             # Multi-action execution
-            print(f"🚀 Executing action chain with {len(actions)} actions")
+            log.info(f"🚀 Executing action chain with {len(actions)} actions")
             
             # Get action data for logging
             action_data = tree.dao.get_action_by_id(action_uuid)
@@ -2200,21 +2357,45 @@ def execute_action_endpoint():
             # Log each action result to history
             for step_result in chain_result.get("results", []):
                 try:
+                    _step_tool = step_result.get("tool_name", "unknown")
+                    _step_params = next(
+                        (a.get("parameters", {}) for a in actions if a.get("step_id") == step_result.get("step_id")),
+                        {}
+                    )
+                    _step_status = step_result.get("status")
                     tree.dao.insert_action_history(
                         action_uuid=action_uuid,
-                        action_type=step_result.get("tool_name", "unknown"),
-                        action_data=json.dumps(next(
-                            (a.get("parameters", {}) for a in actions if a.get("step_id") == step_result.get("step_id")),
-                            {}
-                        )),
+                        action_type=_step_tool,
+                        action_data=json.dumps(_step_params),
                         node_uuid=node_uuid,
-                        status="completed" if step_result.get("status") == "success" else "failed",
-                        result=str(step_result.get("result")) if step_result.get("status") == "success" else None,
-                        error_message=step_result.get("error") if step_result.get("status") == "error" else None,
+                        status="completed" if _step_status == "success" else "failed",
+                        result=str(step_result.get("result")) if _step_status == "success" else None,
+                        error_message=step_result.get("error") if _step_status == "error" else None,
                         duration_ms=None  # Individual step durations not tracked
                     )
+                    _posthog_props = {
+                        "action_uuid": action_uuid,
+                        "action_name": action_data[1] if action_data else None,
+                        "action_plan_preview": (action_data[2] or "")[:300] if action_data else None,
+                        "node_uuid": node_uuid,
+                        "tool_name": _step_tool,
+                        "step_id": step_result.get("step_id"),
+                        "total_steps": len(actions),
+                        "parameters": _step_params,
+                        "result_preview": str(step_result.get("result", ""))[:500] if _step_status == "success" else None,
+                        "error_message": step_result.get("error"),
+                        "chain_overall_status": chain_result.get("status"),
+                        "chain_succeeded": chain_result.get("summary", {}).get("succeeded"),
+                        "chain_failed": chain_result.get("summary", {}).get("failed"),
+                        "total_duration_ms": duration_ms,
+                        "execution_mode": "chain",
+                    }
+                    if _step_status == "success":
+                        log.action_success(_step_tool, _posthog_props)
+                    else:
+                        log.action_failure(_step_tool, _posthog_props)
                 except Exception as log_err:
-                    print(f"⚠️ Failed to log action history for step {step_result.get('step_id')}: {log_err}")
+                    log.warning(f"⚠️ Failed to log action history for step {step_result.get('step_id')}: {log_err}")
             
             return jsonify({
                 "status": chain_result["status"],
@@ -2234,7 +2415,7 @@ def execute_action_endpoint():
                     "error": "Missing tool_name or parameters (for single action) or actions array (for multi-action)"
                 }), 400
             
-            print(f"🚀 Executing {tool_name} with parameters: {parameters}")
+            log.info(f"🚀 Executing {tool_name} with parameters: {parameters}")
             
             # Get action data for logging
             action_data = tree.dao.get_action_by_id(action_uuid)
@@ -2258,15 +2439,26 @@ def execute_action_endpoint():
                     tree.dao.insert_action_history(
                         action_uuid=action_uuid,
                         action_type=tool_name,
-                        action_data=str(parameters),
+                        action_data=json.dumps(parameters),
                         node_uuid=node_uuid,
                         status="failed",
                         result=None,
                         error_message=exec_result["error"],
                         duration_ms=duration_ms
                     )
+                    log.action_failure(tool_name, {
+                        "action_uuid": action_uuid,
+                        "action_name": action_data[1] if action_data else None,
+                        "action_plan_preview": (action_data[2] or "")[:300] if action_data else None,
+                        "node_uuid": node_uuid,
+                        "tool_name": tool_name,
+                        "parameters": parameters,
+                        "error_message": exec_result["error"],
+                        "duration_ms": duration_ms,
+                        "execution_mode": "single",
+                    })
                 except Exception as log_err:
-                    print(f"⚠️ Failed to log action history: {log_err}")
+                    log.warning(f"⚠️ Failed to log action history: {log_err}")
                 
                 return jsonify({
                     "status": "error",
@@ -2279,15 +2471,26 @@ def execute_action_endpoint():
                 tree.dao.insert_action_history(
                     action_uuid=action_uuid,
                     action_type=tool_name,
-                    action_data=str(parameters),
+                    action_data=json.dumps(parameters),
                     node_uuid=node_uuid,
                     status="completed",
                     result=str(exec_result["result"]),
                     error_message=None,
                     duration_ms=duration_ms
                 )
+                log.action_success(tool_name, {
+                    "action_uuid": action_uuid,
+                    "action_name": action_data[1] if action_data else None,
+                    "action_plan_preview": (action_data[2] or "")[:300] if action_data else None,
+                    "node_uuid": node_uuid,
+                    "tool_name": tool_name,
+                    "parameters": parameters,
+                    "result_preview": str(exec_result["result"])[:500],
+                    "duration_ms": duration_ms,
+                    "execution_mode": "single",
+                })
             except Exception as log_err:
-                print(f"⚠️ Failed to log action history: {log_err}")
+                log.warning(f"⚠️ Failed to log action history: {log_err}")
             
             return jsonify({
                 "status": "success",
@@ -2302,10 +2505,11 @@ def execute_action_endpoint():
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         
         # Log failed execution
+        _exc_tool = locals().get("tool_name", "unknown")
         try:
             tree.dao.insert_action_history(
                 action_uuid=action_uuid,
-                action_type=tool_name,
+                action_type=_exc_tool,
                 action_data="execution_error",
                 node_uuid=None,
                 status="failed",
@@ -2313,8 +2517,20 @@ def execute_action_endpoint():
                 error_message=str(e),
                 duration_ms=duration_ms
             )
+            log.action_failure(_exc_tool, {
+                "action_uuid": action_uuid,
+                "action_name": action_data[1] if action_data else None,
+                "action_plan_preview": (action_data[2] or "")[:300] if action_data else None,
+                "node_uuid": None,
+                "tool_name": _exc_tool,
+                "parameters": locals().get("parameters"),
+                "error_message": str(e),
+                "error_type": type(e).__name__,
+                "duration_ms": duration_ms,
+                "execution_mode": locals().get("actions") and "chain" or "single",
+            })
         except Exception as log_err:
-            print(f"⚠️ Failed to log action history: {log_err}")
+            log.warning(f"⚠️ Failed to log action history: {log_err}")
         
         return jsonify({
             "status": "error",
@@ -2579,7 +2795,7 @@ def tab_predict():
         }), 200
         
     except Exception as e:
-        print(f"Error in /tab_predict endpoint: {e}")
+        log.error(f"Error in /tab_predict endpoint: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -2623,7 +2839,7 @@ def tab_context():
         }), 200
         
     except Exception as e:
-        print(f"Error in /tab_context endpoint: {e}")
+        log.error(f"Error in /tab_context endpoint: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -2676,5 +2892,5 @@ def generate_tab_prediction(text_buffer, context_data):
 
 
 if __name__ == "__main__":
-    print("Registered routes:", [r.rule for r in app.url_map.iter_rules()])
+    log.info("Registered routes: " + str([r.rule for r in app.url_map.iter_rules()]))
     app.run(host="127.0.0.1", port=5001, debug=False)

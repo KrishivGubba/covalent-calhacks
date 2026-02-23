@@ -30,6 +30,12 @@ except ImportError:
 
 load_dotenv()
 
+# Add project root for logger
+_project_root = Path(__file__).resolve().parent.parent.parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
+
 # Google token endpoint
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 
@@ -184,7 +190,7 @@ def _refresh_google_token_via_lambda(integration_dao=None) -> str:
     
     # 5. Update DB with new access token
     integration_dao.update_access_token("google", new_access_token, expires_at)
-    print(f"Google access token refreshed successfully (expires in {expires_in}s)")
+    log.info(f"Google access token refreshed successfully (expires in {expires_in}s)")
     
     return new_access_token
 
@@ -227,7 +233,7 @@ def get_credentials_from_db() -> Credentials:
     # Check if token is expired and refresh if needed
     expires_at = token_data.get("expires_at")
     if _is_token_expired(expires_at):
-        print("Google access token expired or expiring soon, refreshing via Lambda...")
+        log.info("Google access token expired or expiring soon, refreshing via Lambda...")
         access_token = _refresh_google_token_via_lambda(dao)
     
     # Create Credentials object with just the access token.
@@ -403,7 +409,7 @@ class GoogleAuth:
             if set(self.scopes).issubset(set(cached_creds.scopes)):
                 return cached_creds
             # If scopes have changed, need to re-authenticate
-            print("⚠️  Scopes have changed. Re-authentication required.", file=sys.stderr)
+            log.warning("⚠️  Scopes have changed. Re-authentication required.")
         
         # Start installed app flow
         if not self.secrets_path.exists():
@@ -412,9 +418,9 @@ class GoogleAuth:
                 "Download it from Google Cloud Console and place it in this directory."
             )
         
-        print("\n🔐 Google Authentication Required", file=sys.stderr)
-        print(f"   Requesting scopes: {', '.join(self.scopes)}", file=sys.stderr)
-        print("   Opening browser for authorization...\n", file=sys.stderr)
+        log.info("\n🔐 Google Authentication Required")
+        log.info(f"   Requesting scopes: {', '.join(self.scopes)}")
+        log.info("   Opening browser for authorization...\n")
         
         flow = InstalledAppFlow.from_client_secrets_file(
             str(self.secrets_path),
@@ -431,7 +437,7 @@ class GoogleAuth:
         
         # Store credentials for future use
         store_credentials(creds, self.credentials_path)
-        print("✅ Authorization successful! Credentials saved.", file=sys.stderr)
+        log.info("✅ Authorization successful! Credentials saved.")
         
         return creds
     

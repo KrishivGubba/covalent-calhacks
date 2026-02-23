@@ -22,10 +22,14 @@ except ImportError:
     except ImportError:
         import sqlite3  # type: ignore[no-redef]
 
-# Add context-engine to path so we can import the key manager
-_context_engine_path = str(Path(__file__).resolve().parent.parent.parent.parent / "context-engine")
-if _context_engine_path not in sys.path:
-    sys.path.insert(0, _context_engine_path)
+# Add project root and context-engine to path
+_project_root = Path(__file__).resolve().parent.parent.parent.parent
+_context_engine_path = str(_project_root / "context-engine")
+for p in (str(_project_root), _context_engine_path):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+from logger import get_logger
+log = get_logger()
 
 from covalent_mcp.toolclasses.base import (
     MCPToolModule,
@@ -111,7 +115,7 @@ class FilesystemToolModule(MCPToolModule):
         # Root changed (or first init) -- create new client
         self._client = FilesystemClient(root=current_root)
         self._client_root = current_root
-        print(f"📁 FilesystemClient initialized with root: {self._client.root}")
+        log.info(f"📁 FilesystemClient initialized with root: {self._client.root}")
         return self._client
 
     def get_display_schemas(self) -> Dict[str, ToolDisplaySchema]:

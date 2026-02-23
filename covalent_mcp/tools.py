@@ -14,7 +14,14 @@ To add a new tool module:
   6. Import here: from mcp.toolclasses import my_tool_module
   7. Add to TOOL_MODULES list below
 """
+import sys
+from pathlib import Path
 from typing import Dict, Optional
+
+_project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
 from covalent_mcp.toolclasses.base import MCPToolModule, ToolDisplaySchema
 from fastmcp import FastMCP
 
@@ -60,13 +67,13 @@ def _build_display_schema_registry() -> Dict[str, ToolDisplaySchema]:
             schemas = tool_module.get_display_schemas()
             for tool_name, schema in schemas.items():
                 if tool_name in registry:
-                    print(
+                    log.warning(
                         f"Warning: duplicate display schema for '{tool_name}', "
                         f"overwritten by {tool_module.__class__.__name__}"
                     )
                 registry[tool_name] = schema
         except Exception as e:
-            print(f"Warning: failed to get display schemas from {tool_module.__class__.__name__}: {e}")
+            log.warning(f"Warning: failed to get display schemas from {tool_module.__class__.__name__}: {e}")
     return registry
 
 
@@ -125,4 +132,4 @@ def register_tools(mcp: FastMCP) -> None:
     # Eagerly build the display schema registry so it's ready for the server
     global _DISPLAY_SCHEMA_REGISTRY
     _DISPLAY_SCHEMA_REGISTRY = _build_display_schema_registry()
-    print(f"📋 Display schemas registered for {len(_DISPLAY_SCHEMA_REGISTRY)} tools: {list(_DISPLAY_SCHEMA_REGISTRY.keys())}")
+    log.info(f"📋 Display schemas registered for {len(_DISPLAY_SCHEMA_REGISTRY)} tools: {list(_DISPLAY_SCHEMA_REGISTRY.keys())}")

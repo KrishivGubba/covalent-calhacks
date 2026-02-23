@@ -5,6 +5,12 @@ Provides a unified interface to switch between different LLM providers (Claude, 
 
 import os
 import sys
+from pathlib import Path
+
+_project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
 import yaml
 import numpy as np
 from pathlib import Path
@@ -102,7 +108,7 @@ class EmbeddingModel:
                 return embedding
             
         except Exception as e:
-            print(f"Error generating embedding with {self.provider}: {e}")
+            log.error(f"Error generating embedding with {self.provider}: {e}")
             return None
 
 
@@ -185,7 +191,7 @@ class ChatModel:
                 return response.choices[0].message.content
             
         except Exception as e:
-            print(f"Error generating completion with {self.provider}: {e}")
+            log.error(f"Error generating completion with {self.provider}: {e}")
             raise
 
 

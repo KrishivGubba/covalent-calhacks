@@ -15,6 +15,13 @@ Usage:
 
 import secrets
 import logging
+import sys
+from pathlib import Path
+
+_project_root = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
 
 try:
     import keyring
@@ -54,7 +61,7 @@ def get_db_encryption_key() -> str:
         key = secrets.token_hex(KEY_LENGTH_BYTES)
         keyring.set_password(SERVICE_NAME, ACCOUNT_NAME, key)
         logging.info(f"🔑 Generated new encryption key and stored in Keychain")
-        print(f"🔑 Generated new encryption key and stored in Keychain")
+        log.info(f"🔑 Generated new encryption key and stored in Keychain")
     
     return key
 
@@ -76,7 +83,7 @@ def delete_key() -> bool:
     try:
         keyring.delete_password(SERVICE_NAME, ACCOUNT_NAME)
         logging.info("🗑️  Deleted encryption key from Keychain")
-        print("🗑️  Deleted encryption key from Keychain")
+        log.info("🗑️  Deleted encryption key from Keychain")
         return True
     except keyring.errors.PasswordDeleteError:
         logging.warning("No encryption key found in Keychain to delete")

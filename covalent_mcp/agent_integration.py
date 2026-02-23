@@ -5,6 +5,13 @@ Example usage:
     python -m mcp.agent_integration
 """
 import asyncio
+import sys
+from pathlib import Path
+
+_project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
 from langchain.agents import create_agent
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.chat_models import init_chat_model
@@ -12,7 +19,7 @@ from langchain.chat_models import init_chat_model
 
 async def create_agent_with_mcp_tools():
     """Create a LangChain agent with MCP tools."""
-    print("🤖 Creating agent with MCP tools...")
+    log.info("🤖 Creating agent with MCP tools...")
     
     # Connect to MCP server
     client = MultiServerMCPClient({
@@ -25,7 +32,7 @@ async def create_agent_with_mcp_tools():
     
     # Get tools
     tools = await client.get_tools()
-    print(f"📋 Loaded {len(tools)} tools into agent")
+    log.info(f"📋 Loaded {len(tools)} tools into agent")
     
     # Initialize LLM
     llm = init_chat_model(
@@ -40,7 +47,7 @@ async def create_agent_with_mcp_tools():
     )
     
     # Test the agent
-    print("\n💬 Testing agent...")
+    log.info("\n💬 Testing agent...")
     result = await agent.ainvoke({
         "messages": [{
             "role": "user",
@@ -48,8 +55,8 @@ async def create_agent_with_mcp_tools():
         }]
     })
     
-    print("\n🤖 Agent response:")
-    print(result)
+    log.info("\n🤖 Agent response:")
+    log.info(str(result))
     
     return agent
 

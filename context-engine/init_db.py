@@ -9,6 +9,13 @@ Usage:
 """
 import argparse
 import os
+import sys
+from pathlib import Path
+
+_project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
 
 # Use SQLCipher for encrypted database
 try:
@@ -229,11 +236,11 @@ def main() -> None:
     # Check if database already exists
     db_exists = os.path.exists(args.db_path)
     if db_exists:
-        print(f"⚠️  Database already exists at: {args.db_path}")
-        print("   To create a fresh database, delete the existing one first.")
+        log.warning(f"⚠️  Database already exists at: {args.db_path}")
+        log.info("   To create a fresh database, delete the existing one first.")
     
     # Get encryption key from Keychain (creates one if doesn't exist)
-    print("🔑 Retrieving encryption key from Keychain...")
+    log.info("🔑 Retrieving encryption key from Keychain...")
     key = get_db_encryption_key()
     
     # Create encrypted database connection
@@ -249,10 +256,10 @@ def main() -> None:
     # Set secure file permissions (owner read/write only)
     os.chmod(args.db_path, 0o600)
     
-    print(f"✅ Initialized encrypted SQLite database at: {args.db_path}")
-    print(f"🔒 Database is encrypted with SQLCipher (AES-256)")
-    print(f"🔑 Encryption key stored in macOS Keychain")
-    print(f"📁 File permissions set to 0o600 (owner read/write only)")
+    log.info(f"✅ Initialized encrypted SQLite database at: {args.db_path}")
+    log.info(f"🔒 Database is encrypted with SQLCipher (AES-256)")
+    log.info(f"🔑 Encryption key stored in macOS Keychain")
+    log.info(f"📁 File permissions set to 0o600 (owner read/write only)")
 
 
 if __name__ == "__main__":

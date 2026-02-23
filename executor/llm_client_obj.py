@@ -1,6 +1,13 @@
 import os
+import sys
 import json
+from pathlib import Path
 from dotenv import load_dotenv
+
+_project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
 from anthropic import Anthropic
 import base64
 from executor.vocab_code import capture_screenshot
@@ -37,7 +44,7 @@ class LLM_Client:
 
         # Claude returns content as a list of message blocks
         raw_output = response.content[0].text.strip()
-        print("this is the raw output\n", raw_output)
+        log.debug("this is the raw output\n" + raw_output)
         try:
             return raw_output
         except json.JSONDecodeError:
@@ -168,7 +175,7 @@ Details: {json.dumps(details, indent=4)}
 
         # extract and clean the message
         message = response.content[0].text.strip()
-        print("📨 Generated message:\n", message)
+        log.info("📨 Generated message:\n" + message)
         return message
 
 
