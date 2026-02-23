@@ -184,6 +184,53 @@ fn ensure_executable(path: &PathBuf) {
     }
 }
 
+/// Kill any process currently listening on the given port.
+fn kill_process_on_port(port: u16) {
+    #[cfg(unix)]
+    {
+        let output = Command::new("lsof")
+            .args(["-ti", &format!(":{}", port)])
+            .output();
+        if let Ok(output) = output {
+            let pids = String::from_utf8_lossy(&output.stdout);
+            for pid_str in pids.split_whitespace() {
+                if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                    println!("⚠️  Killing stale process on port {} (PID: {})", port, pid);
+                    let _ = Command::new("kill").arg(pid.to_string()).output();
+                }
+            }
+            if !pids.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+    }
+}
+
+/// Poll a URL until it responds with the expected status or we time out.
+/// If `accept_any` is true, any HTTP response (even 4xx/5xx) counts as "alive".
+fn wait_for_server(url: &str, timeout_secs: u64, accept_any: bool) -> bool {
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    let poll_interval = std::time::Duration::from_millis(500);
+
+    while start.elapsed() < timeout {
+        if let Ok(output) = Command::new("curl")
+            .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", url])
+            .output()
+        {
+            let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if accept_any && status != "000" {
+                return true;
+            }
+            if !accept_any && status == "200" {
+                return true;
+            }
+        }
+        std::thread::sleep(poll_interval);
+    }
+    false
+}
+
 struct FlaskServer {
     process: Arc<Mutex<Option<Child>>>,
 }
@@ -202,6 +249,7 @@ impl FlaskServer {
             return Err(format!("Flask server binary not found at {:?}", binary));
         }
 
+        kill_process_on_port(5001);
         ensure_executable(&binary);
 
         let work_dir = binary.parent().unwrap().to_path_buf();
@@ -209,8 +257,8 @@ impl FlaskServer {
 
         let mut cmd = Command::new(&binary);
         cmd.current_dir(&work_dir)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
 
         if let Ok(env_path) = std::fs::read_to_string(app_dir.join(".env")) {
             for line in env_path.lines() {
@@ -234,7 +282,12 @@ impl FlaskServer {
             Ok(child) => {
                 println!("Flask server started with PID: {:?}", child.id());
                 *self.process.lock().unwrap() = Some(child);
-                std::thread::sleep(std::time::Duration::from_secs(2));
+
+                if wait_for_server("http://127.0.0.1:5001/health", 30, false) {
+                    println!("✅ Flask server is healthy and serving on port 5001");
+                } else {
+                    eprintln!("⚠️  Flask server started but health check timed out after 30s");
+                }
                 Ok(())
             }
             Err(e) => {
@@ -279,6 +332,7 @@ impl McpServer {
             return Err(format!("MCP server binary not found at {:?}", binary));
         }
 
+        kill_process_on_port(8001);
         ensure_executable(&binary);
 
         let work_dir = binary.parent().unwrap().to_path_buf();
@@ -286,8 +340,8 @@ impl McpServer {
 
         let mut cmd = Command::new(&binary);
         cmd.current_dir(&work_dir)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
 
         if let Ok(env_path) = std::fs::read_to_string(app_dir.join(".env")) {
             for line in env_path.lines() {
@@ -311,7 +365,14 @@ impl McpServer {
             Ok(child) => {
                 println!("MCP server started with PID: {:?}", child.id());
                 *self.process.lock().unwrap() = Some(child);
-                std::thread::sleep(std::time::Duration::from_secs(2));
+
+                let mcp_port = std::env::var("MCP_PORT").unwrap_or_else(|_| "8001".to_string());
+                let mcp_url = format!("http://127.0.0.1:{}/mcp", mcp_port);
+                if wait_for_server(&mcp_url, 15, true) {
+                    println!("✅ MCP server is healthy and serving on port {}", mcp_port);
+                } else {
+                    eprintln!("⚠️  MCP server started but health check timed out after 15s");
+                }
                 Ok(())
             }
             Err(e) => {
@@ -966,18 +1027,32 @@ pub fn run() {
                 }
             };
 
-            // Start MCP server (must come before Flask since Flask may depend on it)
+            // In dev mode, MANUAL_SERVERS=1 skips spawning bundled servers
+            // so you can run `python server/app.py` and `python run_mcp.py` yourself.
+            let manual_servers = is_dev && std::env::var("MANUAL_SERVERS").unwrap_or_default() == "1";
+
+            if manual_servers {
+                println!("⏭️  MANUAL_SERVERS=1 — skipping bundled server startup");
+                println!("   Start servers yourself:");
+                println!("     python run_mcp.py");
+                println!("     python server/app.py");
+            }
+
             let mcp_server = McpServer::new();
-            match mcp_server.start(app_dir.clone(), is_dev, data_dir.as_ref()) {
-                Ok(_) => println!("✓ MCP server started successfully"),
-                Err(e) => eprintln!("✗ Failed to start MCP server: {}", e),
+            if !manual_servers {
+                match mcp_server.start(app_dir.clone(), is_dev, data_dir.as_ref()) {
+                    Ok(_) => println!("✓ MCP server started successfully"),
+                    Err(e) => eprintln!("✗ Failed to start MCP server: {}", e),
+                }
             }
             app.manage(mcp_server);
 
             let flask_server = FlaskServer::new();
-            match flask_server.start(app_dir.clone(), is_dev, data_dir.as_ref()) {
-                Ok(_) => println!("✓ Flask server started successfully"),
-                Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
+            if !manual_servers {
+                match flask_server.start(app_dir.clone(), is_dev, data_dir.as_ref()) {
+                    Ok(_) => println!("✓ Flask server started successfully"),
+                    Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
+                }
             }
             app.manage(flask_server);
 

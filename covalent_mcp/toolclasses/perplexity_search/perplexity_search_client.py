@@ -82,6 +82,7 @@ class PerplexitySearchClient:
         Returns:
             Dict containing search results with 'results' list and 'id'
         """
+        print("are we even here in perplexity_search_client.py?")
         # Build request payload for Lambda
         payload = {
             "query": query,
@@ -120,6 +121,12 @@ class PerplexitySearchClient:
         # Call Lambda Gateway
         search_url = f"{self.gateway_url.rstrip('/')}/search"
         req_data = json.dumps(payload).encode("utf-8")
+        
+        has_auth = "Authorization" in headers
+        auth_preview = headers.get("Authorization", "")[:30] + "..." if has_auth else "(none)"
+        print(f"🔍 Perplexity POST {search_url}")
+        print(f"   Auth: {auth_preview}")
+        print(f"   Query: {payload.get('query', payload.get('queries', ''))}")
         
         try:
             req = urllib.request.Request(

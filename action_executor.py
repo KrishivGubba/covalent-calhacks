@@ -52,37 +52,39 @@ def _get_access_token_from_db() -> Optional[str]:
     try:
         auth_dao = AuthDAO(str(_DB_PATH))
         
-        # Get all sessions and find the first one with an access token
         sessions = auth_dao.get_all_sessions()
         if not sessions:
+            print(f"⚠️  No user sessions found in DB at {_DB_PATH}")
             return None
         
-        # Get the first user's full session (get_all_sessions doesn't return access_token)
         first_user_id = sessions[0]["user_id"]
         session = auth_dao.get_session(first_user_id)
         
         if session and session.get("access_token"):
             return session["access_token"]
         
+        print(f"⚠️  User session for {first_user_id} exists but has no access_token")
         return None
         
-    except Exception:
+    except Exception as e:
+        print(f"❌ Failed to read access token from DB ({_DB_PATH}): {e}")
         return None
 
 
 def get_gateway_client() -> GatewayClient:
-    """Get or create the Gateway client with access token from DB."""
+    """Get or create the Gateway client, always refreshing the access token."""
     global _gateway_client
+    access_token = _get_access_token_from_db()
+
     if _gateway_client is None:
-        # Get access token from database
-        access_token = _get_access_token_from_db()
-        
         _gateway_client = GatewayClient(
-            access_token=access_token,  # Auth0 JWT for Lambda authentication
-            default_model="claude-4-sonnet",  # Use alias from MODELS dict
+            access_token=access_token,
+            default_model="claude-4-sonnet",
             default_max_tokens=4096,
-            default_temperature=0.0,  # Deterministic for tool selection
+            default_temperature=0.0,
         )
+    else:
+        _gateway_client.access_token = access_token
     
     return _gateway_client
 
@@ -502,7 +504,7 @@ async def gather_context(action_text: str, existing_context: str = "") -> Dict[s
     try:
         # Get MCP client, tools, and resources separately
         client, tools, resources = await get_mcp_client()
-        
+        print("in gather_context, client, tools, resources:", client, tools, resources)
         # Initialize tool router if not already done
         if not tool_router._initialized:
             tool_router.initialize(tools, resources)
@@ -512,7 +514,7 @@ async def gather_context(action_text: str, existing_context: str = "") -> Dict[s
             action_text + " " + existing_context[:500],
             top_k=TOP_K_TOOLS
         )
-        
+        print("in gather_context, relevant_resources:", relevant_resources)
         if not relevant_resources:
             return {
                 "status": "success",

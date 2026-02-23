@@ -179,6 +179,13 @@ class GatewayClient:
         url = f"{self.url}/{endpoint.lstrip('/')}"
         headers = self._get_headers()
         
+        has_auth = "Authorization" in headers
+        auth_preview = headers.get("Authorization", "")[:30] + "..." if has_auth else "(none)"
+        payload_keys = list(json_data.keys()) if json_data else []
+        print(f"🌐 Gateway {method} {url}")
+        print(f"   Auth: {auth_preview}")
+        print(f"   Payload keys: {payload_keys}")
+        
         try:
             if method == "GET":
                 response = self._session.get(url, headers=headers, timeout=self.timeout)
