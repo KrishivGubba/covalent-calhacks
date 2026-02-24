@@ -7,11 +7,12 @@ Then validates the 'display' key in the response.
 
 Requires: Flask server + MCP server running.
 """
+import os
 import requests
 import json
 import sys
 
-FLASK_URL = "http://localhost:5001"
+FLASK_URL = f"http://localhost:{os.environ.get('VITE_FLASK_PORT', '15001')}"
 ENDPOINT = f"{FLASK_URL}/plan_action_direct"
 
 # Each test case: (label, payload)

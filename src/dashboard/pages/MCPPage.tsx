@@ -2,21 +2,22 @@ import React, { useState, useEffect, useRef } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { open } from '@tauri-apps/plugin-dialog';
 
-const BACKEND_URL = 'http://localhost:5001';
+const FLASK_PORT = import.meta.env.VITE_FLASK_PORT || '15001';
+const BACKEND_URL = `http://localhost:${FLASK_PORT}`;
 
 // Google OAuth config (must match backend)
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
-const GOOGLE_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/google/callback';
+const GOOGLE_REDIRECT_URI = `http://127.0.0.1:${FLASK_PORT}/integrations/google/callback`;
 const GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email';
 
 // GitHub OAuth config (must match backend)
 const GITHUB_CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID || '';
-const GITHUB_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/github/callback';
+const GITHUB_REDIRECT_URI = `http://127.0.0.1:${FLASK_PORT}/integrations/github/callback`;
 const GITHUB_SCOPES = 'repo read:user'; // repo = full repo access, read:user = profile
 
 // Notion OAuth config (must match backend)
 const NOTION_CLIENT_ID = import.meta.env.VITE_NOTION_CLIENT_ID || '';
-const NOTION_REDIRECT_URI = 'http://localhost:5001/integrations/notion/callback';
+const NOTION_REDIRECT_URI = `http://localhost:${FLASK_PORT}/integrations/notion/callback`;
 
 // PKCE utilities
 function generateRandomString(length: number): string {
