@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
-const BACKEND_URL = 'http://localhost:5001';
+const FLASK_PORT = import.meta.env.VITE_FLASK_PORT || '15001';
+const BACKEND_URL = `http://localhost:${FLASK_PORT}`;
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 

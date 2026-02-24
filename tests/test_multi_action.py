@@ -6,12 +6,13 @@ proposed actions via the /execute_action chain endpoint.
 
 Requires: Flask server + MCP server running.
 """
+import os
 import requests
 import json
 import time
 import sys
 
-FLASK_URL = "http://localhost:5001"
+FLASK_URL = f"http://localhost:{os.environ.get('VITE_FLASK_PORT', '15001')}"
 
 # A multi-step task: create a GitHub issue AND send an email
 TASK = {

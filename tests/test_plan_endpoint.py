@@ -4,10 +4,11 @@ Test the /plan_action endpoint.
 NOTE: The /plan_action endpoint requires a real action_uuid from the database.
 This test uses /plan_action_direct which accepts raw action_text and context.
 """
+import os
 import requests
 import json
 
-FLASK_URL = "http://localhost:5001"
+FLASK_URL = f"http://localhost:{os.environ.get('VITE_FLASK_PORT', '15001')}"
 
 
 def test_plan_action_direct():

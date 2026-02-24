@@ -10,12 +10,13 @@ interface AuthStatus {
 // Auth0 PKCE config (for opening login in browser)
 const AUTH0_DOMAIN = 'dev-sb3sx3jnljwod4ab.us.auth0.com';
 const AUTH0_AUDIENCE = 'https://dev-sb3sx3jnljwod4ab.us.auth0.com/api/v2/';
-const REDIRECT_URI = 'http://localhost:5001/callback';
+const FLASK_PORT = import.meta.env.VITE_FLASK_PORT ?? '15001';
+const REDIRECT_URI = `http://localhost:${FLASK_PORT}/callback`;
 const SCOPE = 'openid profile email offline_access';
 const AUTH0_CLIENT_ID = import.meta.env.VITE_AUTH0_CLIENT_ID ?? '';
 
-const AUTH_CHECK_URL = 'http://localhost:5001/auth/check';
-const SERVER_BASE = 'http://localhost:5001';
+const AUTH_CHECK_URL = `http://localhost:${FLASK_PORT}/auth/check`;
+const SERVER_BASE = `http://localhost:${FLASK_PORT}`;
 const POLL_INTERVAL_MS = 1500;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -85,6 +86,9 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
   const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
+    console.log('[AuthPage] FLASK_PORT:', FLASK_PORT);
+    console.log('[AuthPage] SERVER_BASE:', SERVER_BASE);
+    console.log('[AuthPage] AUTH_CHECK_URL:', AUTH_CHECK_URL);
     loadAuthStatus();
   }, []);
 
@@ -192,9 +196,15 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
   };
 
   const handleLogin = async () => {
-    console.log('[AuthPage] handleLogin called');
+    console.log('brothher in christ');
     console.log('[AuthPage] AUTH0_CLIENT_ID:', AUTH0_CLIENT_ID ? `${AUTH0_CLIENT_ID.substring(0, 8)}...` : 'MISSING');
     console.log('[AuthPage] SERVER_BASE:', SERVER_BASE);
+    console.log('[AuthPage] Debug:');
+    console.log('  VITE_FLASK_PORT:', import.meta.env.VITE_FLASK_PORT);
+    console.log('  AUTH0_CLIENT_ID:', AUTH0_CLIENT_ID);
+    console.log('  SERVER_BASE:', SERVER_BASE);
+    console.log('  AUTH_CHECK_URL:', AUTH_CHECK_URL);
+    console.log('  POLL_TIMEOUT_MS:', POLL_TIMEOUT_MS);
     if (!AUTH0_CLIENT_ID) {
       alert('Auth0 is not configured. Set VITE_AUTH0_CLIENT_ID in .env.');
       return;

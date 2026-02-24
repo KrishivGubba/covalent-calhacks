@@ -6,7 +6,7 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Default Flask port
-FLASK_PORT=${FLASK_PORT:-5001}
+FLASK_PORT=${VITE_FLASK_PORT:-15001}
 
 # Kill Flask server using PID file
 if [ -f "$SCRIPT_DIR/flask_server.pid" ]; then

@@ -696,7 +696,7 @@ def handle_google_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
     Body: {
         "code": "auth_code_from_google",
         "code_verifier": "pkce_verifier",
-        "redirect_uri": "http://127.0.0.1:5001/integrations/google/callback"
+        "redirect_uri": "http://127.0.0.1:{FLASK_PORT}/integrations/google/callback"
     }
     """
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
@@ -823,7 +823,7 @@ def handle_github_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
     Body: {
         "code": "auth_code_from_github",
         "code_verifier": "pkce_verifier",
-        "redirect_uri": "http://127.0.0.1:5001/integrations/github/callback"
+        "redirect_uri": "http://127.0.0.1:{FLASK_PORT}/integrations/github/callback"
     }
     
     Note: GitHub OAuth Apps require both client_id and client_secret for token exchange.
@@ -901,7 +901,7 @@ def handle_notion_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
     
     Body: {
         "code": "auth_code_from_notion",
-        "redirect_uri": "http://localhost:5001/integrations/notion/callback"
+        "redirect_uri": "http://localhost:{FLASK_PORT}/integrations/notion/callback"
     }
     
     Note: Notion uses Basic Auth (base64 of client_id:client_secret) for token exchange.
