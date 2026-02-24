@@ -45,9 +45,11 @@ Authentication:
 """
 
 import base64
+import http.client
 import json
 import logging
 import os
+import ssl
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -119,6 +121,11 @@ GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 # Notion OAuth configuration (for token exchange - uses Basic Auth with client_id:client_secret)
 NOTION_CLIENT_ID = os.environ.get("NOTION_CLIENT_ID", "")
 NOTION_CLIENT_SECRET = os.environ.get("NOTION_CLIENT_SECRET", "")
+
+# GitHub PAT for proxying private release assets to the Tauri updater
+GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "hem8705/covalent-calhacks")
+GITHUB_API_BASE = "https://api.github.com"
 
 # Cache the JWKS client (reused across invocations)
 _jwks_client = None
@@ -1052,6 +1059,121 @@ def handle_notion_refresh(body: Dict[str, Any]) -> Dict[str, Any]:
         return create_response(500, {"error": "internal_error", "error_description": str(e)})
 
 
+# ========================
+# App Update Proxy
+# ========================
+
+def _get_temp_download_url(asset_api_url: str, pat: str) -> Optional[str]:
+    """
+    Get a temporary public download URL for a GitHub release asset.
+
+    GitHub responds with a 302 redirect to a time-limited S3 URL when
+    a release asset is requested with Accept: application/octet-stream.
+    We capture that redirect URL instead of following it.
+    """
+    parsed = urllib.parse.urlparse(asset_api_url)
+    conn = http.client.HTTPSConnection(parsed.hostname, context=ssl.create_default_context())
+    conn.request("GET", parsed.path, headers={
+        "Accept": "application/octet-stream",
+        "Authorization": f"token {pat}",
+        "User-Agent": "Covalent-Updater",
+        "X-GitHub-Api-Version": "2022-11-28",
+    })
+    resp = conn.getresponse()
+    location = resp.getheader("Location") if resp.status in (301, 302, 303, 307) else None
+    conn.close()
+    return location
+
+
+def handle_updates_latest() -> Dict[str, Any]:
+    """
+    Proxy the Tauri updater's latest.json from a private GitHub release.
+
+    1. Fetches the latest release metadata from the GitHub API.
+    2. Downloads the latest.json asset from that release.
+    3. Rewrites the platform download URLs to temporary public S3 URLs
+       so the Tauri updater can download the binary without auth.
+    4. Returns the modified latest.json.
+    """
+    if not GITHUB_PAT:
+        return create_response(500, {"error": "GitHub PAT not configured"})
+
+    github_headers = {
+        "Authorization": f"token {GITHUB_PAT}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Covalent-Updater",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    try:
+        # 1. Fetch latest release metadata
+        release_url = f"{GITHUB_API_BASE}/repos/{GITHUB_REPO}/releases/latest"
+        req = urllib.request.Request(release_url, headers=github_headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            release = json.loads(response.read().decode("utf-8"))
+
+        assets = release.get("assets", [])
+        if not assets:
+            return create_response(404, {"error": "No assets found in latest release"})
+
+        # 2. Find the latest.json asset
+        latest_json_asset = None
+        for asset in assets:
+            if asset["name"] == "latest.json":
+                latest_json_asset = asset
+                break
+
+        if not latest_json_asset:
+            return create_response(404, {"error": "latest.json not found in release assets"})
+
+        # 3. Download latest.json content (urllib follows the S3 redirect automatically)
+        download_headers = {
+            "Authorization": f"token {GITHUB_PAT}",
+            "Accept": "application/octet-stream",
+            "User-Agent": "Covalent-Updater",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        req = urllib.request.Request(latest_json_asset["url"], headers=download_headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            latest_json = json.loads(response.read().decode("utf-8"))
+
+        # 4. Build name -> asset lookup
+        asset_by_name = {a["name"]: a for a in assets}
+
+        # 5. Rewrite each platform's download URL to a temporary public URL
+        platforms = latest_json.get("platforms", {})
+        for platform_key, platform_data in platforms.items():
+            url = platform_data.get("url", "")
+            if not url:
+                continue
+
+            filename = url.split("/")[-1]
+            asset = asset_by_name.get(filename)
+            if not asset:
+                logger.warning(f"Asset '{filename}' not found in release for platform {platform_key}")
+                continue
+
+            temp_url = _get_temp_download_url(asset["url"], GITHUB_PAT)
+            if temp_url:
+                platform_data["url"] = temp_url
+                logger.info(f"Rewrote download URL for {platform_key}")
+            else:
+                logger.warning(f"Could not get temp URL for {filename}")
+
+        # 6. Return the modified latest.json
+        return create_response(200, latest_json)
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        logger.error(f"GitHub API error: {e.code} - {error_body}")
+        if e.code == 404:
+            return create_response(404, {"error": "No releases found"})
+        return create_response(502, {"error": "GitHub API error", "details": error_body})
+    except Exception as e:
+        logger.error(f"Update proxy error: {e}")
+        return create_response(500, {"error": f"Update proxy error: {str(e)}"})
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Main Lambda handler.
@@ -1082,7 +1204,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     logger.info(f"Request authenticated for user: {user_payload.get('sub', 'unknown')}")
     
     user_id = user_payload.get("sub", "anonymous")
-    
+
+    # App update check (returns modified latest.json with temporary download URLs)
+    if path == "/updates/latest" or path.endswith("/updates/latest"):
+        if http_method != "GET":
+            return create_response(405, {"error": "Method not allowed. Use GET."})
+        return handle_updates_latest()
+
     if path == "/invoke" or path.endswith("/invoke"):
         if http_method != "POST":
             return create_response(405, {"error": "Method not allowed. Use POST."})

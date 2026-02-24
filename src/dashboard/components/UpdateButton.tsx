@@ -46,7 +46,10 @@ const UpdateButton: React.FC<UpdateButtonProps> = ({
     setError(null);
 
     try {
-      const update = await check();
+      const token = sessionStorage.getItem('auth0_access_token');
+      const update = await check({
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (update) {
         setUpdateAvailable(true);
         setUpdateInfo(update);
