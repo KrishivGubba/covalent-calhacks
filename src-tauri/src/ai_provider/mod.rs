@@ -5,6 +5,8 @@ pub mod claude;
 pub mod openai;
 pub mod ollama;
 pub mod fallback;
+pub mod auth;
+pub mod gateway;
 
 // Re-export main types for easier access
 pub use traits::LLMProvider;
@@ -13,6 +15,7 @@ pub use claude::ClaudeProvider;
 pub use openai::OpenAIProvider;
 pub use ollama::OllamaProvider;
 pub use fallback::FallbackProvider;
+pub use gateway::GatewayProvider;
 
 use anyhow::Result;
 use std::sync::Arc;
