@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Covalent",
-  "version": "0.1.7",
-  "identifier": "com.hem.src-tauri",
+  "version": "0.1.8",
+  "identifier": "com.covalent.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -105,7 +105,14 @@
       "servers/mcp-server",
       ".env"
     ],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": null,
+      "providerShortName": null,
+      "entitlements": null,
+      "exceptionDomain": null
+    }
   },
   "plugins": {
     "updater": {
