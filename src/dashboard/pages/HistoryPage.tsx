@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 
-const BACKEND_URL = 'http://localhost:5001';
+const FLASK_PORT = import.meta.env.VITE_FLASK_PORT || '15001';
+const BACKEND_URL = `http://localhost:${FLASK_PORT}`;
 
 interface ActionHistoryItem {
   id: number;

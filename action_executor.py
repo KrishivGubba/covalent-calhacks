@@ -37,8 +37,13 @@ if getattr(sys, 'frozen', False):
 else:
     _PROJECT_ROOT = Path(__file__).resolve().parent
 
-# Database path for auth - use GRAPH_DB_PATH env var if set (e.g. by app.py or Tauri)
-_DB_PATH = Path(os.environ.get('GRAPH_DB_PATH', str(_PROJECT_ROOT / "context-engine" / "graph.db")))
+def _resolve_db_path() -> Path:
+    """
+    Resolve DB path at call time so late env-var initialization is respected.
+    This is important in bundled Flask startup where GRAPH_DB_PATH may be set
+    after module import.
+    """
+    return Path(os.environ.get('GRAPH_DB_PATH', str(_PROJECT_ROOT / "context-engine" / "graph.db")))
 
 # Initialize the Gateway Client (talks to Lambda -> Bedrock)
 _gateway_client = None
@@ -49,12 +54,13 @@ def _get_access_token_from_db() -> Optional[str]:
     Get the access token from the user_sessions table.
     Returns the first available access token, or None if no sessions exist.
     """
+    db_path = _resolve_db_path()
     try:
-        auth_dao = AuthDAO(str(_DB_PATH))
+        auth_dao = AuthDAO(str(db_path))
         
         sessions = auth_dao.get_all_sessions()
         if not sessions:
-            print(f"⚠️  No user sessions found in DB at {_DB_PATH}")
+            print(f"⚠️  No user sessions found in DB at {db_path}")
             return None
         
         first_user_id = sessions[0]["user_id"]
@@ -67,7 +73,7 @@ def _get_access_token_from_db() -> Optional[str]:
         return None
         
     except Exception as e:
-        print(f"❌ Failed to read access token from DB ({_DB_PATH}): {e}")
+        print(f"❌ Failed to read access token from DB ({db_path}): {e}")
         return None
 
 

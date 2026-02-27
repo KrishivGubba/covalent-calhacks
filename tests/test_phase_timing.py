@@ -12,25 +12,26 @@ touch any external APIs (no emails sent, no events created).
 
 Requires: Flask server + MCP server running.
 """
+import os
 import requests
 import json
 import time
 import sys
 
-FLASK_URL = "http://localhost:5001"
+FLASK_URL = f"http://localhost:{os.environ.get('VITE_FLASK_PORT', '15001')}"
 
 # A task that triggers research (skip_research=False) and results in
 # a filesystem write_file tool call — safe to actually execute.
 TASK = {
-    "action_text": "can you make a github issue on my basketball reference repo that lists top 10 facts about lebron james and how the codebase shold be dedicated to him. also email ritesh neela about how i created this and would love for him to check it out.",
-    "context": "email of ritesh neela is rneela@wisc.edu",
+    "action_text": "add a file called krishiv.txt in the root",
+    "context":  "none",
     "skip_research": False,
 }
 
 # Also test with skip_research=True so we can isolate planning time
 TASK_NO_RESEARCH = {
-    "action_text": "can you make a github issue on my basketball reference repo that lists top 10 facts about lebron james and how the codebase shold be dedicated to him. also email ritesh neela about how i created this and would love for him to check it out.",
-    "context": "email of ritesh neela is rneela@wisc.edu",
+    "action_text": "add a file called krishiv.txt in the root",
+    "context": "none",
     "skip_research": True,
 }
 

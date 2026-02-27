@@ -44,17 +44,6 @@ def _encrypted_conn(path=None, timeout=10.0):
     conn.execute(f"PRAGMA key = '{get_db_encryption_key()}'")
     return conn
 
-# Import action executor for MCP integration
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from action_executor import (
-    plan_action, 
-    execute_action,
-    execute_action_chain,
-    gather_context,
-    research_and_plan,
-    health_check as mcp_health_check
-)
-
 # Import display schema registry for tool approval UI
 from covalent_mcp.tools import get_display_schema
 from covalent_mcp.toolclasses.base import resolve_display_fields
@@ -167,6 +156,17 @@ print(f"Database schema ensured at: {db_path}")
 # Set env var so downstream modules (MCP tools, etc.) can find the DB
 os.environ.setdefault('GRAPH_DB_PATH', db_path)
 
+# Import action executor for MCP integration (after GRAPH_DB_PATH is set)
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from action_executor import (
+    plan_action,
+    execute_action,
+    execute_action_chain,
+    gather_context,
+    research_and_plan,
+    health_check as mcp_health_check
+)
+
 tree = Tree(db_path)
 
 
@@ -217,24 +217,26 @@ _cleanup_thread.start()
 
 import requests as http_requests  # for server-side HTTP calls to Auth0
 
+FLASK_PORT = int(os.environ.get('VITE_FLASK_PORT', '15001'))
+
 # Auth0 config (must match frontend)
 AUTH0_DOMAIN = 'dev-sb3sx3jnljwod4ab.us.auth0.com'
 AUTH0_CLIENT_ID = os.environ.get('VITE_AUTH0_CLIENT_ID', '')
-AUTH0_REDIRECT_URI = 'http://localhost:5001/callback'
+AUTH0_REDIRECT_URI = f'http://localhost:{FLASK_PORT}/callback'
 
 # Google OAuth config (token exchange happens via Lambda to keep secret secure)
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
-GOOGLE_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/google/callback'
+GOOGLE_REDIRECT_URI = f'http://127.0.0.1:{FLASK_PORT}/integrations/google/callback'
 GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email'
 
 # GitHub OAuth config (token exchange via Lambda to keep client_secret secure)
 GITHUB_CLIENT_ID = os.environ.get('GITHUB_CLIENT_ID', '')
-GITHUB_REDIRECT_URI = 'http://127.0.0.1:5001/integrations/github/callback'
+GITHUB_REDIRECT_URI = f'http://127.0.0.1:{FLASK_PORT}/integrations/github/callback'
 GITHUB_SCOPES = 'repo read:user'  # repo = full repo access (repos, issues, PRs), read:user = user profile
 
 # Notion OAuth config (token exchange via Lambda to keep client_secret secure)
 NOTION_CLIENT_ID = os.environ.get('NOTION_CLIENT_ID', '')
-NOTION_REDIRECT_URI = 'http://localhost:5001/integrations/notion/callback'
+NOTION_REDIRECT_URI = f'http://localhost:{FLASK_PORT}/integrations/notion/callback'
 
 # Lambda Gateway URL for secure token exchange
 LAMBDA_GATEWAY_URL = os.environ.get('LAMBDA_GATEWAY_URL', 'https://gtfrn4otol.execute-api.us-east-1.amazonaws.com')
@@ -2721,4 +2723,4 @@ def generate_tab_prediction(text_buffer, context_data):
 
 if __name__ == "__main__":
     print("Registered routes:", [r.rule for r in app.url_map.iter_rules()])
-    app.run(host="127.0.0.1", port=5001, debug=False)
+    app.run(host="127.0.0.1", port=FLASK_PORT, debug=False)
