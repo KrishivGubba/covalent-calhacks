@@ -75,6 +75,49 @@ jobs:
           chmod +x dist-servers/flask-server/flask-server
           chmod +x dist-servers/mcp-server/mcp-server
 
+      - name: Import Apple certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          # Import certificate from secrets
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
+
+          # Create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Import certificate to keychain
+          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+      - name: Sign server binaries for notarization
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          echo "Signing server binaries with identity: $APPLE_SIGNING_IDENTITY"
+          
+          # Find and sign all executable binaries, dylibs, and .so files
+          find dist-servers -type f \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) | while read -r file; do
+            # Check if it's a Mach-O binary
+            if file "$file" | grep -q "Mach-O"; then
+              echo "Signing: $file"
+              codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" "$file" || echo "Warning: Failed to sign $file"
+            fi
+          done
+          
+          # Sign the main executables last (they depend on the libraries)
+          codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/flask-server/flask-server
+          codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/mcp-server/mcp-server
+          
+          echo "Server binary signing complete"
+
       - name: Generate .env for bundled servers
         env:
           VITE_AUTH0_CLIENT_ID: ${{ secrets.VITE_AUTH0_CLIENT_ID }}
