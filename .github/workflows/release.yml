@@ -103,20 +103,59 @@ jobs:
         run: |
           echo "Signing server binaries with identity: $APPLE_SIGNING_IDENTITY"
           
-          # Find and sign all executable binaries, dylibs, and .so files
-          find dist-servers -type f \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) | while read -r file; do
-            # Check if it's a Mach-O binary
+          # Function to sign a single file
+          sign_file() {
+            local file="$1"
             if file "$file" | grep -q "Mach-O"; then
               echo "Signing: $file"
               codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" "$file" || echo "Warning: Failed to sign $file"
             fi
+          }
+          
+          # Sign all .dylib and .so files first (dependencies)
+          find dist-servers -type f \( -name "*.dylib" -o -name "*.so" \) | while read -r file; do
+            sign_file "$file"
           done
           
-          # Sign the main executables last (they depend on the libraries)
+          # Sign standalone Python executables (PyInstaller creates these without extensions)
+          for python_bin in dist-servers/*/Python dist-servers/*/_internal/Python; do
+            if [ -f "$python_bin" ]; then
+              echo "Signing standalone Python: $python_bin"
+              codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" "$python_bin"
+            fi
+          done
+          
+          # Sign Python.framework bundles (must sign the framework, not individual files inside)
+          # The framework signature covers all symlinks and internal binaries
+          find dist-servers -type d -name "Python.framework" | while read -r framework; do
+            echo "Signing framework: $framework"
+            # Sign the actual binary inside the framework first
+            actual_binary="$framework/Versions/3.13/Python"
+            if [ -f "$actual_binary" ]; then
+              codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" "$actual_binary"
+            fi
+            # Then sign the framework bundle itself
+            codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" "$framework"
+          done
+          
+          # Sign any other Mach-O executables we might have missed
+          find dist-servers -type f ! -name "*.dylib" ! -name "*.so" ! -name "*.py" ! -name "*.pyc" ! -name "*.pyo" | while read -r file; do
+            # Skip files inside .framework directories (already handled)
+            if [[ "$file" != *".framework"* ]]; then
+              sign_file "$file"
+            fi
+          done
+          
+          # Sign the main server executables last
           codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/flask-server/flask-server
           codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/mcp-server/mcp-server
           
           echo "Server binary signing complete"
+          
+          # Verify signatures
+          echo "Verifying signatures..."
+          codesign --verify --verbose dist-servers/flask-server/flask-server
+          codesign --verify --verbose dist-servers/mcp-server/mcp-server
 
       - name: Generate .env for bundled servers
         env:
