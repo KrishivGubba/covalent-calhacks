@@ -97,6 +97,46 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
 
+      - name: Fix Python.framework symlinks for code signing
+        run: |
+          echo "=== Fixing Python.framework symlinks ==="
+          # PyInstaller creates Python.framework with symlinks that cause notarization issues
+          # We need to replace symlinks with copies of the actual binary
+          
+          find dist-servers -type d -name "Python.framework" | while read -r framework; do
+            echo "Processing framework: $framework"
+            
+            # The actual binary location
+            actual_binary="$framework/Versions/3.13/Python"
+            
+            if [ -f "$actual_binary" ]; then
+              echo "  Found actual binary: $actual_binary"
+              
+              # Fix Versions/Current symlink -> replace with copy of the directory content
+              current_link="$framework/Versions/Current"
+              if [ -L "$current_link" ]; then
+                echo "  Replacing Versions/Current symlink"
+                rm "$current_link"
+                mkdir -p "$current_link"
+                cp "$actual_binary" "$current_link/Python"
+              fi
+              
+              # Fix top-level Python symlink -> replace with copy of actual binary  
+              top_python="$framework/Python"
+              if [ -L "$top_python" ]; then
+                echo "  Replacing top-level Python symlink"
+                rm "$top_python"
+                cp "$actual_binary" "$top_python"
+              fi
+              
+              echo "  Framework symlinks fixed"
+            else
+              echo "  Warning: Could not find actual binary at $actual_binary"
+            fi
+          done
+          
+          echo "=== Framework symlink fixing complete ==="
+
       - name: Sign server binaries for notarization
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
