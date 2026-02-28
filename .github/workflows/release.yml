@@ -97,45 +97,71 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
 
-      - name: Fix Python.framework symlinks for code signing
+      - name: Fix Python.framework for code signing
         run: |
-          echo "=== Fixing Python.framework symlinks ==="
-          # PyInstaller creates Python.framework with symlinks that cause notarization issues
-          # We need to replace symlinks with copies of the actual binary
+          echo "=== Fixing Python.framework for notarization ==="
+          # PyInstaller's Python.framework has symlinks and existing signatures that break notarization.
+          # We must: 1) Remove old _CodeSignature dirs, 2) Replace symlinks with real files,
+          # 3) Strip existing signatures so we can re-sign fresh.
           
           find dist-servers -type d -name "Python.framework" | while read -r framework; do
             echo "Processing framework: $framework"
             
-            # The actual binary location
-            actual_binary="$framework/Versions/3.13/Python"
+            # Step 1: Remove ALL _CodeSignature directories (they contain stale signatures)
+            echo "  Removing _CodeSignature directories..."
+            find "$framework" -name "_CodeSignature" -type d -exec rm -rf {} + 2>/dev/null || true
             
-            if [ -f "$actual_binary" ]; then
-              echo "  Found actual binary: $actual_binary"
-              
-              # Fix Versions/Current symlink -> replace with copy of the directory content
-              current_link="$framework/Versions/Current"
-              if [ -L "$current_link" ]; then
-                echo "  Replacing Versions/Current symlink"
-                rm "$current_link"
-                mkdir -p "$current_link"
-                cp "$actual_binary" "$current_link/Python"
+            # Step 2: Find the actual Python binary
+            actual_binary=""
+            for vdir in "$framework/Versions"/*/; do
+              if [ -f "${vdir}Python" ] && [ ! -L "${vdir}Python" ]; then
+                actual_binary="${vdir}Python"
+                break
               fi
-              
-              # Fix top-level Python symlink -> replace with copy of actual binary  
-              top_python="$framework/Python"
-              if [ -L "$top_python" ]; then
-                echo "  Replacing top-level Python symlink"
-                rm "$top_python"
-                cp "$actual_binary" "$top_python"
-              fi
-              
-              echo "  Framework symlinks fixed"
-            else
-              echo "  Warning: Could not find actual binary at $actual_binary"
+            done
+            
+            if [ -z "$actual_binary" ]; then
+              echo "  Warning: Could not find actual Python binary, skipping"
+              continue
+            fi
+            echo "  Found actual binary: $actual_binary"
+            
+            # Step 3: Strip existing signature from the actual binary
+            echo "  Stripping existing signature from actual binary..."
+            codesign --remove-signature "$actual_binary" 2>/dev/null || true
+            
+            # Step 4: Replace Versions/Current (symlink or whatever) with a real directory + binary
+            echo "  Ensuring Versions/Current/Python exists as real file..."
+            rm -rf "$framework/Versions/Current" 2>/dev/null || true
+            mkdir -p "$framework/Versions/Current"
+            cp "$actual_binary" "$framework/Versions/Current/Python"
+            
+            # Step 5: Replace top-level Python (symlink or whatever) with a real binary
+            echo "  Ensuring Python.framework/Python exists as real file..."
+            rm -f "$framework/Python" 2>/dev/null || true
+            rm -rf "$framework/Python" 2>/dev/null || true  # In case it's a dir
+            cp "$actual_binary" "$framework/Python"
+            
+            # Step 6: Also strip signatures from the copies we just made
+            codesign --remove-signature "$framework/Versions/Current/Python" 2>/dev/null || true
+            codesign --remove-signature "$framework/Python" 2>/dev/null || true
+            
+            echo "  Framework fixed successfully"
+          done
+          
+          # Also remove any _CodeSignature directories elsewhere in dist-servers
+          echo "=== Removing all remaining _CodeSignature directories ==="
+          find dist-servers -name "_CodeSignature" -type d -exec rm -rf {} + 2>/dev/null || true
+          
+          # Strip signatures from ALL Mach-O binaries so we sign fresh
+          echo "=== Stripping all existing signatures ==="
+          find dist-servers -type f | while read -r file; do
+            if file "$file" | grep -q "Mach-O"; then
+              codesign --remove-signature "$file" 2>/dev/null || true
             fi
           done
           
-          echo "=== Framework symlink fixing complete ==="
+          echo "=== Framework fixing complete ==="
 
       - name: Sign server binaries for notarization
         env:
