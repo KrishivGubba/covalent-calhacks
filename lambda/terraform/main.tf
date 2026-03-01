@@ -123,6 +123,19 @@ variable "perplexity_api_key" {
   sensitive   = true
 }
 
+variable "github_pat" {
+  description = "GitHub PAT for proxying private release assets to the Tauri updater (sensitive)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "github_repo" {
+  description = "GitHub repo in owner/repo format for update proxy"
+  type        = string
+  default     = "hem8705/covalent-calhacks"
+}
+
 variable "default_budget_limit" {
   description = "Default per-user budget limit in USD"
   type        = number
@@ -267,6 +280,9 @@ resource "aws_lambda_function" "ai_gateway" {
       # Budget tracking
       BUDGET_TABLE_NAME    = aws_dynamodb_table.user_budgets.name
       DEFAULT_BUDGET_LIMIT = tostring(var.default_budget_limit)
+      # GitHub PAT for update proxy
+      GITHUB_PAT  = var.github_pat
+      GITHUB_REPO = var.github_repo
     }
   }
   
@@ -391,6 +407,12 @@ resource "aws_apigatewayv2_route" "notion_exchange" {
 resource "aws_apigatewayv2_route" "embed" {
   api_id    = aws_apigatewayv2_api.ai_gateway.id
   route_key = "POST /embed"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+}
+
+resource "aws_apigatewayv2_route" "updates_latest" {
+  api_id    = aws_apigatewayv2_api.ai_gateway.id
+  route_key = "GET /updates/latest"
   target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
 }
 

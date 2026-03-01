@@ -26,7 +26,7 @@ fi
 # Default Flask settings
 export FLASK_APP=app.py
 export FLASK_ENV=development
-FLASK_PORT=${FLASK_PORT:-5001}
+FLASK_PORT=${VITE_FLASK_PORT:-15001}
 
 # Check if server is already running
 if [ -f "$SCRIPT_DIR/flask_server.pid" ]; then

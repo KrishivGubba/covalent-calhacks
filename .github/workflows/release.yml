@@ -75,6 +75,132 @@ jobs:
           chmod +x dist-servers/flask-server/flask-server
           chmod +x dist-servers/mcp-server/mcp-server
 
+      - name: Import Apple certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          # Import certificate from secrets
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
+
+          # Create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Import certificate to keychain
+          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+      - name: Fix Python.framework for code signing
+        run: |
+          echo "=== Fixing Python.framework for notarization ==="
+          # PyInstaller's Python.framework has symlinks and existing signatures that break notarization.
+          # We must: 1) Remove old _CodeSignature dirs, 2) Replace symlinks with real files,
+          # 3) Strip existing signatures so we can re-sign fresh.
+          
+          find dist-servers -type d -name "Python.framework" | while read -r framework; do
+            echo "Processing framework: $framework"
+            
+            # Step 1: Remove ALL _CodeSignature directories (they contain stale signatures)
+            echo "  Removing _CodeSignature directories..."
+            find "$framework" -name "_CodeSignature" -type d -exec rm -rf {} + 2>/dev/null || true
+            
+            # Step 2: Find the actual Python binary
+            actual_binary=""
+            for vdir in "$framework/Versions"/*/; do
+              if [ -f "${vdir}Python" ] && [ ! -L "${vdir}Python" ]; then
+                actual_binary="${vdir}Python"
+                break
+              fi
+            done
+            
+            if [ -z "$actual_binary" ]; then
+              echo "  Warning: Could not find actual Python binary, skipping"
+              continue
+            fi
+            echo "  Found actual binary: $actual_binary"
+            
+            # Step 3: Strip existing signature from the actual binary
+            echo "  Stripping existing signature from actual binary..."
+            codesign --remove-signature "$actual_binary" 2>/dev/null || true
+            
+            # Step 4: Replace Versions/Current (symlink or whatever) with a real directory + binary
+            echo "  Ensuring Versions/Current/Python exists as real file..."
+            rm -rf "$framework/Versions/Current" 2>/dev/null || true
+            mkdir -p "$framework/Versions/Current"
+            cp "$actual_binary" "$framework/Versions/Current/Python"
+            
+            # Step 5: Replace top-level Python (symlink or whatever) with a real binary
+            echo "  Ensuring Python.framework/Python exists as real file..."
+            rm -f "$framework/Python" 2>/dev/null || true
+            rm -rf "$framework/Python" 2>/dev/null || true  # In case it's a dir
+            cp "$actual_binary" "$framework/Python"
+            
+            # Step 6: Also strip signatures from the copies we just made
+            codesign --remove-signature "$framework/Versions/Current/Python" 2>/dev/null || true
+            codesign --remove-signature "$framework/Python" 2>/dev/null || true
+            
+            echo "  Framework fixed successfully"
+          done
+          
+          # Also remove any _CodeSignature directories elsewhere in dist-servers
+          echo "=== Removing all remaining _CodeSignature directories ==="
+          find dist-servers -name "_CodeSignature" -type d -exec rm -rf {} + 2>/dev/null || true
+          
+          # Strip signatures from ALL Mach-O binaries so we sign fresh
+          echo "=== Stripping all existing signatures ==="
+          find dist-servers -type f | while read -r file; do
+            if file "$file" | grep -q "Mach-O"; then
+              codesign --remove-signature "$file" 2>/dev/null || true
+            fi
+          done
+          
+          echo "=== Framework fixing complete ==="
+
+      - name: Sign server binaries for notarization
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          echo "Signing server binaries with identity: $APPLE_SIGNING_IDENTITY"
+          
+          # Sign ALL Mach-O binaries found anywhere in dist-servers
+          # This includes dylibs, .so files, and executables (with or without extensions)
+          # We use 'file' command to identify actual Mach-O binaries
+          
+          echo "=== Finding and signing all Mach-O binaries ==="
+          find dist-servers -type f | while read -r file; do
+            # Check if it's a Mach-O binary (executable, dylib, or bundle)
+            if file "$file" | grep -q "Mach-O"; then
+              echo "Signing: $file"
+              codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" "$file" || {
+                echo "Warning: Failed to sign $file"
+              }
+            fi
+          done
+          
+          # Re-sign the main server executables last to ensure they're properly signed
+          # after all their dependencies
+          echo "=== Re-signing main executables ==="
+          codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/flask-server/flask-server
+          codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/mcp-server/mcp-server
+          
+          echo "=== Server binary signing complete ==="
+          
+          # Verify signatures on main executables
+          echo "=== Verifying signatures ==="
+          codesign --verify --verbose dist-servers/flask-server/flask-server
+          codesign --verify --verbose dist-servers/mcp-server/mcp-server
+          
+          # List all signed binaries for debugging
+          echo "=== Signed binary count ==="
+          find dist-servers -type f -exec sh -c 'file "$1" | grep -q "Mach-O" && echo "$1"' _ {} \; | wc -l
+
       - name: Generate .env for bundled servers
         env:
           VITE_AUTH0_CLIENT_ID: ${{ secrets.VITE_AUTH0_CLIENT_ID }}
@@ -103,6 +229,14 @@ jobs:
           VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
           VITE_GITHUB_CLIENT_ID: ${{ secrets.VITE_GITHUB_CLIENT_ID }}
           VITE_NOTION_CLIENT_ID: ${{ secrets.VITE_NOTION_CLIENT_ID }}
+          # Apple code signing
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # Apple notarization
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Covalent v__VERSION__'

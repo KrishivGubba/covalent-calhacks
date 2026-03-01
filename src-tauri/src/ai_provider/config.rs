@@ -35,6 +35,38 @@ fn default_timeout() -> u64 {
     30
 }
 
+// ---------------------------------------------------------------------------
+// Helper: decide if the Bedrock gateway should be active
+// ---------------------------------------------------------------------------
+//
+// The gateway is disabled when any of the following are true:
+//   • GATEWAY_URL is not set (`gateway_url_set` is false)
+//   • GATEWAY_ENABLED=false  or  GATEWAY_ENABLED=0
+//   • DEV=1  (convenience shorthand for local development)
+//
+// If none of those override flags are present, the gateway is enabled whenever
+// GATEWAY_URL is set.  Note: AI_FALLBACK_CHAIN takes precedence at a higher
+// level — if that var is set explicitly, its content is used verbatim and this
+// function is not consulted.
+fn gateway_enabled_from_env(gateway_url_set: bool) -> bool {
+    if !gateway_url_set {
+        return false;
+    }
+    // DEV=1 → skip gateway so local API keys are used directly
+    if env::var("DEV").map(|v| v == "1").unwrap_or(false) {
+        eprintln!("ℹ️  DEV=1 detected — Bedrock gateway disabled, using direct API keys");
+        return false;
+    }
+    // GATEWAY_ENABLED=false or GATEWAY_ENABLED=0 → explicit opt-out
+    match env::var("GATEWAY_ENABLED").as_deref() {
+        Ok("false") | Ok("0") => {
+            eprintln!("ℹ️  GATEWAY_ENABLED=false — Bedrock gateway disabled");
+            false
+        }
+        _ => true,
+    }
+}
+
 // --- Public config consumed by providers ---
 
 /// Configuration for AI providers loaded from model_config.yml (source of truth)
@@ -52,6 +84,15 @@ pub struct ProviderConfig {
     pub ollama_base_url: String,
     pub ollama_model: String,
     pub ollama_timeout: u64,
+    /// URL of the Lambda/API-Gateway Bedrock gateway (e.g. `https://abc.execute-api.us-east-1.amazonaws.com`).
+    /// When set and the user is authenticated, `GatewayProvider` is added first in the fallback chain.
+    pub gateway_url: Option<String>,
+    /// Bedrock inference-profile model ID to use via the gateway.
+    /// Defaults to `us.anthropic.claude-sonnet-4-20250514-v1:0`.
+    pub gateway_model: String,
+    /// Whether the gateway is active.  False when disabled by DEV=1,
+    /// GATEWAY_ENABLED=false, or an explicit AI_FALLBACK_CHAIN without "gateway".
+    pub gateway_enabled: bool,
 }
 
 impl ProviderConfig {
@@ -173,15 +214,39 @@ impl ProviderConfig {
             "ollama".to_string()
         };
 
-        // Build fallback chain from which providers have keys available
-        let mut fallback_chain = Vec::new();
-        if anthropic_api_key.is_some() {
-            fallback_chain.push("claude".to_string());
-        }
-        if openai_api_key.is_some() {
-            fallback_chain.push("openai".to_string());
-        }
-        fallback_chain.push("ollama".to_string());
+        // Gateway config (optional — only used when user is authenticated)
+        let gateway_url = env::var("GATEWAY_URL").ok();
+        let gateway_model = env::var("GATEWAY_MODEL").unwrap_or_else(|_| {
+            "us.anthropic.claude-sonnet-4-20250514-v1:0".to_string()
+        });
+
+        // Whether the gateway is active.
+        // Disabled by: GATEWAY_ENABLED=false|0, or DEV=1, or an explicit
+        // AI_FALLBACK_CHAIN that does not include "gateway".
+        let gateway_enabled = gateway_enabled_from_env(gateway_url.is_some());
+
+        // Build fallback chain.
+        // Priority: explicit AI_FALLBACK_CHAIN env var > dynamic construction.
+        let fallback_chain = if let Ok(chain) = env::var("AI_FALLBACK_CHAIN") {
+            // Honour whatever the developer put in .env; don't inject gateway.
+            chain
+                .split(',')
+                .map(|s| s.trim().to_lowercase())
+                .collect()
+        } else {
+            let mut chain = Vec::new();
+            if gateway_enabled {
+                chain.push("gateway".to_string());
+            }
+            if anthropic_api_key.is_some() {
+                chain.push("claude".to_string());
+            }
+            if openai_api_key.is_some() {
+                chain.push("openai".to_string());
+            }
+            chain.push("ollama".to_string());
+            chain
+        };
 
         Ok(Self {
             provider,
@@ -195,35 +260,58 @@ impl ProviderConfig {
             ollama_base_url,
             ollama_model,
             ollama_timeout,
+            gateway_url,
+            gateway_model,
+            gateway_enabled,
         })
     }
 
     /// Pure env-var fallback (original behavior) used when YAML is unavailable.
     fn from_env_only() -> Self {
+        let anthropic_api_key = env::var("ANTHROPIC_API_KEY")
+            .or_else(|_| env::var("CLAUDE_API_KEY"))
+            .ok();
+        let openai_api_key = env::var("OPENAI_API_KEY").ok();
+        let gateway_url = env::var("GATEWAY_URL").ok();
+
+        let gateway_enabled = gateway_enabled_from_env(gateway_url.is_some());
+
         let provider = env::var("AI_PROVIDER").unwrap_or_else(|_| {
-            if env::var("ANTHROPIC_API_KEY").is_ok() || env::var("CLAUDE_API_KEY").is_ok() {
+            if gateway_enabled {
+                "gateway".to_string()
+            } else if anthropic_api_key.is_some() {
                 "claude".to_string()
-            } else if env::var("OPENAI_API_KEY").is_ok() {
+            } else if openai_api_key.is_some() {
                 "openai".to_string()
             } else {
                 "ollama".to_string()
             }
         });
 
-        let fallback_chain = env::var("AI_FALLBACK_CHAIN")
-            .unwrap_or_else(|_| "claude,openai,ollama".to_string())
-            .split(',')
-            .map(|s| s.trim().to_lowercase())
-            .collect();
-
-        let anthropic_api_key = env::var("ANTHROPIC_API_KEY")
-            .or_else(|_| env::var("CLAUDE_API_KEY"))
-            .ok();
+        // If AI_FALLBACK_CHAIN is explicitly set, honour it; otherwise build
+        // dynamically so the gateway always leads when configured.
+        let fallback_chain = if let Ok(chain) = env::var("AI_FALLBACK_CHAIN") {
+            chain
+                .split(',')
+                .map(|s| s.trim().to_lowercase())
+                .collect()
+        } else {
+            let mut chain = Vec::new();
+            if gateway_enabled {
+                chain.push("gateway".to_string());
+            }
+            if anthropic_api_key.is_some() {
+                chain.push("claude".to_string());
+            }
+            if openai_api_key.is_some() {
+                chain.push("openai".to_string());
+            }
+            chain.push("ollama".to_string());
+            chain
+        };
 
         let anthropic_model = env::var("ANTHROPIC_MODEL")
             .unwrap_or_else(|_| "claude-sonnet-4-5-20250929".to_string());
-
-        let openai_api_key = env::var("OPENAI_API_KEY").ok();
 
         let openai_model = env::var("OPENAI_MODEL")
             .unwrap_or_else(|_| "gpt-4o".to_string());
@@ -233,6 +321,9 @@ impl ProviderConfig {
 
         let ollama_model = env::var("OLLAMA_MODEL")
             .unwrap_or_else(|_| "qwen2.5-coder:3b".to_string());
+
+        let gateway_model = env::var("GATEWAY_MODEL")
+            .unwrap_or_else(|_| "us.anthropic.claude-sonnet-4-20250514-v1:0".to_string());
 
         Self {
             provider,
@@ -246,6 +337,9 @@ impl ProviderConfig {
             ollama_base_url,
             ollama_model,
             ollama_timeout: 30,
+            gateway_url,
+            gateway_model,
+            gateway_enabled,
         }
     }
 

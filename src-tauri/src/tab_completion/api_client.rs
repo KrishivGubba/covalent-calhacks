@@ -2,7 +2,10 @@ use reqwest;
 use serde::{Deserialize, Serialize};
 use anyhow::{Result, Context};
 
-const FLASK_API_URL: &str = "http://127.0.0.1:5001";
+fn flask_api_url() -> String {
+    let port = std::env::var("VITE_FLASK_PORT").unwrap_or_else(|_| "15001".to_string());
+    format!("http://127.0.0.1:{}", port)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PredictionRequest {
@@ -68,7 +71,7 @@ impl TabCompletionApiClient {
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
-            base_url: FLASK_API_URL.to_string(),
+            base_url: flask_api_url(),
         }
     }
 

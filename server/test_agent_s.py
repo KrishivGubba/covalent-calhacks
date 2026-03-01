@@ -121,7 +121,8 @@ def test_flask_integration():
     
     # Check if Flask server is running
     try:
-        response = requests.get("http://127.0.0.1:5001/health", timeout=5)
+        flask_port = os.environ.get('VITE_FLASK_PORT', '15001')
+        response = requests.get(f"http://127.0.0.1:{flask_port}/health", timeout=5)
         if response.status_code == 200:
             logger.info("✅ Flask server is running")
         else:
@@ -143,7 +144,7 @@ def test_flask_integration():
     
     try:
         response = requests.post(
-            "http://127.0.0.1:5001/trigger_action",
+            f"http://127.0.0.1:{flask_port}/trigger_action",
             json=test_payload,
             timeout=120  # Long timeout for Agent-S execution
         )

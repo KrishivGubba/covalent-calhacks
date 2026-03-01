@@ -1,8 +1,10 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Covalent",
-  "version": "0.1.7",
-  "identifier": "com.hem.src-tauri",
+
+  "version": "0.1.19",
+  "identifier": "com.covalent.app",
+
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -105,13 +107,20 @@
       "servers/mcp-server",
       ".env"
     ],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": null,
+      "providerShortName": null,
+      "entitlements": null,
+      "exceptionDomain": null
+    }
   },
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM4MjRBQUMxMEE4QzlDRTYKUldUbW5Jd0t3YW9rT000SWJ0RSt3elRsb21WWUJremloZHBhT3VVVUNaYWtwUWsraVZaZ1BOTFEK",
       "endpoints": [
-        "https://github.com/hem8705/covalent-calhacks/releases/latest/download/latest.json"
+        "https://gtfrn4otol.execute-api.us-east-1.amazonaws.com/updates/latest"
       ]
     }
   }

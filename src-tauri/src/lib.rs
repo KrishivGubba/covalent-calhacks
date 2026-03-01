@@ -5,7 +5,7 @@ pub mod tab_completion;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{Manager, Emitter};
 use std::process::{Child, Command};
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}};
 use std::path::PathBuf;
 
 /// Find the overlap between the end of the buffer and the start of the prediction.
@@ -43,6 +43,8 @@ pub struct ContextState {
     // Tracks if user manually paused (vs automatic pause for action execution)
     // When true, we should NOT auto-resume after actions complete
     pub user_paused: Arc<AtomicBool>,
+    // List of app names/bundle IDs excluded from context collection
+    pub excluded_apps: Arc<RwLock<Vec<String>>>,
 }
 
 // Store for suggested actions
@@ -97,7 +99,29 @@ impl ContextState {
         Self {
             is_enabled: Arc::new(AtomicBool::new(true)), // Enabled by default
             user_paused: Arc::new(AtomicBool::new(false)), // Not manually paused by default
+            excluded_apps: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+
+    pub fn get_excluded_apps(&self) -> Vec<String> {
+        self.excluded_apps.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set_excluded_apps_list(&self, apps: Vec<String>) {
+        if let Ok(mut list) = self.excluded_apps.write() {
+            *list = apps;
+        }
+    }
+
+    /// Returns true if the given app name or bundle ID is in the excluded list (case-insensitive).
+    pub fn is_app_excluded(&self, name: &str, bundle_id: &str) -> bool {
+        let list = self.excluded_apps.read().unwrap_or_else(|e| e.into_inner());
+        let name_lower = name.to_lowercase();
+        let bundle_lower = bundle_id.to_lowercase();
+        list.iter().any(|entry| {
+            let entry_lower = entry.to_lowercase();
+            entry_lower == name_lower || entry_lower == bundle_lower
+        })
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -160,26 +184,53 @@ fn ensure_executable(path: &PathBuf) {
     }
 }
 
-/// Kill any process currently listening on the given port.
-fn kill_process_on_port(port: u16) {
+/// Find a free port by binding to port 0 and letting the OS assign one.
+fn find_free_port() -> Result<u16, String> {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("Failed to find a free port: {}", e))?;
+    let port = listener.local_addr()
+        .map_err(|e| format!("Failed to get local address: {}", e))?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
+/// Check whether a port is available. If not, return an error describing which
+/// process is occupying it (macOS/Linux only; falls back to a generic message).
+fn check_port_available(port: u16) -> Result<(), String> {
+    use std::net::TcpListener;
+    match TcpListener::bind(format!("127.0.0.1:{}", port)) {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            let process_info = get_process_on_port(port);
+            Err(format!(
+                "Port {} is already in use{}. Please free the port and restart Covalent.",
+                port, process_info
+            ))
+        }
+    }
+}
+
+/// Try to identify the process using a given port (macOS/Linux).
+fn get_process_on_port(port: u16) -> String {
     #[cfg(unix)]
     {
-        let output = Command::new("lsof")
-            .args(["-ti", &format!(":{}", port)])
-            .output();
-        if let Ok(output) = output {
-            let pids = String::from_utf8_lossy(&output.stdout);
-            for pid_str in pids.split_whitespace() {
-                if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                    println!("⚠️  Killing stale process on port {} (PID: {})", port, pid);
-                    let _ = Command::new("kill").arg(pid.to_string()).output();
+        if let Ok(output) = Command::new("lsof")
+            .args(["-i", &format!(":{}", port), "-sTCP:LISTEN", "-n", "-P"])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let lines: Vec<&str> = text.lines().collect();
+            if lines.len() >= 2 {
+                let parts: Vec<&str> = lines[1].split_whitespace().collect();
+                if parts.len() >= 2 {
+                    return format!(" by '{}' (PID {})", parts[0], parts[1]);
                 }
-            }
-            if !pids.is_empty() {
-                std::thread::sleep(std::time::Duration::from_millis(500));
             }
         }
     }
+    String::new()
 }
 
 /// Poll a URL until it responds with the expected status or we time out.
@@ -218,14 +269,19 @@ impl FlaskServer {
         }
     }
 
-    fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>) -> Result<(), String> {
+    fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>, mcp_port: u16) -> Result<(), String> {
         let binary = resolve_server_binary(&app_dir, "flask-server", is_dev);
 
         if !binary.exists() {
             return Err(format!("Flask server binary not found at {:?}", binary));
         }
 
-        kill_process_on_port(5001);
+        let flask_port: u16 = std::env::var("VITE_FLASK_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(15001);
+
+        check_port_available(flask_port)?;
         ensure_executable(&binary);
 
         let work_dir = binary.parent().unwrap().to_path_buf();
@@ -248,9 +304,16 @@ impl FlaskServer {
             }
         }
 
+        cmd.env("VITE_FLASK_PORT", flask_port.to_string());
+        cmd.env("MCP_PORT", mcp_port.to_string());
+
+        let db_path = if let Some(dir) = data_dir {
+            dir.join("graph.db")
+        } else {
+            app_dir.join("context-engine").join("graph.db")
+        };
+        cmd.env("GRAPH_DB_PATH", db_path.to_string_lossy().as_ref());
         if let Some(dir) = data_dir {
-            let db_path = dir.join("graph.db");
-            cmd.env("GRAPH_DB_PATH", db_path.to_string_lossy().as_ref());
             cmd.env("COVALENT_DATA_DIR", dir.to_string_lossy().as_ref());
         }
 
@@ -259,8 +322,9 @@ impl FlaskServer {
                 println!("Flask server started with PID: {:?}", child.id());
                 *self.process.lock().unwrap() = Some(child);
 
-                if wait_for_server("http://127.0.0.1:5001/health", 30, false) {
-                    println!("✅ Flask server is healthy and serving on port 5001");
+                let health_url = format!("http://127.0.0.1:{}/health", flask_port);
+                if wait_for_server(&health_url, 30, false) {
+                    println!("✅ Flask server is healthy and serving on port {}", flask_port);
                 } else {
                     eprintln!("⚠️  Flask server started but health check timed out after 30s");
                 }
@@ -301,18 +365,20 @@ impl McpServer {
         }
     }
 
-    fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>) -> Result<(), String> {
+    /// Start the MCP server on a dynamically assigned free port.
+    /// Returns the port number so callers can pass it to Flask.
+    fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>) -> Result<u16, String> {
         let binary = resolve_server_binary(&app_dir, "mcp-server", is_dev);
 
         if !binary.exists() {
             return Err(format!("MCP server binary not found at {:?}", binary));
         }
 
-        kill_process_on_port(8001);
+        let mcp_port = find_free_port()?;
         ensure_executable(&binary);
 
         let work_dir = binary.parent().unwrap().to_path_buf();
-        println!("Starting MCP server binary: {:?}", binary);
+        println!("Starting MCP server binary: {:?} on port {}", binary, mcp_port);
 
         let mut cmd = Command::new(&binary);
         cmd.current_dir(&work_dir)
@@ -331,9 +397,15 @@ impl McpServer {
             }
         }
 
+        cmd.env("MCP_PORT", mcp_port.to_string());
+
+        let db_path = if let Some(dir) = data_dir {
+            dir.join("graph.db")
+        } else {
+            app_dir.join("context-engine").join("graph.db")
+        };
+        cmd.env("GRAPH_DB_PATH", db_path.to_string_lossy().as_ref());
         if let Some(dir) = data_dir {
-            let db_path = dir.join("graph.db");
-            cmd.env("GRAPH_DB_PATH", db_path.to_string_lossy().as_ref());
             cmd.env("COVALENT_DATA_DIR", dir.to_string_lossy().as_ref());
         }
 
@@ -342,14 +414,13 @@ impl McpServer {
                 println!("MCP server started with PID: {:?}", child.id());
                 *self.process.lock().unwrap() = Some(child);
 
-                let mcp_port = std::env::var("MCP_PORT").unwrap_or_else(|_| "8001".to_string());
                 let mcp_url = format!("http://127.0.0.1:{}/mcp", mcp_port);
                 if wait_for_server(&mcp_url, 15, true) {
                     println!("✅ MCP server is healthy and serving on port {}", mcp_port);
                 } else {
                     eprintln!("⚠️  MCP server started but health check timed out after 15s");
                 }
-                Ok(())
+                Ok(mcp_port)
             }
             Err(e) => {
                 eprintln!("Failed to start MCP server: {}", e);
@@ -785,28 +856,63 @@ fn get_memory_graph_data() -> Result<MemoryGraphData, String> {
 }
 
 #[tauri::command]
-fn get_excluded_apps() -> Result<Vec<String>, String> {
-    // TODO: Read from settings/config
-    println!("🔒 Fetching excluded apps");
-    Ok(vec![])
+fn get_excluded_apps(
+    app: tauri::AppHandle,
+    state: tauri::State<ContextState>,
+) -> Result<Vec<String>, String> {
+    let settings = load_settings(&app);
+    if let Some(arr) = settings.get("excluded_apps").and_then(|v| v.as_array()) {
+        let apps: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        // Keep ContextState in sync
+        state.set_excluded_apps_list(apps.clone());
+        println!("🔒 Loaded {} excluded apps from settings", apps.len());
+        Ok(apps)
+    } else {
+        // No excluded apps saved yet — return empty list
+        Ok(vec![])
+    }
 }
 
 #[tauri::command]
-fn set_excluded_apps(apps: Vec<String>) -> Result<(), String> {
-    // TODO: Save to settings/config
-    println!("🔒 Setting excluded apps: {:?}", apps);
+fn set_excluded_apps(
+    app: tauri::AppHandle,
+    state: tauri::State<ContextState>,
+    apps: Vec<String>,
+) -> Result<(), String> {
+    // Persist to settings.json
+    let json_arr: serde_json::Value = serde_json::Value::Array(
+        apps.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
+    );
+    save_setting(&app, "excluded_apps", json_arr);
+    // Update live state so context loop sees change immediately
+    state.set_excluded_apps_list(apps.clone());
+    println!("🔒 Saved {} excluded apps", apps.len());
     Ok(())
 }
 
 #[tauri::command]
-fn get_auth_status() -> Result<serde_json::Value, String> {
-    // TODO: Implement actual auth status check
+async fn get_auth_status() -> Result<serde_json::Value, String> {
     println!("🔐 Checking auth status");
-    Ok(serde_json::json!({
-        "authenticated": false,
-        "user": null,
-        "message": "Authentication not yet implemented"
-    }))
+
+    let flask_base_url = std::env::var("FLASK_BASE_URL")
+        .unwrap_or_else(|_| "http://localhost:5001".to_string());
+
+    match crate::ai_provider::auth::fetch_current_session(&flask_base_url).await {
+        Some(session) => Ok(serde_json::json!({
+            "authenticated": true,
+            "user": session.user_info,
+            "user_id": session.user_id,
+            "expired": session.expired,
+        })),
+        None => Ok(serde_json::json!({
+            "authenticated": false,
+            "user": null,
+            "user_id": null,
+        })),
+    }
 }
 
 // Open dashboard and navigate to history page
@@ -980,17 +1086,30 @@ pub fn run() {
             }
 
             let mcp_server = McpServer::new();
-            if !manual_servers {
+            let mcp_port: u16 = if !manual_servers {
                 match mcp_server.start(app_dir.clone(), is_dev, data_dir.as_ref()) {
-                    Ok(_) => println!("✓ MCP server started successfully"),
-                    Err(e) => eprintln!("✗ Failed to start MCP server: {}", e),
+                    Ok(port) => {
+                        println!("✓ MCP server started successfully on port {}", port);
+                        port
+                    }
+                    Err(e) => {
+                        eprintln!("✗ Failed to start MCP server: {}", e);
+                        8001
+                    }
                 }
-            }
+            } else {
+                let port: u16 = std::env::var("MCP_PORT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(8001);
+                println!("⏭️  Manual mode — assuming MCP on port {}", port);
+                port
+            };
             app.manage(mcp_server);
 
             let flask_server = FlaskServer::new();
             if !manual_servers {
-                match flask_server.start(app_dir.clone(), is_dev, data_dir.as_ref()) {
+                match flask_server.start(app_dir.clone(), is_dev, data_dir.as_ref(), mcp_port) {
                     Ok(_) => println!("✓ Flask server started successfully"),
                     Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
                 }
@@ -1007,6 +1126,38 @@ pub fn run() {
             
             // Create and manage context state
             let context_state = ContextState::new();
+
+            // Load excluded apps from settings (or seed defaults on first run)
+            {
+                let handle = app.handle().clone();
+                let settings = load_settings(&handle);
+                let excluded = if let Some(arr) = settings.get("excluded_apps").and_then(|v| v.as_array()) {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<String>>()
+                } else {
+                    // First-run defaults — privacy-sensitive apps are blocked out of the box
+                    let defaults = vec![
+                        "Keychain Access".to_string(),
+                        "Passwords".to_string(),
+                        "1Password".to_string(),
+                        "Bitwarden".to_string(),
+                        "LastPass".to_string(),
+                        "Dashlane".to_string(),
+                        "1Password 7 - Password Manager".to_string(),
+                    ];
+                    // Persist defaults so the UI reflects them immediately
+                    let json_arr = serde_json::Value::Array(
+                        defaults.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
+                    );
+                    save_setting(&handle, "excluded_apps", json_arr);
+                    println!("🔒 Seeded default excluded apps ({} entries)", defaults.len());
+                    defaults
+                };
+                context_state.set_excluded_apps_list(excluded.clone());
+                println!("🔒 Excluded apps loaded: {:?}", excluded);
+            }
+
             app.manage(context_state.clone());
             
             // Create and manage actions store
