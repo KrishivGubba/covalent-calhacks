@@ -22,6 +22,9 @@ keyring>=24.0.0           # macOS Keychain integration for secure key storage
 pyautogui>=0.9.54
 pillow>=10.0.0
 
+# Analytics
+posthog>=3.0.0
+
 # Logging and utilities
 # (anyhow is a Rust crate, not a Python package)
 
