@@ -24,13 +24,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'context-engine'))
 
 from logger import get_logger
 log = get_logger()
-# region agent log
-import json as _json_dbg, time as _time_dbg
-try:
-    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-d01c5b.log', 'a') as _f:
-        _f.write(_json_dbg.dumps({"sessionId":"d01c5b","id":"app_startup_canary","timestamp":int(_time_dbg.time()*1000),"location":"app.py:module","message":"app.py loaded - build is fresh","data":{"frozen":getattr(sys,'frozen',False)},"hypothesisId":"H1"}) + '\n')
-except: pass
-# endregion
 from graph import Tree
 from auth_dao import AuthDAO
 from integration_dao import IntegrationDAO
@@ -490,12 +483,6 @@ def auth_start():
     Stores the code_verifier so the backend can do the token exchange later.
     Body: { "state": "...", "code_verifier": "..." }
     """
-    # region agent log
-    try:
-        with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-d01c5b.log', 'a') as _f:
-            _f.write(_json_dbg.dumps({"sessionId":"d01c5b","id":"auth_start_hit","timestamp":int(_time_dbg.time()*1000),"location":"app.py:/auth/start","message":"/auth/start called","data":{},"hypothesisId":"H3"}) + '\n')
-    except: pass
-    # endregion
     body = request.get_json() or {}
     state = body.get("state")
     code_verifier = body.get("code_verifier")
@@ -511,13 +498,6 @@ def auth_callback():
     """
     Auth0 redirect target. Performs server-side token exchange and stores result for frontend to poll.
     """
-    # region agent log
-    import json as _json, time as _time
-    try:
-        with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-d01c5b.log', 'a') as _f:
-            _f.write(_json.dumps({"sessionId":"d01c5b","id":"callback_hit","timestamp":int(_time.time()*1000),"location":"app.py:/callback","message":"callback route hit","data":{"method":request.method,"has_code":bool(request.args.get("code")),"has_state":bool(request.args.get("state")),"has_error":bool(request.args.get("error"))},"hypothesisId":"H2"}) + '\n')
-    except: pass
-    # endregion
     code = request.args.get("code")
     state = request.args.get("state")
     error = request.args.get("error")
@@ -671,12 +651,6 @@ def get_session():
     Returns session data if found, or null.
     """
     user_id = request.args.get("user_id")
-    # region agent log
-    try:
-        with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-d01c5b.log', 'a') as _f:
-            _f.write(_json_dbg.dumps({"sessionId":"d01c5b","id":"auth_session_hit","timestamp":int(_time_dbg.time()*1000),"location":"app.py:/auth/session","message":"/auth/session called","data":{"user_id_present":bool(user_id)},"hypothesisId":"H4"}) + '\n')
-    except: pass
-    # endregion
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
     
@@ -831,12 +805,6 @@ def logout():
     Also deletes OAuth integration tokens (Google, GitHub, Notion).
     Body: { "user_id": "..." }
     """
-    # region agent log
-    try:
-        with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-d01c5b.log', 'a') as _f:
-            _f.write(_json_dbg.dumps({"sessionId":"d01c5b","id":"auth_logout_hit","timestamp":int(_time_dbg.time()*1000),"location":"app.py:/auth/logout","message":"/auth/logout called","data":{},"hypothesisId":"H5"}) + '\n')
-    except: pass
-    # endregion
     body = request.get_json() or {}
     user_id = body.get("user_id")
     if not user_id:
@@ -2726,79 +2694,14 @@ def edit_action():
         action_override = body.get("action_override") or {}
         persist = bool(body.get("persist", False))
 
-        # region agent log
-        try:
-            import json, time
-            log_entry = {
-                "sessionId": "debug-session",
-                "runId": "pre-fix",
-                "hypothesisId": "H1",
-                "location": "server/app.py:1384",
-                "message": "edit_action entry",
-                "data": {
-                    "action_uuid": action_uuid,
-                    "has_override": bool(action_override),
-                    "persist": persist
-                },
-                "timestamp": int(time.time() * 1000)
-            }
-            with open("/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log", "a") as f:
-                f.write(json.dumps(log_entry) + "\n")
-        except Exception:
-            pass
-        # endregion
-
         if not action_uuid:
             return jsonify({"error": "action_uuid is required"}), 400
 
         action_data = tree.dao.get_action_by_id(action_uuid)
         if not action_data:
             return jsonify({"error": "action not found"}), 404
-        # region agent log
-        try:
-            import json, time
-            log_entry = {
-                "sessionId": "debug-session",
-                "runId": "pre-fix",
-                "hypothesisId": "H1",
-                "location": "server/app.py:1396",
-                "message": "edit_action fetched action_data",
-                "data": {
-                    "action_uuid": action_uuid,
-                    "action_data_len": len(action_data) if action_data is not None else None,
-                    "action_data_preview": list(action_data) if action_data is not None else None
-                },
-                "timestamp": int(time.time() * 1000)
-            }
-            with open("/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log", "a") as f:
-                f.write(json.dumps(log_entry) + "\n")
-        except Exception:
-            pass
-        # endregion
         # Unpack action_data - 5-tuple with None placeholder for deprecated action_prompt
         _, action_name, action_plan, _, _ = action_data
-
-        # region agent log
-        try:
-            import json, time
-            log_entry = {
-                "sessionId": "debug-session",
-                "runId": "pre-fix",
-                "hypothesisId": "H2",
-                "location": "server/app.py:1400",
-                "message": "edit_action unpacked action_data",
-                "data": {
-                    "action_uuid": action_uuid,
-                    "action_name": action_name,
-                    "action_plan": action_plan
-                },
-                "timestamp": int(time.time() * 1000)
-            }
-            with open("/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log", "a") as f:
-                f.write(json.dumps(log_entry) + "\n")
-        except Exception:
-            pass
-        # endregion
 
         effective_action = {
             "action_name": action_override.get("action_name") or action_name,

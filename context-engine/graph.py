@@ -2372,13 +2372,7 @@ Return ONLY a JSON object:
         Returns:
             str: The prompt to send to the LLM
         """
-        # region agent log
-        import json
-        try:
-            with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"id":"log_entry","timestamp":__import__('time').time()*1000,"location":"graph.py:2167","message":"_generate_learning_prompt entry","data":{"num_actions":len(existing_actions) if existing_actions else 0,"first_action_length":len(existing_actions[0]) if existing_actions else None},"runId":"initial","hypothesisId":"A,B,C"}) + '\n')
-        except: pass
-        # endregion
+        
         # Get metadata chain for context
         metadata_chain = self.get_parent_metadata(node)
 
@@ -2387,21 +2381,10 @@ Return ONLY a JSON object:
         if existing_actions:
             actions_text = "EXISTING ACTIONS for this node:\n"
             for idx, action in enumerate(existing_actions, 1):
-                # region agent log
-                import json
-                try:
-                    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"id":f"log_before_{idx}","timestamp":__import__('time').time()*1000,"location":"graph.py:2195","message":"Action tuple before unpack","data":{"action_length":len(action),"action_content":str(action)[:200],"idx":idx},"runId":"fix","hypothesisId":"A,C"}) + '\n')
-                except: pass
-                # endregion
+                
                 # Unpack 5-tuple format (action_prompt removed from schema)
                 uuid, name, plan, node_uuid, last_selected = action
-                # region agent log
-                try:
-                    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"id":f"log_after_{idx}","timestamp":__import__('time').time()*1000,"location":"graph.py:2203","message":"Action values after unpack","data":{"uuid":uuid,"name":name,"has_plan":plan is not None,"node_uuid":node_uuid,"last_selected":last_selected},"runId":"fix","hypothesisId":"A"}) + '\n')
-                except: pass
-                # endregion
+                
                 actions_text += f"{idx}. UUID: {uuid}\n"
                 actions_text += f"   Name: {name}\n"
                 actions_text += f"   Plan: {plan or 'N/A'}\n"
@@ -2656,13 +2639,7 @@ IMPORTANT:
             existing_actions = self.dao.get_actions_for_node(node.node_uuid, order_by_last_selected=True)
             existing_categories = self.dao.get_categories_for_node(node.node_uuid)
 
-            # region agent log
-            import json
-            try:
-                with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"id":"log_dao_result","timestamp":__import__('time').time()*1000,"location":"graph.py:2460","message":"DAO get_actions_for_node result","data":{"num_actions":len(existing_actions),"first_action_tuple_length":len(existing_actions[0]) if existing_actions else None,"sample_action_types":[type(x).__name__ for x in existing_actions[0]] if existing_actions else None},"runId":"initial","hypothesisId":"B,C"}) + '\n')
-            except: pass
-            # endregion
+            
 
             log.info(f"Existing actions: {len(existing_actions)}")
             log.info(f"Existing categories: {existing_categories}")
