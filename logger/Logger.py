@@ -40,12 +40,33 @@ def _get_posthog():
     global _posthog
     if _posthog is None:
         api_key = os.getenv("POSTHOG_API_KEY")
+        # region agent log
+        import json as _json, time as _time
+        try:
+            with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-7edf12.log', 'a') as _f:
+                _f.write(_json.dumps({"sessionId":"7edf12","id":"get_posthog_entry","timestamp":int(_time.time()*1000),"location":"Logger.py:_get_posthog","message":"_get_posthog called","data":{"api_key_present":bool(api_key),"api_key_prefix":api_key[:8] if api_key else None},"hypothesisId":"H1,H2,H3"}) + '\n')
+        except: pass
+        # endregion
         if api_key:
             try:
-                from posthog import PostHog
-                _posthog = PostHog(api_key=api_key)
-            except ImportError:
-                pass
+                from posthog import Posthog
+                _posthog = Posthog(
+                    api_key=api_key
+                    host='https://us.i.posthog.com'
+                    )
+                # region agent log
+                try:
+                    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-7edf12.log', 'a') as _f:
+                        _f.write(_json.dumps({"sessionId":"7edf12","id":"posthog_import_ok","timestamp":int(_time.time()*1000),"location":"Logger.py:_get_posthog","message":"posthog imported and initialized successfully","data":{},"hypothesisId":"H1"}) + '\n')
+                except: pass
+                # endregion
+            except ImportError as _e:
+                # region agent log
+                try:
+                    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-7edf12.log', 'a') as _f:
+                        _f.write(_json.dumps({"sessionId":"7edf12","id":"posthog_import_error","timestamp":int(_time.time()*1000),"location":"Logger.py:_get_posthog","message":"posthog ImportError - package not installed","data":{"error":str(_e)},"hypothesisId":"H1,H5"}) + '\n')
+                except: pass
+                # endregion
     return _posthog
 
 
@@ -67,6 +88,13 @@ class Logger:
         self._user_id = user_id
 
     def _capture(self, event: str, properties: Optional[dict] = None) -> None:
+        # region agent log
+        import json as _json, time as _time
+        try:
+            with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-7edf12.log', 'a') as _f:
+                _f.write(_json.dumps({"sessionId":"7edf12","id":"capture_called","timestamp":int(_time.time()*1000),"location":"Logger.py:_capture","message":"_capture called","data":{"event":event,"posthog_is_none":self._posthog is None,"user_id":self._user_id},"hypothesisId":"H3,H4"}) + '\n')
+        except: pass
+        # endregion
         if self._posthog is None:
             return
         props = dict(properties) if properties else {}
@@ -78,9 +106,14 @@ class Logger:
                 distinct_id=self._user_id,
                 properties=props,
             )
-        except Exception:
+        except Exception as _e:
+            # region agent log
+            try:
+                with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-7edf12.log', 'a') as _f:
+                    _f.write(_json.dumps({"sessionId":"7edf12","id":"capture_exception","timestamp":int(_time.time()*1000),"location":"Logger.py:_capture","message":"posthog capture threw exception","data":{"event":event,"error":str(_e),"error_type":type(_e).__name__},"hypothesisId":"H3,H4"}) + '\n')
+            except: pass
+            # endregion
             print("Error capturing event in posthog")
-            pass
 
     def info(self, msg: str) -> None:
         self._logger.info(msg)
