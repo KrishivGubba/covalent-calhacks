@@ -76,6 +76,7 @@ jobs:
           chmod +x dist-servers/mcp-server/mcp-server
 
       - name: Import Apple certificate
+        if: false # temporarily disable notarization-related setup
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -98,6 +99,7 @@ jobs:
           security list-keychain -d user -s $KEYCHAIN_PATH
 
       - name: Fix Python.framework for code signing
+        if: false # temporarily disable notarization-related setup
         run: |
           echo "=== Fixing Python.framework for notarization ==="
           # PyInstaller's Python.framework has symlinks and existing signatures that break notarization.
@@ -164,6 +166,7 @@ jobs:
           echo "=== Framework fixing complete ==="
 
       - name: Sign server binaries for notarization
+        if: false # temporarily disable notarization-related setup
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
