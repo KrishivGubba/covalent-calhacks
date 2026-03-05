@@ -5,6 +5,13 @@ Exposes Google Calendar operations as MCP tools and resources for LLM agents.
 Token is managed by the server via OAuth flow - MCP reads token from database.
 """
 import json
+import sys
+from pathlib import Path
+
+_project_root = Path(__file__).resolve().parent.parent.parent.parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
 from typing import Dict, Optional, List
 from covalent_mcp.toolclasses.base import (
     MCPToolModule,
@@ -72,7 +79,7 @@ class CalendarToolModule(MCPToolModule):
                 ],
             }
         except Exception as e:
-            print(f"Warning: failed to resolve event details for {event_id}: {e}")
+            log.warning(f"Warning: failed to resolve event details for {event_id}: {e}")
             return {"event_name": "(could not load event)"}
 
     # -----------------------------------------------------------------

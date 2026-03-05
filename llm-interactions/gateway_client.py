@@ -28,7 +28,14 @@ Usage:
 """
 
 import os
+import sys
 import json
+from pathlib import Path
+
+_project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
@@ -520,35 +527,35 @@ if __name__ == "__main__":
     # Check if URL is configured
     url = os.getenv("GATEWAY_URL")
     if not url:
-        print("Set GATEWAY_URL environment variable first:")
-        print("  export GATEWAY_URL='https://your-api-id.execute-api.us-east-1.amazonaws.com'")
+        log.error("Set GATEWAY_URL environment variable first:")
+        log.info("  export GATEWAY_URL='https://your-api-id.execute-api.us-east-1.amazonaws.com'")
         sys.exit(1)
     
     client = GatewayClient()
-    print(f"Client: {client}")
+    log.info(f"Client: {client}")
     response = client.generate("Hello", model="claude-4.5-sonnet")
-    print(f"Response: {response.content}, the big response")
+    log.info(f"Response: {response.content}, the big response")
     # Health check
-    print("\n--- Health Check ---")
+    log.info("\n--- Health Check ---")
     try:
         health = client.health()
-        print(f"Status: {health.get('status')}")
-        print(f"Region: {health.get('region')}")
-        print(f"Default Model: {health.get('default_model')}")
+        log.info(f"Status: {health.get('status')}")
+        log.info(f"Region: {health.get('region')}")
+        log.info(f"Default Model: {health.get('default_model')}")
     except GatewayError as e:
-        print(f"Health check failed: {e}")
+        log.error(f"Health check failed: {e}")
         sys.exit(1)
     
     # Generate
-    print("\n--- Generate ---")
+    log.info("\n--- Generate ---")
     try:
         response = client.generate(
             "What is 2+2? Reply in one word.",
             system_prompt="You are a math tutor. Be concise.",
             max_tokens=50,
         )
-        print(f"Response: {response.content}")
-        print(f"Tokens: {response.input_tokens} in, {response.output_tokens} out")
-        print(f"Stop reason: {response.stop_reason}")
+        log.info(f"Response: {response.content}")
+        log.info(f"Tokens: {response.input_tokens} in, {response.output_tokens} out")
+        log.info(f"Stop reason: {response.stop_reason}")
     except GatewayError as e:
-        print(f"Generate failed: {e}")
+        log.error(f"Generate failed: {e}")

@@ -29,7 +29,13 @@ from gateway_client import GatewayClient, GatewayError
 sys.path.insert(0, str(Path(__file__).parent / "server"))
 from auth_dao import AuthDAO
 
+# Add project root for logger
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from logger import get_logger
+
 load_dotenv()
+
+log = get_logger()
 
 # Project root for MCP server
 if getattr(sys, 'frozen', False):
@@ -103,14 +109,6 @@ MCP_SERVERS = {
         "url": f"http://localhost:{MCP_PORT}/mcp",
     },
 }
-
-# region agent log
-import json as _json
-try:
-    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-        _f.write(_json.dumps({"id":"mcp_config","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:89","message":"MCP server configuration loaded","data":{"MCP_PORT":MCP_PORT,"MCP_SERVERS":MCP_SERVERS},"runId":"initial","hypothesisId":"H1,H2,H3"}) + '\n')
-except: pass
-# endregion
 
 # Tool Routing Configuration
 TOOL_CACHE_DIR = Path.home() / ".cache" / "covalent_action_executor"
@@ -191,31 +189,9 @@ async def get_mcp_client(max_retries: int = 3):
         _client_lock = asyncio.Lock()
 
     async with _client_lock:
-        # region agent log
-        import json as _json
-        try:
-            with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-                _f.write(_json.dumps({"id":"mcp_client_entry","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:178","message":"Entering get_mcp_client","data":{"max_retries":max_retries,"client_exists":_mcp_client is not None,"MCP_SERVERS":MCP_SERVERS},"runId":"initial","hypothesisId":"H1,H2,H3,H4"}) + '\n')
-        except: pass
-        # endregion
-        
         for attempt in range(max_retries):
-            # region agent log
-            try:
-                with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-                    _f.write(_json.dumps({"id":f"mcp_attempt_{attempt}","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:179","message":f"Connection attempt {attempt+1}/{max_retries}","data":{"attempt":attempt,"max_retries":max_retries},"runId":"initial","hypothesisId":"H3,H4"}) + '\n')
-            except: pass
-            # endregion
-            
             try:
                 if _mcp_client is None:
-                    # region agent log
-                    try:
-                        with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-                            _f.write(_json.dumps({"id":f"mcp_client_create_{attempt}","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:182","message":"Creating MultiServerMCPClient","data":{"MCP_SERVERS":MCP_SERVERS},"runId":"initial","hypothesisId":"H1,H2,H3"}) + '\n')
-                    except: pass
-                    # endregion
-                    
                     _mcp_client = MultiServerMCPClient(MCP_SERVERS)
 
                     # Fetch tools (write operations)
@@ -243,37 +219,16 @@ async def get_mcp_client(max_retries: int = 3):
                                 )
                             )
 
-                    print(f"✅ MCP client initialized: {len(_all_tools)} tools, {len(_all_resources)} resources")
-                    
-                # region agent log
-                try:
-                    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-                        _f.write(_json.dumps({"id":"mcp_success","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:209","message":"MCP client initialized successfully","data":{"tools_count":len(_all_tools),"resources_count":len(_all_resources),"attempt":attempt},"runId":"initial","hypothesisId":"H4"}) + '\n')
-                except: pass
-                # endregion
-                
+                    log.info(f"✅ MCP client initialized: {len(_all_tools)} tools, {len(_all_resources)} resources")
+
                 return _mcp_client, _all_tools, _all_resources
             except Exception as e:
-                # region agent log
-                try:
-                    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-                        _f.write(_json.dumps({"id":f"mcp_error_{attempt}","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:212","message":"MCP connection attempt failed","data":{"attempt":attempt,"max_retries":max_retries,"error_type":type(e).__name__,"error_message":str(e)[:200],"will_retry":attempt < max_retries - 1},"runId":"initial","hypothesisId":"H1,H2,H3,H4,H5"}) + '\n')
-                except: pass
-                # endregion
-                
                 _mcp_client = None
                 _all_tools = None
                 _all_resources = None
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1 * (attempt + 1))
                 else:
-                    # region agent log
-                    try:
-                        with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as _f:
-                            _f.write(_json.dumps({"id":"mcp_final_failure","timestamp":int(__import__('time').time()*1000),"location":"action_executor.py:218","message":"All MCP connection attempts exhausted","data":{"total_attempts":max_retries,"final_error":str(e)[:500]},"runId":"initial","hypothesisId":"H1,H2,H3,H4,H5"}) + '\n')
-                    except: pass
-                    # endregion
-                    
                     raise ConnectionError(f"Failed to connect to MCP server after {max_retries} attempts: {e}")
 
 
@@ -579,17 +534,17 @@ Which resources should I query to gather context for this action?"""
             temperature=0.0,
         )
         
-        print(f"\n{'='*60}")
-        print(f"LLM OUTPUT (RESEARCH PHASE)")
-        print(f"{'='*60}")
-        print(response.content)
-        print(f"{'='*60}\n")
+        log.debug(f"\n{'='*60}")
+        log.debug(f"LLM OUTPUT (RESEARCH PHASE)")
+        log.debug(f"{'='*60}")
+        log.debug(str(response.content))
+        log.debug(f"{'='*60}\n")
         
         # Parse which resources to read
         resources_to_read = _parse_resource_selection(response.content)
         
         if not resources_to_read:
-            print("ℹ️ LLM decided no additional context needed")
+            log.info("ℹ️ LLM decided no additional context needed")
             return {
                 "status": "success",
                 "context": existing_context,
@@ -612,12 +567,12 @@ Which resources should I query to gather context for this action?"""
             try:
                 resource_item = resource_lookup.get(resource_name)
                 if resource_item is None:
-                    print(f"⚠️ Resource '{resource_name}' not found")
+                    log.warning(f"⚠️ Resource '{resource_name}' not found")
                     continue
                 
                 # Expand URI template with the LLM-provided params
                 uri = _expand_uri_template(resource_item.uri_template, params)
-                print(f"📖 Reading resource: {resource_name} -> {uri}")
+                log.info(f"📖 Reading resource: {resource_name} -> {uri}")
                 
                 # Read the resource via MCP session
                 async with client.session("covalent") as session:
@@ -630,10 +585,10 @@ Which resources should I query to gather context for this action?"""
                 
                 gathered_context.append(f"--- {resource_name} ---\n{text}")
                 resources_read.append(resource_name)
-                print(f"✅ Successfully read {resource_name}")
+                log.info(f"✅ Successfully read {resource_name}")
                 
             except Exception as e:
-                print(f"⚠️ Failed to read {resource_name}: {e}")
+                log.warning(f"⚠️ Failed to read {resource_name}: {e}")
                 # Continue with other resources
         
         # Combine all context
@@ -641,7 +596,7 @@ Which resources should I query to gather context for this action?"""
         if gathered_context:
             combined_context += "\n\n=== Gathered Context ===\n" + "\n\n".join(gathered_context)
         
-        print(f"✅ Research complete: read {len(resources_read)} resources")
+        log.info(f"✅ Research complete: read {len(resources_read)} resources")
         
         return {
             "status": "success",
@@ -651,7 +606,7 @@ Which resources should I query to gather context for this action?"""
         }
         
     except GatewayError as e:
-        print(f"❌ Gateway error during research: {e}")
+        log.error(f"❌ Gateway error during research: {e}")
         return {
             "status": "error",
             "context": existing_context,
@@ -659,7 +614,7 @@ Which resources should I query to gather context for this action?"""
             "error": f"Gateway error: {str(e)}"
         }
     except Exception as e:
-        print(f"❌ Error in gather_context: {e}")
+        log.error(f"❌ Error in gather_context: {e}")
         import traceback
         traceback.print_exc()
         return {
@@ -855,11 +810,11 @@ Analyze this action and output a single JSON object with the tool call."""
             temperature=0.0,  # Deterministic
         )
         
-        print(f"\n{'='*60}")
-        print(f"LLM OUTPUT (PLANNING PHASE)")
-        print(f"{'='*60}")
-        print(response.content)
-        print(f"{'='*60}\n")
+        log.debug(f"\n{'='*60}")
+        log.debug(f"LLM OUTPUT (PLANNING PHASE)")
+        log.debug(f"{'='*60}")
+        log.debug(str(response.content))
+        log.debug(f"{'='*60}\n")
         
         # Parse the response (now supports multi-action)
         parsed_response = _parse_tool_response(response.content)
@@ -881,21 +836,21 @@ Analyze this action and output a single JSON object with the tool call."""
         }
         
     except GatewayError as e:
-        print(f"❌ Gateway error: {e}")
+        log.error(f"❌ Gateway error: {e}")
         return {
             "status": "error",
             "proposed_action": None,
             "error": f"Gateway error: {str(e)}"
         }
     except ConnectionError as e:
-        print(f"❌ MCP connection error: {e}")
+        log.error(f"❌ MCP connection error: {e}")
         return {
             "status": "error",
             "proposed_action": None,
             "error": f"Connection error: {str(e)}"
         }
     except Exception as e:
-        print(f"❌ Error in plan_action: {e}")
+        log.error(f"❌ Error in plan_action: {e}")
         import traceback
         traceback.print_exc()
         await reset_mcp_client()
@@ -924,7 +879,7 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
     try:
         client, tools, resources = await get_mcp_client()
         
-        print(f"🚀 Executing {tool_name} with parameters: {parameters}")
+        log.info(f"🚀 Executing {tool_name} with parameters: {parameters}")
         
         # Find the tool by name
         tool_lookup = {t.name: t for t in tools}
@@ -959,25 +914,47 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
                 or result_data.get("detail")
                 or "Tool execution failed"
             )
-            print(f"❌ Tool returned failure response: {error_msg}")
+            log.error(f"❌ Tool returned failure response: {error_msg}")
             return {
                 "status": "error",
                 "result": None,
                 "error": error_msg,
             }
-        
-        print(f"✅ Tool execution completed")
+
+        # Handle list-of-content-blocks response from some MCP adapters:
+        # langchain_mcp_adapters sometimes returns [TextContent(type='text', text='{"..."}')]
+        if isinstance(result, list) and result_data is None:
+            texts = []
+            for item in result:
+                text = getattr(item, 'text', None) or (item.get('text') if isinstance(item, dict) else None)
+                if text:
+                    texts.append(text)
+            combined = "\n".join(texts) if texts else str(result)
+            try:
+                result_data = _json.loads(combined)
+            except (ValueError, TypeError):
+                result_data = {"message": combined} if combined else None
+
+        # Prefer the parsed/structured result over the raw string
+        final_result = result_data if result_data is not None else result
+
+        log.info(f"✅ Tool execution completed")
         
         return {
             "status": "success",
-            "result": result,
+            "result": final_result,
             "error": None
         }
         
     except Exception as e:
-        print(f"❌ Error executing action: {e}")
+        log.error(f"❌ Error executing action: {e}")
         import traceback
         traceback.print_exc()
+        _err_msg = str(e)
+        _is_connect_err = "ConnectError" in type(e).__name__ or "connection" in _err_msg.lower() or "All connection attempts failed" in _err_msg
+        if _is_connect_err:
+            _hint = f"MCP server unreachable at http://localhost:{MCP_PORT}/mcp. Start it with: bash covalent_mcp/start_mcp.sh (or use start_servers.sh)"
+            return {"status": "error", "result": None, "error": _hint}
         return {
             "status": "error",
             "result": None,
@@ -1017,16 +994,16 @@ async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
     succeeded = 0
     failed = 0
     
-    print(f"\n{'='*60}")
-    print(f"🚀 EXECUTING ACTION CHAIN ({len(actions)} actions)")
-    print(f"{'='*60}")
+    log.info(f"\n{'='*60}")
+    log.info(f"🚀 EXECUTING ACTION CHAIN ({len(actions)} actions)")
+    log.info(f"{'='*60}")
     
     for action in actions:
         step_id = action.get("step_id", len(results) + 1)
         tool_name = action.get("tool_name", "")
         parameters = action.get("parameters", {})
         
-        print(f"\n📌 Step {step_id}: {tool_name}")
+        log.info(f"\n📌 Step {step_id}: {tool_name}")
         
         try:
             exec_result = await execute_action(tool_name, parameters)
@@ -1039,7 +1016,7 @@ async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
                     "status": "success",
                     "result": exec_result["result"]
                 })
-                print(f"   ✅ Step {step_id} succeeded")
+                log.info(f"   ✅ Step {step_id} succeeded")
             else:
                 failed += 1
                 results.append({
@@ -1048,7 +1025,7 @@ async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
                     "status": "error",
                     "error": exec_result["error"]
                 })
-                print(f"   ❌ Step {step_id} failed: {exec_result['error']}")
+                log.error(f"   ❌ Step {step_id} failed: {exec_result['error']}")
                 # Continue to next action (no early exit)
                 
         except Exception as e:
@@ -1059,7 +1036,7 @@ async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "status": "error",
                 "error": str(e)
             })
-            print(f"   ❌ Step {step_id} exception: {e}")
+            log.error(f"   ❌ Step {step_id} exception: {e}")
             # Continue to next action
     
     # Determine overall status
@@ -1070,9 +1047,9 @@ async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
     else:
         overall_status = "partial"
     
-    print(f"\n{'='*60}")
-    print(f"📊 CHAIN COMPLETE: {succeeded}/{len(actions)} succeeded")
-    print(f"{'='*60}\n")
+    log.info(f"\n{'='*60}")
+    log.info(f"📊 CHAIN COMPLETE: {succeeded}/{len(actions)} succeeded")
+    log.info(f"{'='*60}\n")
     
     return {
         "status": overall_status,
@@ -1122,9 +1099,9 @@ async def research_and_plan(action_text: str, initial_context: str = "") -> Dict
         }
     """
     # Phase 0: Research
-    print("=" * 40)
-    print("🔍 PHASE 0: RESEARCH")
-    print("=" * 40)
+    log.info("=" * 40)
+    log.info("🔍 PHASE 0: RESEARCH")
+    log.info("=" * 40)
     
     research_result = await gather_context(action_text, initial_context)
     
@@ -1134,12 +1111,12 @@ async def research_and_plan(action_text: str, initial_context: str = "") -> Dict
     }
     
     if research_result["status"] == "error":
-        print(f"⚠️ Research had issues (continuing): {research_result['error']}")
+        log.warning(f"⚠️ Research had issues (continuing): {research_result['error']}")
     
     # Phase 1: Planning
-    print("\n" + "=" * 40)
-    print("📋 PHASE 1: PLANNING")
-    print("=" * 40)
+    log.info("\n" + "=" * 40)
+    log.info("📋 PHASE 1: PLANNING")
+    log.info("=" * 40)
     
     plan_result = await plan_action(action_text, research_info["context_gathered"])
     
@@ -1154,7 +1131,7 @@ async def research_and_plan(action_text: str, initial_context: str = "") -> Dict
         }
     
     num_actions = len(plan_result.get("proposed_actions", []))
-    print(f"✅ Planning complete: {num_actions} action(s) proposed")
+    log.info(f"✅ Planning complete: {num_actions} action(s) proposed")
     
     return {
         "status": "success",
@@ -1172,11 +1149,11 @@ async def research_and_plan(action_text: str, initial_context: str = "") -> Dict
 
 async def rebuild_tool_cache():
     """Rebuild the tool embedding cache. Run when adding new tools."""
-    print("🔄 Rebuilding tool cache...")
+    log.info("🔄 Rebuilding tool cache...")
     client, tools, resources = await get_mcp_client()
     tool_router._initialized = False  # Force re-initialization
     tool_router.initialize(tools, resources)
-    print("✅ Tool cache rebuilt successfully!")
+    log.info("✅ Tool cache rebuilt successfully!")
 
 
 async def health_check():
@@ -1196,11 +1173,11 @@ async def health_check():
         result["resources_count"] = len(resources)
         result["tool_names"] = [t.name for t in tools]
         result["resource_names"] = [r.name for r in resources]
-        print(f"✅ MCP health check passed: {len(tools)} tools, {len(resources)} resources")
+        log.info(f"✅ MCP health check passed: {len(tools)} tools, {len(resources)} resources")
     except Exception as e:
         result["mcp_status"] = "unhealthy"
         result["mcp_error"] = str(e)
-        print(f"❌ MCP health check failed: {e}")
+        log.error(f"❌ MCP health check failed: {e}")
     
     # Check Gateway
     try:
@@ -1208,15 +1185,15 @@ async def health_check():
         gateway_health = gateway.health()
         result["gateway_status"] = gateway_health.get("status", "unknown")
         result["gateway_model"] = gateway_health.get("default_model", "unknown")
-        print(f"✅ Gateway health check passed: {result['gateway_model']}")
+        log.info(f"✅ Gateway health check passed: {result['gateway_model']}")
     except GatewayError as e:
         result["gateway_status"] = "unhealthy"
         result["gateway_error"] = str(e)
-        print(f"❌ Gateway health check failed: {e}")
+        log.error(f"❌ Gateway health check failed: {e}")
     except Exception as e:
         result["gateway_status"] = "unhealthy"
         result["gateway_error"] = str(e)
-        print(f"❌ Gateway health check failed: {e}")
+        log.error(f"❌ Gateway health check failed: {e}")
     
     # Overall status
     if result["mcp_status"] == "healthy" and result["gateway_status"] == "healthy":
@@ -1244,46 +1221,46 @@ async def main():
     - We're working on Q1 roadmap
     """
     
-    print("=" * 60)
-    print("PHASE 0: RESEARCH (Context Gathering)")
-    print("=" * 60)
+    log.info("=" * 60)
+    log.info("PHASE 0: RESEARCH (Context Gathering)")
+    log.info("=" * 60)
     
     # Phase 0: Gather context by reading relevant resources
     research_result = await gather_context(action_text, initial_context)
     
     if research_result["status"] == "error":
-        print(f"⚠️ Research had issues: {research_result['error']}")
+        log.warning(f"⚠️ Research had issues: {research_result['error']}")
         # Continue anyway with whatever context we have
     
-    print(f"\n📚 Resources read: {research_result['resources_read']}")
-    print(f"   Context length: {len(research_result['context'])} chars")
+    log.info(f"\n📚 Resources read: {research_result['resources_read']}")
+    log.info(f"   Context length: {len(research_result['context'])} chars")
     
-    print("\n" + "=" * 60)
-    print("PHASE 1: PLANNING")
-    print("=" * 60)
+    log.info("\n" + "=" * 60)
+    log.info("PHASE 1: PLANNING")
+    log.info("=" * 60)
     
     # Phase 1: Plan the action(s) using gathered context
     plan_result = await plan_action(action_text, research_result["context"])
     
     if plan_result["status"] == "error":
-        print(f"❌ Planning failed: {plan_result['error']}")
+        log.error(f"❌ Planning failed: {plan_result['error']}")
         return
     
     proposed_actions = plan_result["proposed_actions"]
     is_multi = plan_result.get("is_multi_action", False)
     
-    print(f"\n📋 Proposed Actions ({len(proposed_actions)} action(s), multi={is_multi}):")
+    log.info(f"\n📋 Proposed Actions ({len(proposed_actions)} action(s), multi={is_multi}):")
     for action in proposed_actions:
-        print(f"\n   Step {action['step_id']}: {action['tool_name']}")
-        print(f"   Parameters: {json.dumps(action['parameters'], indent=4)}")
-        print(f"   Reasoning: {action['reasoning']}")
+        log.info(f"\n   Step {action['step_id']}: {action['tool_name']}")
+        log.info(f"   Parameters: {json.dumps(action['parameters'], indent=4)}")
+        log.info(f"   Reasoning: {action['reasoning']}")
     
-    print("\n" + "=" * 60)
-    print("PHASE 2: EXECUTION (simulated approval)")
-    print("=" * 60)
+    log.info("\n" + "=" * 60)
+    log.info("PHASE 2: EXECUTION (simulated approval)")
+    log.info("=" * 60)
     
     # In real app, we'd wait for user approval here
-    print("⏸️  [In real app: User reviews and approves/edits parameters here]")
+    log.info("⏸️  [In real app: User reviews and approves/edits parameters here]")
     
     # Phase 2: Execute the action(s)
     if len(proposed_actions) == 1:
@@ -1292,26 +1269,26 @@ async def main():
         exec_result = await execute_action(action['tool_name'], action['parameters'])
         
         if exec_result["status"] == "error":
-            print(f"❌ Execution failed: {exec_result['error']}")
+            log.error(f"❌ Execution failed: {exec_result['error']}")
             return
         
-        print(f"\n✅ Action executed successfully!")
-        print(f"   Result: {exec_result['result']}")
+        log.info(f"\n✅ Action executed successfully!")
+        log.info(f"   Result: {exec_result['result']}")
     else:
         # Multi-action chain
         chain_result = await execute_action_chain(proposed_actions)
         
-        print(f"\n📊 Chain execution complete:")
-        print(f"   Status: {chain_result['status']}")
-        print(f"   Summary: {chain_result['summary']['succeeded']}/{chain_result['summary']['total']} succeeded")
+        log.info(f"\n📊 Chain execution complete:")
+        log.info(f"   Status: {chain_result['status']}")
+        log.info(f"   Summary: {chain_result['summary']['succeeded']}/{chain_result['summary']['total']} succeeded")
         
         for result in chain_result['results']:
             status_icon = "✅" if result['status'] == "success" else "❌"
-            print(f"\n   {status_icon} Step {result['step_id']} ({result['tool_name']}): {result['status']}")
+            log.info(f"\n   {status_icon} Step {result['step_id']} ({result['tool_name']}): {result['status']}")
             if result['status'] == 'success':
-                print(f"      Result: {str(result.get('result', ''))[:100]}...")
+                log.info(f"      Result: {str(result.get('result', ''))[:100]}...")
             else:
-                print(f"      Error: {result.get('error', 'Unknown')}")
+                log.info(f"      Error: {result.get('error', 'Unknown')}")
 
 
 if __name__ == "__main__":
@@ -1324,9 +1301,9 @@ if __name__ == "__main__":
             asyncio.run(rebuild_tool_cache())
         elif command == "--health":
             result = asyncio.run(health_check())
-            print(result)
+            log.info(str(result))
         elif command == "--help":
-            print("""
+            log.info("""
 Usage: python action_executor.py [command]
 
 Commands:
@@ -1336,7 +1313,7 @@ Commands:
   --help      Show this help message
             """)
         else:
-            print(f"Unknown command: {command}")
-            print("Use --help for usage information")
+            log.error(f"Unknown command: {command}")
+            log.info("Use --help for usage information")
     else:
         asyncio.run(main())

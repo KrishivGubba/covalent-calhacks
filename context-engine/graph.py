@@ -3,9 +3,15 @@ import json
 import uuid
 import sys
 import asyncio
+from pathlib import Path
 from datetime import datetime
 from typing import Tuple, List, Optional
 from dotenv import load_dotenv
+
+_project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 from graph_dao import GraphDAO, TestGraphDAO
@@ -57,15 +63,15 @@ class Tree:
         try:
             self.config = GraphConfig(config_path)
         except Exception as e:
-            print(f"Warning: Failed to initialize GraphConfig: {e}")
+            log.warning(f"Warning: Failed to initialize GraphConfig: {e}")
             self.config = None
 
         # Initialize model factory with configuration
         try:
             self.model_factory = ModelFactory(config_path)
         except Exception as e:
-            print(f"Warning: Failed to initialize model factory: {e}")
-            print("Models will not be available for this session.")
+            log.warning(f"Warning: Failed to initialize model factory: {e}")
+            log.warning("Models will not be available for this session.")
             self.model_factory = None
         
         # Initialize each model independently
@@ -80,32 +86,32 @@ class Tree:
             try:
                 self.embedding_model = self.model_factory.get_embedding_model("embedding")
             except Exception as e:
-                print(f"Warning: Failed to initialize embedding model: {e}")
+                log.warning(f"Warning: Failed to initialize embedding model: {e}")
 
             try:
                 self.traversal_model = self.model_factory.get_chat_model("traversal")
             except Exception as e:
-                print(f"Warning: Failed to initialize traversal model: {e}")
+                log.warning(f"Warning: Failed to initialize traversal model: {e}")
 
             try:
                 self.action_model = self.model_factory.get_chat_model("action_creation")
             except Exception as e:
-                print(f"Warning: Failed to initialize action model: {e}")
+                log.warning(f"Warning: Failed to initialize action model: {e}")
 
             try:
                 self.condensation_model = self.model_factory.get_chat_model("data_condensation")
             except Exception as e:
-                print(f"Warning: Failed to initialize condensation model: {e}")
+                log.warning(f"Warning: Failed to initialize condensation model: {e}")
 
             try:
                 self.fit_validation_model = self.model_factory.get_chat_model("fit_validation")
             except Exception as e:
-                print(f"Warning: Failed to initialize fit validation model: {e}")
+                log.warning(f"Warning: Failed to initialize fit validation model: {e}")
 
             try:
                 self.graph_operations_model = self.model_factory.get_chat_model("graph_operations")
             except Exception as e:
-                print(f"Warning: Failed to initialize graph operations model: {e}")
+                log.warning(f"Warning: Failed to initialize graph operations model: {e}")
 
         self.construct_graph(self.dao.get_all_nodes())
 
@@ -176,7 +182,7 @@ class Tree:
         # Get the action from the database
         action_data = self.dao.get_action_by_id(action_uuid)
         if not action_data:
-            print(f"Error: Action with UUID {action_uuid} not found")
+            log.error(f"Error: Action with UUID {action_uuid} not found")
             return None, None
         
         # Unpack - action_prompt is deprecated but may still exist in DB during transition
@@ -194,9 +200,9 @@ class Tree:
         # Use action_plan as the action text (contains full context for execution)
         action_text = effective_action_plan if effective_action_plan else effective_action_name
         
-        print(f"Found action: {effective_action_name}")
-        print(f"Action plan: {action_text[:200]}..." if len(action_text) > 200 else f"Action plan: {action_text}")
-        print(f"Associated with node UUID: {node_uuid}")
+        log.info(f"Found action: {effective_action_name}")
+        log.info(f"Action plan: {action_text[:200]}..." if len(action_text) > 200 else f"Action plan: {action_text}")
+        log.info(f"Associated with node UUID: {node_uuid}")
         
         # Collect all data into a list to be concatenated later
         data_parts = []
@@ -248,13 +254,13 @@ class Tree:
         # Concatenate all parts into a single string
         collected_data_string = "".join(data_parts)
         
-        print(f"\n{'='*60}")
-        print(f"Collected context data (first 1000 chars):")
-        print(collected_data_string[:1000])
+        log.debug(f"\n{'='*60}")
+        log.debug(f"Collected context data (first 1000 chars):")
+        log.debug(collected_data_string[:1000])
         if len(collected_data_string) > 1000:
-            print("...")
-        print(f"Total data length: {len(collected_data_string)} characters")
-        print(f"{'='*60}\n")
+            log.debug("...")
+        log.debug(f"Total data length: {len(collected_data_string)} characters")
+        log.debug(f"{'='*60}\n")
         
         return action_text, collected_data_string
 
@@ -278,7 +284,7 @@ class Tree:
         try:
             return self.embedding_model.embed(text)
         except Exception as e:
-            print(f"Error vectorizing text: {e}")
+            log.error(f"Error vectorizing text: {e}")
             return None
 
     def get_parent_metadata(self, node):
@@ -364,7 +370,7 @@ class Tree:
             # but the actual child objects are linked via parent relationships above
         # Third pass: Generate embeddings for all nodes
 
-        print("NODES:", self.nodes)
+        log.debug("NODES: " + str(self.nodes))
         for node_uuid, node in self.nodes.items():
             metadata_chain = self.get_parent_metadata(node)
             #print("Metadata chain for node", node_uuid, ":", metadata_chain)
@@ -390,7 +396,7 @@ class Tree:
         # Vectorize the screen input
         screen_embedding = self.vectorize_text(screen)
         if screen_embedding is None:
-            print("Warning: Could not vectorize screen input")
+            log.warning("Warning: Could not vectorize screen input")
             return self.root if curr is None else curr
         
         # Find the node with highest cosine similarity
@@ -410,17 +416,17 @@ class Tree:
                         best_node = node
                         
                 except Exception as e:
-                    print(f"Error calculating similarity for node {node_uuid}: {e}")
+                    log.error(f"Error calculating similarity for node {node_uuid}: {e}")
                     continue
         
-        print(f"🔍 traverse() - Screen input: '{screen[:100]}...'")
-        print(f"🔍 traverse() - Top 5 similarity scores:")
+        log.debug(f"🔍 traverse() - Screen input: '{screen[:100]}...'")
+        log.debug(f"🔍 traverse() - Top 5 similarity scores:")
         sorted_scores = sorted(similarity_scores.items(), key=lambda x: x[1], reverse=True)[:5]
         for node_name, score in sorted_scores:
-            print(f"   - {node_name}: {score:.4f}")
+            log.debug(f"   - {node_name}: {score:.4f}")
         
         if best_node is None:
-            print("No suitable node found, returning root")
+            log.debug("No suitable node found, returning root")
             return self.root if curr is None else curr
         # sanity check the best node by passing the screen and best_node's metadata to the model
         # if the model agrees, return best_node, else start manual traversal algorithm
@@ -456,18 +462,18 @@ class Tree:
         """
         # Handle edge cases
         if not summary or not summary.strip():
-            print("⚠️ traverse_with_confidence() - Empty or None summary provided")
+            log.warning("⚠️ traverse_with_confidence() - Empty or None summary provided")
             return (self.root, 0.0, [])
 
         # Handle empty graph (only root or no nodes)
         if not self.nodes or len(self.nodes) == 0:
-            print("⚠️ traverse_with_confidence() - Empty graph")
+            log.warning("⚠️ traverse_with_confidence() - Empty graph")
             return (self.root, 0.0, [(self.root, 0.0)] if self.root else [])
 
         # Vectorize the input summary
         summary_embedding = self.vectorize_text(summary)
         if summary_embedding is None:
-            print("⚠️ traverse_with_confidence() - Vectorization failed")
+            log.warning("⚠️ traverse_with_confidence() - Vectorization failed")
             return (self.root, 0.0, [])
 
         # Calculate cosine similarity against ALL nodes
@@ -482,12 +488,12 @@ class Tree:
                     similarity = max(0.0, min(1.0, float(similarity)))
                     scores.append((node, similarity))
                 except Exception as e:
-                    print(f"Error calculating similarity for node {node_uuid}: {e}")
+                    log.error(f"Error calculating similarity for node {node_uuid}: {e}")
                     continue
 
         # Handle case where no valid scores were computed
         if not scores:
-            print("⚠️ traverse_with_confidence() - No valid similarity scores computed")
+            log.warning("⚠️ traverse_with_confidence() - No valid similarity scores computed")
             return (self.root, 0.0, [(self.root, 0.0)] if self.root else [])
 
         # Sort all scores descending
@@ -501,21 +507,21 @@ class Tree:
 
         # Log results
         summary_preview = summary[:100] + "..." if len(summary) > 100 else summary
-        print(f"\n🎯 traverse_with_confidence() - Summary: '{summary_preview}'")
-        print(f"🎯 Top 5 matches:")
+        log.debug(f"\n🎯 traverse_with_confidence() - Summary: '{summary_preview}'")
+        log.debug(f"🎯 Top 5 matches:")
         for i, (node, score) in enumerate(top_scores, 1):
             path = self._get_node_path(node)
-            print(f"   {i}. {node.metadata} (path: {path}) - Score: {score:.4f}")
-        print(f"🎯 Selected: {best_node.metadata} with confidence {confidence:.4f}")
+            log.debug(f"   {i}. {node.metadata} (path: {path}) - Score: {score:.4f}")
+        log.debug(f"🎯 Selected: {best_node.metadata} with confidence {confidence:.4f}")
 
         # Log threshold analysis if config is available
         if self.config:
             if self.config.should_insert_directly(confidence):
-                print(f"   → Confidence >= {self.config.get_threshold('perfect_fit'):.2f}: Insert directly (no LLM validation)")
+                log.debug(f"   → Confidence >= {self.config.get_threshold('perfect_fit'):.2f}: Insert directly (no LLM validation)")
             elif self.config.should_validate_with_llm(confidence):
-                print(f"   → Confidence >= {self.config.get_threshold('uncertain'):.2f}: Validate with LLM")
+                log.debug(f"   → Confidence >= {self.config.get_threshold('uncertain'):.2f}: Validate with LLM")
             else:
-                print(f"   → Confidence < {self.config.get_threshold('uncertain'):.2f}: May need restructure")
+                log.debug(f"   → Confidence < {self.config.get_threshold('uncertain'):.2f}: May need restructure")
 
         return (best_node, confidence, top_scores)
 
@@ -678,7 +684,7 @@ class Tree:
         try:
             data_by_category = self.dao.get_data_for_node_by_category(node.node_uuid)
         except Exception as e:
-            print(f"Error getting data for node {node.node_uuid}: {e}")
+            log.error(f"Error getting data for node {node.node_uuid}: {e}")
             return "Error retrieving data."
 
         if not data_by_category:
@@ -737,7 +743,7 @@ class Tree:
 
         # Check if fit validation model is available
         if not self.fit_validation_model:
-            print("⚠️ _llm_validate_fit: Fit validation model not available, defaulting to fit")
+            log.warning("⚠️ _llm_validate_fit: Fit validation model not available, defaulting to fit")
             return {
                 "fits": True,
                 "reasoning": "No LLM available - defaulting to fit",
@@ -795,14 +801,14 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
 """
 
             # Call the LLM
-            print(f"🤖 _llm_validate_fit: Calling fit validation model for node '{node.metadata}'")
+            log.debug(f"🤖 _llm_validate_fit: Calling fit validation model for node '{node.metadata}'")
             response = self.fit_validation_model.generate(prompt)
 
             # Parse the response
             return self._parse_validate_fit_response(response)
 
         except Exception as e:
-            print(f"❌ _llm_validate_fit: Error during validation: {e}")
+            log.error(f"❌ _llm_validate_fit: Error during validation: {e}")
             import traceback
             traceback.print_exc()
             return default_response
@@ -836,15 +842,15 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
                 if json_match:
                     json_str = json_match.group(0)
                 else:
-                    print(f"⚠️ _parse_validate_fit_response: Could not find JSON in response")
-                    print(f"   Response preview: {response_text[:200]}...")
+                    log.warning(f"⚠️ _parse_validate_fit_response: Could not find JSON in response")
+                    log.warning(f"   Response preview: {response_text[:200]}...")
                     return default_response
 
             parsed = json.loads(json_str)
 
             # Validate required fields
             if "fits" not in parsed:
-                print("⚠️ _parse_validate_fit_response: Missing 'fits' field")
+                log.warning("⚠️ _parse_validate_fit_response: Missing 'fits' field")
                 return default_response
 
             # Ensure correct types
@@ -854,17 +860,17 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
                 "suggested_category": str(parsed.get("suggested_category", "general"))
             }
 
-            print(f"✅ _llm_validate_fit result: fits={result['fits']}, category='{result['suggested_category']}'")
-            print(f"   Reasoning: {result['reasoning'][:100]}...")
+            log.debug(f"✅ _llm_validate_fit result: fits={result['fits']}, category='{result['suggested_category']}'")
+            log.debug(f"   Reasoning: {result['reasoning'][:100]}...")
 
             return result
 
         except json.JSONDecodeError as e:
-            print(f"⚠️ _parse_validate_fit_response: JSON decode error: {e}")
-            print(f"   Response preview: {response_text[:200]}...")
+            log.warning(f"⚠️ _parse_validate_fit_response: JSON decode error: {e}")
+            log.warning(f"   Response preview: {response_text[:200]}...")
             return default_response
         except Exception as e:
-            print(f"⚠️ _parse_validate_fit_response: Unexpected error: {e}")
+            log.warning(f"⚠️ _parse_validate_fit_response: Unexpected error: {e}")
             return default_response
 
     def _get_siblings(self, node: 'Node') -> List['Node']:
@@ -892,7 +898,7 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
 
             return siblings
         except Exception as e:
-            print(f"Error getting siblings for node {node.node_uuid}: {e}")
+            log.error(f"Error getting siblings for node {node.node_uuid}: {e}")
             return []
 
     def _llm_decide_structure(self, node: 'Node', summary: str, top_scores: List[Tuple['Node', float]]) -> list:
@@ -930,7 +936,7 @@ OUTPUT FORMAT - Return ONLY valid JSON with NO markdown formatting:
 
         # Check if graph operations model is available
         if not self.graph_operations_model:
-            print("⚠️ _llm_decide_structure: Graph operations model not available, defaulting to insert")
+            log.warning("⚠️ _llm_decide_structure: Graph operations model not available, defaulting to insert")
             return [{
                 "type": "insert_anyway",
                 "reasoning": "No LLM available - defaulting to insert",
@@ -1130,16 +1136,16 @@ IMPORTANT:
 """
 
             # Call the LLM
-            print(f"🏗️ _llm_decide_structure: Calling graph operations model")
-            print(f"   Best-match node: '{node.metadata}' (UUID: {node.node_uuid[:8]}...)")
-            print(f"   Total nodes in graph: {len(self.nodes)}")
+            log.debug(f"🏗️ _llm_decide_structure: Calling graph operations model")
+            log.debug(f"   Best-match node: '{node.metadata}' (UUID: {node.node_uuid[:8]}...)")
+            log.debug(f"   Total nodes in graph: {len(self.nodes)}")
             response = self.graph_operations_model.generate(prompt)
 
             # Parse and validate the response
             return self._parse_structure_decision_response(response, current_depth, max_depth)
 
         except Exception as e:
-            print(f"❌ _llm_decide_structure: Error during structure decision: {e}")
+            log.error(f"❌ _llm_decide_structure: Error during structure decision: {e}")
             import traceback
             traceback.print_exc()
             return default_response
@@ -1194,8 +1200,8 @@ IMPORTANT:
                 if start_idx is not None and end_idx is not None:
                     json_str = response_text[start_idx:end_idx]
                 else:
-                    print(f"⚠️ _parse_structure_decision_response: Could not find JSON in response")
-                    print(f"   Response preview: {response_text[:300]}...")
+                    log.warning(f"⚠️ _parse_structure_decision_response: Could not find JSON in response")
+                    log.warning(f"   Response preview: {response_text[:300]}...")
                     return default_response
 
             parsed = json.loads(json_str)
@@ -1207,13 +1213,13 @@ IMPORTANT:
                 # New format: multiple operations
                 operations_list = parsed["operations"]
                 if not isinstance(operations_list, list) or len(operations_list) == 0:
-                    print(f"⚠️ _parse_structure_decision_response: Invalid operations list")
+                    log.warning(f"⚠️ _parse_structure_decision_response: Invalid operations list")
                     return default_response
             elif "type" in parsed:
                 # Legacy format: single operation
                 operations_list = [parsed]
             else:
-                print(f"⚠️ _parse_structure_decision_response: Response has neither 'operations' nor 'type'")
+                log.warning(f"⚠️ _parse_structure_decision_response: Response has neither 'operations' nor 'type'")
                 return default_response
 
             # Validate and process each operation
@@ -1224,7 +1230,7 @@ IMPORTANT:
                 
                 # Validate type
                 if operation_type not in valid_types:
-                    print(f"⚠️ _parse_structure_decision_response: Invalid type '{operation_type}' in operation {idx}")
+                    log.warning(f"⚠️ _parse_structure_decision_response: Invalid type '{operation_type}' in operation {idx}")
                     continue
 
                 # Get target_ref (defaults to "current")
@@ -1239,8 +1245,8 @@ IMPORTANT:
                 if target_node_uuid:
                     is_valid, error_msg = self._validate_node_uuid(target_node_uuid)
                     if not is_valid:
-                        print(f"⚠️ Operation {idx}: Invalid target_node_uuid '{target_node_uuid}': {error_msg}")
-                        print(f"   Falling back to target_ref='{target_ref}'")
+                        log.warning(f"⚠️ Operation {idx}: Invalid target_node_uuid '{target_node_uuid}': {error_msg}")
+                        log.warning(f"   Falling back to target_ref='{target_ref}'")
                         target_node_uuid = None  # Fall back to target_ref
 
                 # Enforce max_depth constraint for CREATE_CHILD
@@ -1251,11 +1257,11 @@ IMPORTANT:
                     try:
                         target_depth = self.dao.get_node_depth(target_node_uuid)
                     except:
-                        print(f"⚠️ Operation {idx}: Could not get depth for target node, using current depth")
+                        log.warning(f"⚠️ Operation {idx}: Could not get depth for target node, using current depth")
                 
                 if operation_type == "create_child" and target_depth >= max_depth:
                     target_info = f"UUID: {target_node_uuid[:8]}..." if target_node_uuid else f"ref: {target_ref}"
-                    print(f"⚠️ Operation {idx}: CREATE_CHILD not allowed at max depth for target ({target_info}), converting to INSERT_ANYWAY")
+                    log.warning(f"⚠️ Operation {idx}: CREATE_CHILD not allowed at max depth for target ({target_info}), converting to INSERT_ANYWAY")
                     validated_operations.append({
                         "type": "insert_anyway",
                         "reasoning": f"CREATE_CHILD requested but target node is at max depth ({target_depth}/{max_depth}). Inserting anyway.",
@@ -1270,31 +1276,31 @@ IMPORTANT:
                 new_node_metadata = operation.get("new_node_metadata")
                 if operation_type in ["create_child", "create_sibling"]:
                     if not new_node_metadata or not isinstance(new_node_metadata, str):
-                        print(f"⚠️ Operation {idx}: Missing new_node_metadata for {operation_type}")
+                        log.warning(f"⚠️ Operation {idx}: Missing new_node_metadata for {operation_type}")
                         continue
 
                 # Validate split_plan for split operations
                 split_plan = operation.get("split_plan")
                 if operation_type == "split":
                     if not split_plan or not isinstance(split_plan, dict):
-                        print(f"⚠️ Operation {idx}: Missing split_plan for split operation")
+                        log.warning(f"⚠️ Operation {idx}: Missing split_plan for split operation")
                         continue
 
                     new_children = split_plan.get("new_children", [])
                     if not new_children or len(new_children) < 2:
-                        print(f"⚠️ Operation {idx}: split_plan must have at least 2 children")
+                        log.warning(f"⚠️ Operation {idx}: split_plan must have at least 2 children")
                         continue
 
                     new_data_goes_to = split_plan.get("new_data_goes_to")
                     if not new_data_goes_to:
-                        print(f"⚠️ Operation {idx}: split_plan missing new_data_goes_to")
+                        log.warning(f"⚠️ Operation {idx}: split_plan missing new_data_goes_to")
                         continue
 
                     # Validate each child in the plan
                     valid_children = True
                     for child in new_children:
                         if not isinstance(child, dict) or "metadata" not in child:
-                            print(f"⚠️ Operation {idx}: Invalid child in split_plan")
+                            log.warning(f"⚠️ Operation {idx}: Invalid child in split_plan")
                             valid_children = False
                             break
                     
@@ -1313,11 +1319,11 @@ IMPORTANT:
 
             # If no valid operations, return default
             if not validated_operations:
-                print(f"⚠️ _parse_structure_decision_response: No valid operations found")
+                log.warning(f"⚠️ _parse_structure_decision_response: No valid operations found")
                 return default_response
 
             # Print summary
-            print(f"✅ _llm_decide_structure parsed {len(validated_operations)} operation(s):")
+            log.debug(f"✅ _llm_decide_structure parsed {len(validated_operations)} operation(s):")
             for idx, op in enumerate(validated_operations):
                 target_info = ""
                 if op.get('target_node_uuid'):
@@ -1327,19 +1333,19 @@ IMPORTANT:
                     target_info = f"UUID: {op['target_node_uuid'][:8]}... ({node_name})"
                 else:
                     target_info = f"ref: {op['target_ref']}"
-                print(f"   Op {idx + 1}: {op['type']} (target: {target_info})")
+                log.debug(f"   Op {idx + 1}: {op['type']} (target: {target_info})")
                 if op['new_node_metadata']:
-                    print(f"         New node: {op['new_node_metadata']}")
-                print(f"         Reasoning: {op['reasoning'][:80]}...")
+                    log.debug(f"         New node: {op['new_node_metadata']}")
+                log.debug(f"         Reasoning: {op['reasoning'][:80]}...")
 
             return validated_operations
 
         except json.JSONDecodeError as e:
-            print(f"⚠️ _parse_structure_decision_response: JSON decode error: {e}")
-            print(f"   Response preview: {response_text[:300]}...")
+            log.warning(f"⚠️ _parse_structure_decision_response: JSON decode error: {e}")
+            log.warning(f"   Response preview: {response_text[:300]}...")
             return default_response
         except Exception as e:
-            print(f"⚠️ _parse_structure_decision_response: Unexpected error: {e}")
+            log.warning(f"⚠️ _parse_structure_decision_response: Unexpected error: {e}")
             return default_response
 
     # ==================== NODE CREATION METHODS ====================
@@ -1359,9 +1365,9 @@ IMPORTANT:
             metadata_chain = self.get_parent_metadata(node)
             if metadata_chain:
                 node.embedding = self.vectorize_text(metadata_chain)
-                print(f"🔄 Refreshed embedding for node '{node.metadata}'")
+                log.debug(f"🔄 Refreshed embedding for node '{node.metadata}'")
         except Exception as e:
-            print(f"⚠️ Failed to refresh embedding for node {node.node_uuid}: {e}")
+            log.warning(f"⚠️ Failed to refresh embedding for node {node.node_uuid}: {e}")
 
     def _create_child_node(self, parent: 'Node', metadata: str, summary: str = None, data: str = None, available_mcps: list = None) -> 'Node':
         """
@@ -1393,7 +1399,7 @@ IMPORTANT:
         if current_depth >= max_depth:
             raise ValueError(f"Cannot create child: parent is at maximum depth ({current_depth}/{max_depth})")
 
-        print(f"🌱 Creating child node '{metadata}' under '{parent.metadata}'")
+        log.info(f"🌱 Creating child node '{metadata}' under '{parent.metadata}'")
 
         try:
             # Create node in database
@@ -1430,11 +1436,11 @@ IMPORTANT:
             # Generate embedding
             self._refresh_node_embedding(new_node)
 
-            print(f"✅ Created child node '{metadata}' with UUID: {new_uuid[:8]}...")
+            log.info(f"✅ Created child node '{metadata}' with UUID: {new_uuid[:8]}...")
 
             # Insert data if provided
             if summary and data:
-                print(f"📝 Inserting initial data into new node...")
+                log.info(f"📝 Inserting initial data into new node...")
                 # Use _learn_into_node for full action processing, or fall back to simple insert
                 if self.action_model:
                     self._learn_into_node(new_node, summary, data, available_mcps=available_mcps)
@@ -1445,7 +1451,7 @@ IMPORTANT:
             return new_node
 
         except Exception as e:
-            print(f"❌ Failed to create child node: {e}")
+            log.error(f"❌ Failed to create child node: {e}")
             import traceback
             traceback.print_exc()
             raise
@@ -1544,7 +1550,7 @@ IMPORTANT:
                         }]
                     
                 except Exception as e:
-                    print(f"⚠️ LLM parsing failed: {e}, using fallback")
+                    log.warning(f"⚠️ LLM parsing failed: {e}, using fallback")
                     # Fallback to single category
                     data_insertions = [{
                         "category": "general",
@@ -1560,7 +1566,7 @@ IMPORTANT:
                 }]
 
             # Process all data insertions
-            print(f"   → Processing {len(data_insertions)} data insertion(s)...")
+            log.info(f"   → Processing {len(data_insertions)} data insertion(s)...")
             
             for insertion in data_insertions:
                 category = insertion.get("category", "general")
@@ -1580,13 +1586,13 @@ IMPORTANT:
                 )
                 
                 new_indicator = " (new)" if is_new else ""
-                print(f"   → Inserted into category '{category}'{new_indicator}: {condensed_data[:100]}...")
+                log.info(f"   → Inserted into category '{category}'{new_indicator}: {condensed_data[:100]}...")
 
                 # Increment counter for each insertion
                 self.dao.increment_node_counter(node.node_uuid)
 
         except Exception as e:
-            print(f"⚠️ Failed to insert data: {e}")
+            log.error(f"⚠️ Failed to insert data: {e}")
             import traceback
             traceback.print_exc()
 
@@ -1615,10 +1621,10 @@ IMPORTANT:
 
         # If no parent (sibling_of is root), create as child of root instead
         if parent is None:
-            print(f"⚠️ Node '{sibling_of.metadata}' is root - creating as child of root instead")
+            log.warning(f"⚠️ Node '{sibling_of.metadata}' is root - creating as child of root instead")
             return self._create_child_node(sibling_of, metadata, summary, data, available_mcps)
 
-        print(f"🌿 Creating sibling node '{metadata}' next to '{sibling_of.metadata}'")
+        log.info(f"🌿 Creating sibling node '{metadata}' next to '{sibling_of.metadata}'")
 
         # Create as child of the parent
         return self._create_child_node(parent, metadata, summary, data, available_mcps)
@@ -1648,7 +1654,7 @@ IMPORTANT:
         if self.config and not self.config.is_bootstrap_enabled():
             raise ValueError("Bootstrap is disabled in configuration")
 
-        print(f"🚀 Bootstrapping first node from root...")
+        log.info(f"🚀 Bootstrapping first node from root...")
 
         # Build prompt to determine first category
         prompt = f"""{self.BASE_PROMPT}
@@ -1691,12 +1697,12 @@ Return ONLY a JSON object:
                     node_metadata = parsed.get("node_metadata", "General")
                     initial_category = parsed.get("initial_category", "general")
                     reasoning = parsed.get("reasoning", "")
-                    print(f"   LLM suggested: '{node_metadata}' - {reasoning[:100]}...")
+                    log.debug(f"   LLM suggested: '{node_metadata}' - {reasoning[:100]}...")
             except Exception as e:
-                print(f"⚠️ LLM bootstrap suggestion failed: {e}")
+                log.warning(f"⚠️ LLM bootstrap suggestion failed: {e}")
                 # Fall back to defaults
         else:
-            print("⚠️ No graph operations model available, using default category")
+            log.warning("⚠️ No graph operations model available, using default category")
 
         # Create the first child node
         new_node = self._create_child_node(
@@ -1707,7 +1713,7 @@ Return ONLY a JSON object:
             data=data
         )
 
-        print(f"✅ Bootstrapped first node: '{node_metadata}'")
+        log.info(f"✅ Bootstrapped first node: '{node_metadata}'")
 
         return new_node
 
@@ -1788,7 +1794,7 @@ Return ONLY a JSON object:
             inherits = child.get("inherits_categories", [])
             for cat in inherits:
                 if cat not in existing_categories:
-                    print(f"⚠️ Warning: Category '{cat}' in split plan does not exist in node (will be ignored)")
+                    log.warning(f"⚠️ Warning: Category '{cat}' in split plan does not exist in node (will be ignored)")
                 all_inherited_categories.add(cat)
 
         # Check for overlapping categories (warning only)
@@ -1798,14 +1804,14 @@ Return ONLY a JSON object:
             inherits = child.get("inherits_categories", [])
             for cat in inherits:
                 if cat in category_assignments:
-                    print(f"⚠️ Warning: Category '{cat}' is assigned to multiple children: '{category_assignments[cat]}' and '{child_name}'")
+                    log.warning(f"⚠️ Warning: Category '{cat}' is assigned to multiple children: '{category_assignments[cat]}' and '{child_name}'")
                 else:
                     category_assignments[cat] = child_name
 
         # Check for unassigned categories (warning only)
         unassigned = set(existing_categories) - all_inherited_categories
         if unassigned:
-            print(f"⚠️ Warning: Categories not assigned to any child (will stay on parent or go to first child): {unassigned}")
+            log.warning(f"⚠️ Warning: Categories not assigned to any child (will stay on parent or go to first child): {unassigned}")
 
         return (True, "")
 
@@ -1833,9 +1839,9 @@ Return ONLY a JSON object:
             ValueError: If split plan is invalid
             RuntimeError: If split operation fails
         """
-        print(f"\n{'='*60}")
-        print(f"SPLIT NODE - Splitting '{node.metadata}'")
-        print(f"{'='*60}")
+        log.info(f"\n{'='*60}")
+        log.info(f"SPLIT NODE - Splitting '{node.metadata}'")
+        log.info(f"{'='*60}")
 
         # 1. Validate the split plan
         is_valid, error_msg = self._validate_split_plan(node, split_plan)
@@ -1845,11 +1851,11 @@ Return ONLY a JSON object:
         new_children_plan = split_plan.get("new_children", [])
         new_data_goes_to = split_plan.get("new_data_goes_to")
 
-        print(f"📋 Split plan validated: {len(new_children_plan)} new children")
+        log.info(f"📋 Split plan validated: {len(new_children_plan)} new children")
         for child in new_children_plan:
-            print(f"   - {child['metadata']}: inherits {child.get('inherits_categories', [])}")
+            log.info(f"   - {child['metadata']}: inherits {child.get('inherits_categories', [])}")
         if new_data_goes_to:
-            print(f"   New data goes to: '{new_data_goes_to}'")
+            log.info(f"   New data goes to: '{new_data_goes_to}'")
 
         # 2. Get existing data before making changes
         try:
@@ -1859,16 +1865,16 @@ Return ONLY a JSON object:
 
         existing_categories = list(existing_data.keys()) if existing_data else []
         total_entries = sum(len(entries) for entries in existing_data.values()) if existing_data else 0
-        print(f"📊 Existing data: {total_entries} entries across {len(existing_categories)} categories")
+        log.info(f"📊 Existing data: {total_entries} entries across {len(existing_categories)} categories")
 
         # 3. Get existing actions (they stay on parent - children inherit them)
         try:
             existing_actions = self.dao.get_actions_for_node(node.node_uuid)
         except Exception as e:
-            print(f"⚠️ Warning: Failed to get existing actions: {e}")
+            log.warning(f"⚠️ Warning: Failed to get existing actions: {e}")
             existing_actions = []
 
-        print(f"📋 Existing actions: {len(existing_actions)} (will remain on parent)")
+        log.info(f"📋 Existing actions: {len(existing_actions)} (will remain on parent)")
 
         # 4. Create each new child node
         created_nodes = []
@@ -1877,18 +1883,18 @@ Return ONLY a JSON object:
         try:
             for child_plan in new_children_plan:
                 child_metadata = child_plan["metadata"]
-                print(f"\n🌱 Creating child node: '{child_metadata}'")
+                log.info(f"\n🌱 Creating child node: '{child_metadata}'")
 
                 # Create child without data - we'll move data after
                 new_node = self._create_child_node(node, child_metadata)
                 created_nodes.append(new_node)
                 name_to_node[child_metadata] = new_node
 
-                print(f"   ✅ Created with UUID: {new_node.node_uuid[:8]}...")
+                log.info(f"   ✅ Created with UUID: {new_node.node_uuid[:8]}...")
 
         except Exception as e:
             # Rollback: delete any created nodes
-            print(f"❌ Error creating child nodes: {e}")
+            log.error(f"❌ Error creating child nodes: {e}")
             for created_node in created_nodes:
                 try:
                     self.dao.delete_node(created_node.node_uuid, cascade=True)
@@ -1897,11 +1903,11 @@ Return ONLY a JSON object:
                     if created_node in node.children:
                         node.children.remove(created_node)
                 except Exception as del_e:
-                    print(f"   ⚠️ Failed to rollback node: {del_e}")
+                    log.warning(f"   ⚠️ Failed to rollback node: {del_e}")
             raise RuntimeError(f"Failed to create child nodes: {e}")
 
         # 5. Distribute data to children based on category assignments
-        print(f"\n📦 Distributing data to children...")
+        log.info(f"\n📦 Distributing data to children...")
 
         # Build category -> child mapping
         category_to_child = {}
@@ -1924,7 +1930,7 @@ Return ONLY a JSON object:
             if target_node is None:
                 # Category not assigned - move to first child
                 target_node = first_child
-                print(f"   ⚠️ Category '{category}' not assigned, moving to first child '{first_child.metadata if first_child else 'N/A'}'")
+                log.warning(f"   ⚠️ Category '{category}' not assigned, moving to first child '{first_child.metadata if first_child else 'N/A'}'")
 
             if target_node:
                 try:
@@ -1936,11 +1942,11 @@ Return ONLY a JSON object:
                     if count > 0:
                         entries_moved += count
                         categories_moved += 1
-                        print(f"   ✅ Moved {count} entries from category '{category}' to '{target_node.metadata}'")
+                        log.info(f"   ✅ Moved {count} entries from category '{category}' to '{target_node.metadata}'")
                 except Exception as e:
-                    print(f"   ⚠️ Failed to move category '{category}': {e}")
+                    log.warning(f"   ⚠️ Failed to move category '{category}': {e}")
 
-        print(f"📊 Moved {entries_moved} entries across {categories_moved} categories")
+        log.info(f"📊 Moved {entries_moved} entries across {categories_moved} categories")
 
         # 6. Insert new data if provided
         target_child = None
@@ -1950,12 +1956,12 @@ Return ONLY a JSON object:
             target_child = created_nodes[0]  # Default to first child
 
         if new_summary and new_data and target_child:
-            print(f"\n📝 Inserting new data into '{target_child.metadata}'...")
+            log.info(f"\n📝 Inserting new data into '{target_child.metadata}'...")
             try:
                 self._insert_data_to_node(target_child, new_summary, new_data)
-                print(f"   ✅ New data inserted")
+                log.info(f"   ✅ New data inserted")
             except Exception as e:
-                print(f"   ⚠️ Failed to insert new data: {e}")
+                log.warning(f"   ⚠️ Failed to insert new data: {e}")
 
         # 7. Clean up parent node
         # Data should now be moved - verify parent is empty
@@ -1963,27 +1969,27 @@ Return ONLY a JSON object:
         remaining_count = sum(len(entries) for entries in remaining_data.values()) if remaining_data else 0
 
         if remaining_count > 0:
-            print(f"\n⚠️ Parent node still has {remaining_count} data entries (unassigned categories)")
+            log.warning(f"\n⚠️ Parent node still has {remaining_count} data entries (unassigned categories)")
         else:
-            print(f"\n✅ Parent node '{node.metadata}' now has no data (organizational node)")
+            log.info(f"\n✅ Parent node '{node.metadata}' now has no data (organizational node)")
 
-        print(f"📋 Parent keeps {len(existing_actions)} actions (children inherit them)")
+        log.info(f"📋 Parent keeps {len(existing_actions)} actions (children inherit them)")
 
         # 8. Refresh embeddings for all new children
-        print(f"\n🔄 Refreshing embeddings...")
+        log.info(f"\n🔄 Refreshing embeddings...")
         for child_node in created_nodes:
             self._refresh_node_embedding(child_node)
 
         # Optionally refresh parent embedding too
         self._refresh_node_embedding(node)
 
-        print(f"\n{'='*60}")
-        print(f"SPLIT COMPLETE - Created {len(created_nodes)} children under '{node.metadata}'")
+        log.info(f"\n{'='*60}")
+        log.info(f"SPLIT COMPLETE - Created {len(created_nodes)} children under '{node.metadata}'")
         for child_node in created_nodes:
             child_data = self.dao.get_data_for_node_by_category(child_node.node_uuid)
             child_entries = sum(len(entries) for entries in child_data.values()) if child_data else 0
-            print(f"   - {child_node.metadata}: {child_entries} entries")
-        print(f"{'='*60}\n")
+            log.info(f"   - {child_node.metadata}: {child_entries} entries")
+        log.info(f"{'='*60}\n")
 
         return created_nodes
 
@@ -2014,19 +2020,19 @@ Return ONLY a JSON object:
                 "reasoning": str              # Why this operation was chosen
             }
         """
-        print(f"\n{'='*70}")
-        print("LEARN WITH STRUCTURE")
-        print(f"{'='*70}")
+        log.info(f"\n{'='*70}")
+        log.info("LEARN WITH STRUCTURE")
+        log.info(f"{'='*70}")
         summary_preview = summary[:100] + "..." if len(summary) > 100 else summary
-        print(f"📝 Summary: {summary_preview}")
-        print(f"📊 Data length: {len(data)} chars")
+        log.info(f"📝 Summary: {summary_preview}")
+        log.info(f"📊 Data length: {len(data)} chars")
 
         try:
             # ============================================================
             # 0. CREATE ROOT IF IT DOESN'T EXIST
             # ============================================================
             if self.root is None:
-                print("\n🌱 No root node found - creating root in database")
+                log.info("\n🌱 No root node found - creating root in database")
                 root_uuid = self.dao.create_node("Root", parent_uuid=None)
                 if not root_uuid:
                     raise RuntimeError("Failed to create root node in database")
@@ -2046,17 +2052,17 @@ Return ONLY a JSON object:
                     embedding=None
                 )
                 self.nodes[root_uuid] = self.root
-                print(f"✅ Created root node with UUID: {root_uuid[:8]}...")
+                log.info(f"✅ Created root node with UUID: {root_uuid[:8]}...")
             
             # ============================================================
             # 1. CHECK FOR EMPTY GRAPH (BOOTSTRAP CASE)
             # ============================================================
             if not self.root.children or len(self.root.children) == 0:
-                print("\n🚀 Empty graph detected - bootstrap case")
+                log.info("\n🚀 Empty graph detected - bootstrap case")
 
                 # Check if bootstrap is enabled
                 if self.config and not self.config.is_bootstrap_enabled():
-                    print("   Bootstrap disabled - inserting into root")
+                    log.info("   Bootstrap disabled - inserting into root")
                     recent_actions = self.learn(summary, data, available_mcps=available_mcps)
                     return {
                         "operation": "insert",
@@ -2070,7 +2076,7 @@ Return ONLY a JSON object:
                 # Bootstrap - create first node
                 new_node = self._bootstrap_first_node(summary, data, available_mcps)
                 recent_actions = self.dao.get_recent_actions_for_node(new_node.node_uuid, limit=4)
-                print(f"✅ Bootstrapped first node: '{new_node.metadata}'")
+                log.info(f"✅ Bootstrapped first node: '{new_node.metadata}'")
                 return {
                     "operation": "bootstrap",
                     "target_node": new_node,
@@ -2083,22 +2089,22 @@ Return ONLY a JSON object:
             # ============================================================
             # 2. TRAVERSE WITH CONFIDENCE
             # ============================================================
-            print("\n🔍 Traversing graph to find best match...")
+            log.info("\n🔍 Traversing graph to find best match...")
             best_node, confidence, top_scores = self.traverse_with_confidence(summary)
 
             if best_node is None:
-                print("⚠️ No matching node found, using root")
+                log.warning("⚠️ No matching node found, using root")
                 best_node = self.root
                 confidence = 0.0
 
-            print(f"   Best match: '{best_node.metadata}' with confidence {confidence:.4f}")
+            log.info(f"   Best match: '{best_node.metadata}' with confidence {confidence:.4f}")
 
             # ============================================================
             # 3. HIGH CONFIDENCE - DIRECT INSERT
             # ============================================================
             if self.config and self.config.should_insert_directly(confidence):
-                print(f"\n✅ HIGH CONFIDENCE ({confidence:.2f} >= {self.config.get_threshold('perfect_fit'):.2f})")
-                print("   → Inserting directly without LLM validation")
+                log.info(f"\n✅ HIGH CONFIDENCE ({confidence:.2f} >= {self.config.get_threshold('perfect_fit'):.2f})")
+                log.info("   → Inserting directly without LLM validation")
 
                 # Use existing learn() method which handles actions and data
                 recent_actions = self.learn(summary, data, available_mcps=available_mcps)
@@ -2115,13 +2121,13 @@ Return ONLY a JSON object:
             # 4. MEDIUM CONFIDENCE - LLM VALIDATES
             # ============================================================
             if self.config and self.config.should_validate_with_llm(confidence):
-                print(f"\n🤔 MEDIUM CONFIDENCE ({confidence:.2f})")
-                print(f"   → Validating fit with LLM...")
+                log.info(f"\n🤔 MEDIUM CONFIDENCE ({confidence:.2f})")
+                log.info(f"   → Validating fit with LLM...")
 
                 validation = self._llm_validate_fit(best_node, summary, top_scores)
 
                 if validation["fits"]:
-                    print(f"   ✅ LLM validated: {validation['reasoning'][:100]}...")
+                    log.info(f"   ✅ LLM validated: {validation['reasoning'][:100]}...")
                     recent_actions = self.learn(summary, data, available_mcps=available_mcps)
                     return {
                         "operation": "insert",
@@ -2132,20 +2138,20 @@ Return ONLY a JSON object:
                         "reasoning": f"LLM validated fit: {validation['reasoning']}"
                     }
                 else:
-                    print(f"   ❌ LLM rejected fit: {validation['reasoning'][:100]}...")
-                    print("   → Falling through to restructuring...")
+                    log.info(f"   ❌ LLM rejected fit: {validation['reasoning'][:100]}...")
+                    log.info("   → Falling through to restructuring...")
                     # Fall through to restructuring
 
             # ============================================================
             # 5. LOW CONFIDENCE OR VALIDATION FAILED - RESTRUCTURE
             # ============================================================
-            print(f"\n🏗️ LOW CONFIDENCE or validation failed")
-            print("   → Asking LLM for structural decision...")
+            log.info(f"\n🏗️ LOW CONFIDENCE or validation failed")
+            log.info("   → Asking LLM for structural decision...")
 
             operations = self._llm_decide_structure(best_node, summary, top_scores)
             
             # Execute operations sequentially
-            print(f"\n🔄 Executing {len(operations)} operation(s) in sequence...")
+            log.info(f"\n🔄 Executing {len(operations)} operation(s) in sequence...")
             
             # Track created nodes by operation reference (op1, op2, etc.)
             node_refs = {"current": best_node}
@@ -2167,8 +2173,8 @@ Return ONLY a JSON object:
                 else:
                     target_info = f"ref: {target_ref}"
                 
-                print(f"\n   [{idx + 1}/{len(operations)}] {operation_type.upper()} (target: {target_info})")
-                print(f"   Reasoning: {reasoning[:100]}...")
+                log.info(f"\n   [{idx + 1}/{len(operations)}] {operation_type.upper()} (target: {target_info})")
+                log.info(f"   Reasoning: {reasoning[:100]}...")
                 
                 # Resolve target node
                 # Priority: target_node_uuid > target_ref > best_node
@@ -2178,18 +2184,18 @@ Return ONLY a JSON object:
                     # LLM specified a specific node UUID
                     target_node = self._get_node_by_uuid(target_node_uuid)
                     if target_node:
-                        print(f"   📍 Resolved target by UUID: '{target_node.metadata}'")
+                        log.info(f"   📍 Resolved target by UUID: '{target_node.metadata}'")
                     else:
-                        print(f"   ⚠️ Invalid target_node_uuid '{target_node_uuid}', falling back to target_ref")
+                        log.warning(f"   ⚠️ Invalid target_node_uuid '{target_node_uuid}', falling back to target_ref")
                 
                 if target_node is None:
                     # Fall back to target_ref resolution
                     target_node = node_refs.get(target_ref, best_node)
                     if target_node is None:
-                        print(f"   ⚠️ Invalid target_ref '{target_ref}', using 'current' instead")
+                        log.warning(f"   ⚠️ Invalid target_ref '{target_ref}', using 'current' instead")
                         target_node = best_node
                     elif target_ref != "current":
-                        print(f"   📍 Resolved target by ref '{target_ref}': '{target_node.metadata}'")
+                        log.info(f"   📍 Resolved target by ref '{target_ref}': '{target_node.metadata}'")
                 
                 # Determine if this is the last operation (where we insert data)
                 is_last_operation = (idx == len(operations) - 1)
@@ -2203,7 +2209,7 @@ Return ONLY a JSON object:
                 # ---------------------------------------------------------
                 
                 if operation_type == "insert_anyway":
-                    print("   📥 INSERT ANYWAY")
+                    log.info("   📥 INSERT ANYWAY")
                     if is_last_operation:
                         self._learn_into_node(target_node, summary, data, available_mcps=available_mcps)
                     final_target_node = target_node
@@ -2213,7 +2219,7 @@ Return ONLY a JSON object:
                 # ---------------------------------------------------------
                 elif operation_type == "create_child":
                     new_metadata = decision.get("new_node_metadata", "New Category")
-                    print(f"   🌱 CREATE CHILD: '{new_metadata}' under '{target_node.metadata}'")
+                    log.info(f"   🌱 CREATE CHILD: '{new_metadata}' under '{target_node.metadata}'")
                     
                     new_node = self._create_child_node(
                         parent=target_node,
@@ -2227,14 +2233,14 @@ Return ONLY a JSON object:
                     node_refs[f"op{idx + 1}"] = new_node
                     all_new_nodes.append(new_node)
                     final_target_node = new_node
-                    print(f"   ✅ Created child node, stored as 'op{idx + 1}'")
+                    log.info(f"   ✅ Created child node, stored as 'op{idx + 1}'")
                 
                 # ---------------------------------------------------------
                 # CREATE SIBLING
                 # ---------------------------------------------------------
                 elif operation_type == "create_sibling":
                     new_metadata = decision.get("new_node_metadata", "New Category")
-                    print(f"   🌿 CREATE SIBLING: '{new_metadata}' next to '{target_node.metadata}'")
+                    log.info(f"   🌿 CREATE SIBLING: '{new_metadata}' next to '{target_node.metadata}'")
                     
                     new_node = self._create_sibling_node(
                         sibling_of=target_node,
@@ -2248,7 +2254,7 @@ Return ONLY a JSON object:
                     node_refs[f"op{idx + 1}"] = new_node
                     all_new_nodes.append(new_node)
                     final_target_node = new_node
-                    print(f"   ✅ Created sibling node, stored as 'op{idx + 1}'")
+                    log.info(f"   ✅ Created sibling node, stored as 'op{idx + 1}'")
                 
                 # ---------------------------------------------------------
                 # SPLIT
@@ -2256,10 +2262,10 @@ Return ONLY a JSON object:
                 elif operation_type == "split":
                     split_plan = decision.get("split_plan")
                     if not split_plan:
-                        print("   ⚠️ Split decision but no split_plan - skipping")
+                        log.warning("   ⚠️ Split decision but no split_plan - skipping")
                         continue
                     
-                    print(f"   ✂️ SPLIT '{target_node.metadata}' into {len(split_plan.get('new_children', []))} children")
+                    log.info(f"   ✂️ SPLIT '{target_node.metadata}' into {len(split_plan.get('new_children', []))} children")
                     
                     new_nodes = self._split_node(
                         node=target_node,
@@ -2285,13 +2291,13 @@ Return ONLY a JSON object:
                     node_refs[f"op{idx + 1}"] = target_for_data
                     all_new_nodes.extend(new_nodes)
                     final_target_node = target_for_data
-                    print(f"   ✅ Split completed, primary node stored as 'op{idx + 1}'")
+                    log.info(f"   ✅ Split completed, primary node stored as 'op{idx + 1}'")
                 
                 # ---------------------------------------------------------
                 # UNKNOWN OPERATION
                 # ---------------------------------------------------------
                 else:
-                    print(f"   ⚠️ Unknown operation type: {operation_type} - skipping")
+                    log.warning(f"   ⚠️ Unknown operation type: {operation_type} - skipping")
                     continue
             
             # After all operations complete, return result
@@ -2317,7 +2323,7 @@ Return ONLY a JSON object:
             # ============================================================
             # ERROR HANDLING - GRACEFUL FALLBACK
             # ============================================================
-            print(f"\n❌ ERROR in learn_with_structure: {e}")
+            log.error(f"\n❌ ERROR in learn_with_structure: {e}")
             import traceback
             traceback.print_exc()
 
@@ -2330,12 +2336,12 @@ Return ONLY a JSON object:
             except:
                 pass
 
-            print(f"🔄 Falling back to simple insert into '{fallback_node.metadata if fallback_node else 'root'}'")
+            log.warning(f"🔄 Falling back to simple insert into '{fallback_node.metadata if fallback_node else 'root'}'")
 
             try:
                 recent_actions = self.learn(summary, data, available_mcps=available_mcps)
             except Exception as learn_error:
-                print(f"❌ Fallback learn() also failed: {learn_error}")
+                log.error(f"❌ Fallback learn() also failed: {learn_error}")
                 recent_actions = []
 
             return {
@@ -2348,9 +2354,9 @@ Return ONLY a JSON object:
             }
 
         finally:
-            print(f"\n{'='*70}")
-            print("LEARN WITH STRUCTURE COMPLETE")
-            print(f"{'='*70}\n")
+            log.info(f"\n{'='*70}")
+            log.info("LEARN WITH STRUCTURE COMPLETE")
+            log.info(f"{'='*70}\n")
 
     def _generate_learning_prompt(self, node, summary, existing_actions, existing_categories, available_mcps=None):
         """
@@ -2366,13 +2372,7 @@ Return ONLY a JSON object:
         Returns:
             str: The prompt to send to the LLM
         """
-        # region agent log
-        import json
-        try:
-            with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"id":"log_entry","timestamp":__import__('time').time()*1000,"location":"graph.py:2167","message":"_generate_learning_prompt entry","data":{"num_actions":len(existing_actions) if existing_actions else 0,"first_action_length":len(existing_actions[0]) if existing_actions else None},"runId":"initial","hypothesisId":"A,B,C"}) + '\n')
-        except: pass
-        # endregion
+        
         # Get metadata chain for context
         metadata_chain = self.get_parent_metadata(node)
 
@@ -2381,21 +2381,10 @@ Return ONLY a JSON object:
         if existing_actions:
             actions_text = "EXISTING ACTIONS for this node:\n"
             for idx, action in enumerate(existing_actions, 1):
-                # region agent log
-                import json
-                try:
-                    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"id":f"log_before_{idx}","timestamp":__import__('time').time()*1000,"location":"graph.py:2195","message":"Action tuple before unpack","data":{"action_length":len(action),"action_content":str(action)[:200],"idx":idx},"runId":"fix","hypothesisId":"A,C"}) + '\n')
-                except: pass
-                # endregion
+                
                 # Unpack 5-tuple format (action_prompt removed from schema)
                 uuid, name, plan, node_uuid, last_selected = action
-                # region agent log
-                try:
-                    with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"id":f"log_after_{idx}","timestamp":__import__('time').time()*1000,"location":"graph.py:2203","message":"Action values after unpack","data":{"uuid":uuid,"name":name,"has_plan":plan is not None,"node_uuid":node_uuid,"last_selected":last_selected},"runId":"fix","hypothesisId":"A"}) + '\n')
-                except: pass
-                # endregion
+                
                 actions_text += f"{idx}. UUID: {uuid}\n"
                 actions_text += f"   Name: {name}\n"
                 actions_text += f"   Plan: {plan or 'N/A'}\n"
@@ -2564,7 +2553,7 @@ IMPORTANT:
         # Find the best node
         best_node = self.traverse(summary)
         if best_node is None:
-            print("Warning: Could not find suitable node, using root")
+            log.warning("Warning: Could not find suitable node, using root")
             best_node = self.root
 
         # Insert into that node
@@ -2591,7 +2580,7 @@ IMPORTANT:
                 if node is None:
                     node = self.root
 
-            print(f"📝 learn_simple: Inserting into '{node.metadata}'")
+            log.info(f"📝 learn_simple: Inserting into '{node.metadata}'")
 
             # Generate unique key
             timestamp_key = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
@@ -2609,11 +2598,11 @@ IMPORTANT:
             # Increment counter
             self.dao.increment_node_counter(node.node_uuid)
 
-            print(f"   ✅ Inserted into category '{category}'")
+            log.info(f"   ✅ Inserted into category '{category}'")
             return True
 
         except Exception as e:
-            print(f"❌ learn_simple error: {e}")
+            log.error(f"❌ learn_simple error: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -2639,41 +2628,35 @@ IMPORTANT:
         """
         try:
             if node is None:
-                print("Warning: Node is None, using root")
+                log.warning("Warning: Node is None, using root")
                 node = self.root
 
-            print(f"\n{'='*60}")
-            print(f"LEARN INTO NODE: {node.metadata} (UUID: {node.node_uuid})")
-            print(f"{'='*60}")
+            log.info(f"\n{'='*60}")
+            log.info(f"LEARN INTO NODE: {node.metadata} (UUID: {node.node_uuid})")
+            log.info(f"{'='*60}")
 
             # 2. Gather context
             existing_actions = self.dao.get_actions_for_node(node.node_uuid, order_by_last_selected=True)
             existing_categories = self.dao.get_categories_for_node(node.node_uuid)
 
-            # region agent log
-            import json
-            try:
-                with open('/Users/Patron/Desktop/covalent-calhacks/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"id":"log_dao_result","timestamp":__import__('time').time()*1000,"location":"graph.py:2460","message":"DAO get_actions_for_node result","data":{"num_actions":len(existing_actions),"first_action_tuple_length":len(existing_actions[0]) if existing_actions else None,"sample_action_types":[type(x).__name__ for x in existing_actions[0]] if existing_actions else None},"runId":"initial","hypothesisId":"B,C"}) + '\n')
-            except: pass
-            # endregion
+            
 
-            print(f"Existing actions: {len(existing_actions)}")
-            print(f"Existing categories: {existing_categories}")
+            log.info(f"Existing actions: {len(existing_actions)}")
+            log.info(f"Existing categories: {existing_categories}")
 
             # 3. Generate and send LLM prompt
             prompt = self._generate_learning_prompt(node, summary, existing_actions, existing_categories, available_mcps)
 
             if not self.action_model:
-                print("Error: Action model not initialized")
+                log.error("Error: Action model not initialized")
                 return []
             
             llm_response = self.action_model.generate(prompt)
 
-            print(f"\n{'='*60}")
-            print(f"Raw LLM Response:")
-            print(f"{llm_response[:500]}...")
-            print(f"{'='*60}\n")
+            log.debug(f"\n{'='*60}")
+            log.debug(f"Raw LLM Response:")
+            log.debug(f"{llm_response[:500]}...")
+            log.debug(f"{'='*60}\n")
 
             # Parse response
             parsed = self._parse_learning_response(llm_response)
@@ -2686,17 +2669,17 @@ IMPORTANT:
             selected_action_uuid = None
 
             if action_type == "create":
-                print(f"Creating new action: {action_decision['action_name']}")
+                log.info(f"Creating new action: {action_decision['action_name']}")
                 selected_action_uuid = self.dao.add_action(
                     node_uuid=node.node_uuid,
                     action_name=action_decision["action_name"],
                     action_plan=action_decision["action_plan"],
                     last_selected=current_timestamp
                 )
-                print(f"Created action UUID: {selected_action_uuid}")
+                log.info(f"Created action UUID: {selected_action_uuid}")
 
             elif action_type == "modify":
-                print(f"Modifying action: {action_decision['action_uuid']}")
+                log.info(f"Modifying action: {action_decision['action_uuid']}")
                 self.dao.update_action(
                     action_uuid=action_decision["action_uuid"],
                     action_name=action_decision["action_name"],
@@ -2704,17 +2687,17 @@ IMPORTANT:
                 )
                 self.dao.update_action_last_selected(action_decision["action_uuid"], current_timestamp)
                 selected_action_uuid = action_decision["action_uuid"]
-                print(f"Modified action UUID: {selected_action_uuid}")
+                log.info(f"Modified action UUID: {selected_action_uuid}")
 
             elif action_type == "select":
-                print(f"Selecting existing action: {action_decision['action_uuid']}")
+                log.info(f"Selecting existing action: {action_decision['action_uuid']}")
                 self.dao.update_action_last_selected(action_decision["action_uuid"], current_timestamp)
                 selected_action_uuid = action_decision["action_uuid"]
-                print(f"Selected action UUID: {selected_action_uuid}")
+                log.info(f"Selected action UUID: {selected_action_uuid}")
 
             # 5. Process data insertions
             data_insertions = parsed.get("data_insertions", [])
-            print(f"\nProcessing {len(data_insertions)} data insertions...")
+            log.info(f"\nProcessing {len(data_insertions)} data insertions...")
 
             for insertion in data_insertions:
                 category = insertion["category"]
@@ -2731,7 +2714,7 @@ IMPORTANT:
                     data_type="text",
                     info=condensed_data
                 )
-                print(f"  - Inserted into category '{category}': {condensed_data[:100]}...")
+                log.info(f"  - Inserted into category '{category}': {condensed_data[:100]}...")
 
                 # Increment node counter for each insertion
                 self.dao.increment_node_counter(node.node_uuid)
@@ -2739,16 +2722,16 @@ IMPORTANT:
             # 6. Cleanup stale actions
             deleted_count = self.dao.delete_stale_actions(node.node_uuid, days_threshold=3)
             if deleted_count > 0:
-                print(f"\nDeleted {deleted_count} stale actions (>3 days old)")
+                log.info(f"\nDeleted {deleted_count} stale actions (>3 days old)")
 
             # 7. Return recent actions
             recent_actions = self.dao.get_recent_actions_for_node(node.node_uuid, limit=4)
-            print(f"\nReturning {len(recent_actions)} recent actions")
+            log.info(f"\nReturning {len(recent_actions)} recent actions")
 
             return recent_actions
 
         except Exception as e:
-            print(f"Error in _learn_into_node(): {e}")
+            log.error(f"Error in _learn_into_node(): {e}")
             import traceback
             traceback.print_exc()
             # Return empty list on error - don't crash
@@ -2774,7 +2757,7 @@ IMPORTANT:
             model_factory = ModelFactory(config_path)
             condensation_model = model_factory.get_chat_model("data_condensation")
         except Exception as e:
-            print(f"Error: Failed to initialize condensation model: {e}")
+            log.error(f"Error: Failed to initialize condensation model: {e}")
             return False
 
         try:
@@ -2782,23 +2765,23 @@ IMPORTANT:
             data_by_category = dao.get_data_for_node_by_category(node_uuid)
 
             if not data_by_category:
-                print(f"No data to clean for node {node_uuid}")
+                log.info(f"No data to clean for node {node_uuid}")
                 return False
 
-            print(f"\n{'='*60}")
-            print(f"CLEANUP - Node UUID: {node_uuid}")
-            print(f"Categories to process: {list(data_by_category.keys())}")
-            print(f"{'='*60}")
+            log.info(f"\n{'='*60}")
+            log.info(f"CLEANUP - Node UUID: {node_uuid}")
+            log.info(f"Categories to process: {list(data_by_category.keys())}")
+            log.info(f"{'='*60}")
 
             all_succeeded = True
 
             for category, data_entries in data_by_category.items():
                 # Skip categories with only 1 entry - nothing to condense
                 if len(data_entries) <= 1:
-                    print(f"Skipping category '{category}' - only {len(data_entries)} entry")
+                    log.info(f"Skipping category '{category}' - only {len(data_entries)} entry")
                     continue
 
-                print(f"\nProcessing category '{category}' with {len(data_entries)} entries...")
+                log.info(f"\nProcessing category '{category}' with {len(data_entries)} entries...")
 
                 # Collect all data info from entries
                 data_texts = []
@@ -2834,13 +2817,13 @@ CONDENSED ENTRY:"""
                     # Call the configured model to condense the data
                     condensed_data = condensation_model.generate(condensation_prompt).strip()
 
-                    print(f"Original entries: {len(data_entries)}")
-                    print(f"Condensed to: {len(condensed_data)} chars")
-                    print(f"Preview: {condensed_data[:200]}...")
+                    log.info(f"Original entries: {len(data_entries)}")
+                    log.info(f"Condensed to: {len(condensed_data)} chars")
+                    log.info(f"Preview: {condensed_data[:200]}...")
 
                     # Delete all existing entries for this category
                     deleted_count = dao.delete_data_by_category(node_uuid, category)
-                    print(f"Deleted {deleted_count} original entries")
+                    log.info(f"Deleted {deleted_count} original entries")
 
                     # Insert the condensed entry
                     timestamp_key = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -2852,10 +2835,10 @@ CONDENSED ENTRY:"""
                         data_type="text",
                         info=condensed_data
                     )
-                    print(f"Inserted condensed entry for category '{category}'")
+                    log.info(f"Inserted condensed entry for category '{category}'")
 
                 except Exception as e:
-                    print(f"Error condensing category '{category}': {e}")
+                    log.error(f"Error condensing category '{category}': {e}")
                     import traceback
                     traceback.print_exc()
                     all_succeeded = False
@@ -2864,12 +2847,12 @@ CONDENSED ENTRY:"""
 
             # Reset the node counter after successful cleanup
             dao.reset_node_counter(node_uuid)
-            print(f"\nReset node counter for {node_uuid}")
+            log.info(f"\nReset node counter for {node_uuid}")
 
             return all_succeeded
 
         except Exception as e:
-            print(f"Error in cleanup_node_data: {e}")
+            log.error(f"Error in cleanup_node_data: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -2893,36 +2876,36 @@ CONDENSED ENTRY:"""
             nodes_needing_cleanup = dao.get_nodes_needing_cleanup(threshold)
 
             if not nodes_needing_cleanup:
-                print(f"No nodes need cleanup (threshold: {threshold})")
+                log.info(f"No nodes need cleanup (threshold: {threshold})")
                 return []
 
-            print(f"\n{'='*60}")
-            print(f"BATCH CLEANUP - Found {len(nodes_needing_cleanup)} nodes needing cleanup")
-            print(f"Threshold: {threshold} insertions")
-            print(f"{'='*60}")
+            log.info(f"\n{'='*60}")
+            log.info(f"BATCH CLEANUP - Found {len(nodes_needing_cleanup)} nodes needing cleanup")
+            log.info(f"Threshold: {threshold} insertions")
+            log.info(f"{'='*60}")
 
             successfully_cleaned = []
 
             for node_uuid in nodes_needing_cleanup:
                 counter = dao.get_node_counter(node_uuid)
-                print(f"\nCleaning node {node_uuid} (insertion count: {counter})...")
+                log.info(f"\nCleaning node {node_uuid} (insertion count: {counter})...")
 
                 success = Tree.cleanup_node_data(dao, node_uuid, config_path)
 
                 if success:
                     successfully_cleaned.append(node_uuid)
-                    print(f"✓ Successfully cleaned node {node_uuid}")
+                    log.info(f"✓ Successfully cleaned node {node_uuid}")
                 else:
-                    print(f"✗ Failed to clean node {node_uuid}")
+                    log.error(f"✗ Failed to clean node {node_uuid}")
 
-            print(f"\n{'='*60}")
-            print(f"Batch cleanup complete: {len(successfully_cleaned)}/{len(nodes_needing_cleanup)} nodes cleaned")
-            print(f"{'='*60}")
+            log.info(f"\n{'='*60}")
+            log.info(f"Batch cleanup complete: {len(successfully_cleaned)}/{len(nodes_needing_cleanup)} nodes cleaned")
+            log.info(f"{'='*60}")
 
             return successfully_cleaned
 
         except Exception as e:
-            print(f"Error in cleanup_nodes_batch: {e}")
+            log.error(f"Error in cleanup_nodes_batch: {e}")
             import traceback
             traceback.print_exc()
             return []

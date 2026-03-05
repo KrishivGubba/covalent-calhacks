@@ -5,6 +5,13 @@ Data Access Object for Graph operations. Used to load graph data from SQlite DB
 Database is encrypted using SQLCipher. Encryption key is stored in macOS Keychain.
 '''
 import os
+import sys
+from pathlib import Path
+
+_project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_project_root))
+from logger import get_logger
+log = get_logger()
 
 # Use SQLCipher for encrypted database access
 try:
@@ -141,10 +148,10 @@ class GraphDAO:
         import uuid
         action_uuid = str(uuid.uuid4())
 
-        print(f"🔧 add_action() called:")
-        print(f"  - node_uuid: {node_uuid}")
-        print(f"  - action_name: {action_name[:50]}..." if len(action_name) > 50 else f"  - action_name: {action_name}")
-        print(f"  - Generated action_uuid: {action_uuid}")
+        log.debug(f"🔧 add_action() called:")
+        log.debug(f"  - node_uuid: {node_uuid}")
+        log.debug(f"  - action_name: {action_name[:50]}..." if len(action_name) > 50 else f"  - action_name: {action_name}")
+        log.debug(f"  - Generated action_uuid: {action_uuid}")
 
         query = """
             INSERT INTO action_table (UUID, Action_name, Action_plan, Node_UUID, last_selected)
@@ -153,11 +160,11 @@ class GraphDAO:
 
         try:
             self.execute_query(query, (action_uuid, action_name, action_plan, node_uuid, last_selected))
-            print(f"  ✅ Successfully inserted action into database")
+            log.info(f"  ✅ Successfully inserted action into database")
             return action_uuid
         except Exception as e:
-            print(f"  ❌ Failed to insert action: {e}")
-            print(f"  Database path: {self.conn}")
+            log.error(f"  ❌ Failed to insert action: {e}")
+            log.error(f"  Database path: {self.conn}")
             import traceback
             traceback.print_exc()
             raise
@@ -1506,7 +1513,7 @@ if __name__ == "__main__":
     cursor.execute("DELETE FROM action_table;")
     cursor.execute("DELETE FROM node_table;")
     
-    print("Inserting test data into database...")
+    log.info("Inserting test data into database...")
     
     # Insert all nodes
     for node_data in test_dao.nodes_data:
@@ -1535,7 +1542,7 @@ if __name__ == "__main__":
     
     # Commit all changes
     conn.commit()
-    print(f"Successfully inserted {len(test_dao.nodes_data)} nodes into the database.")
+    log.info(f"Successfully inserted {len(test_dao.nodes_data)} nodes into the database.")
     
     # Verify the data
     cursor.execute("SELECT COUNT(*) FROM node_table;")
@@ -1543,9 +1550,9 @@ if __name__ == "__main__":
     cursor.execute("SELECT COUNT(*) FROM action_table;")
     action_count = cursor.fetchone()[0]
     
-    print(f"Total nodes in database: {node_count}")
-    print(f"Total actions in database: {action_count}")
+    log.info(f"Total nodes in database: {node_count}")
+    log.info(f"Total actions in database: {action_count}")
     
     # Close connection
     conn.close()
-    print("Database connection closed.")
+    log.info("Database connection closed.")

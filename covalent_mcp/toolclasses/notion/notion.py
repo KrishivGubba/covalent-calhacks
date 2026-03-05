@@ -29,6 +29,10 @@ load_dotenv()
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 DB_PATH = os.environ.get('GRAPH_DB_PATH', os.path.join(PROJECT_ROOT, 'context-engine', 'graph.db'))
 
+sys.path.insert(0, PROJECT_ROOT)
+from logger import get_logger
+log = get_logger()
+
 # Lambda Gateway URL for secure token operations (client_secret lives here)
 LAMBDA_GATEWAY_URL = os.getenv("LAMBDA_GATEWAY_URL", "https://gtfrn4otol.execute-api.us-east-1.amazonaws.com")
 
@@ -146,7 +150,7 @@ def _refresh_notion_token_via_lambda(integration_dao=None) -> str:
     else:
         integration_dao.update_access_token("notion", new_access_token, expires_at)
     
-    print(f"Notion access token refreshed successfully (expires in {expires_in}s)")
+    log.info(f"Notion access token refreshed successfully (expires in {expires_in}s)")
     return new_access_token
 
 
@@ -166,11 +170,11 @@ def _get_notion_token() -> Optional[str]:
             # Check if token is expired and refresh if needed
             expires_at = token_data.get("expires_at")
             if _is_token_expired(expires_at):
-                print("Notion access token expired or expiring soon, refreshing via Lambda...")
+                log.info("Notion access token expired or expiring soon, refreshing via Lambda...")
                 try:
                     return _refresh_notion_token_via_lambda(dao)
                 except Exception as e:
-                    print(f"Notion token refresh failed: {e}")
+                    log.warning(f"Notion token refresh failed: {e}")
                     # Fall through to return the existing token (might still work)
             return token_data["access_token"]
     except Exception:
@@ -228,7 +232,7 @@ class NotionToolModule(MCPToolModule):
             page = client.get_page(page_id)
             return {"page_title": _extract_title(page)}
         except Exception as e:
-            print(f"Warning: failed to resolve Notion page title for {page_id}: {e}")
+            log.warning(f"Warning: failed to resolve Notion page title for {page_id}: {e}")
             return {"page_title": "(could not load page)"}
 
     async def _resolve_database_title(self, params: dict) -> dict:
@@ -241,7 +245,7 @@ class NotionToolModule(MCPToolModule):
             db = client.get_database(db_id)
             return {"database_title": _extract_title(db)}
         except Exception as e:
-            print(f"Warning: failed to resolve Notion database title for {db_id}: {e}")
+            log.warning(f"Warning: failed to resolve Notion database title for {db_id}: {e}")
             return {"database_title": "(could not load database)"}
 
     async def _resolve_parent_title(self, params: dict) -> dict:

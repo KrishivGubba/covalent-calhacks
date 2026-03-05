@@ -16,6 +16,90 @@ type ActionStatus = 'idle' | 'playing' | 'done';
 
 const USER_ID_KEY = 'covalent_user_id';
 
+// ---------------------------------------------------------------------------
+// Result formatting helpers
+// ---------------------------------------------------------------------------
+
+interface FormattedResult {
+  headline: string;
+  details: Array<{ label: string; value: string }>;
+  links: Array<{ label: string; url: string }>;
+}
+
+/** Keys that are internal / not worth surfacing as detail rows. */
+const RESULT_SKIP_KEYS = new Set([
+  'success', 'id', 'threadId', 'message', 'summary', 'title',
+  'full_name', 'name', 'blocks_added', 'deleted', 'url', 'htmlLink',
+  'archived', 'private',
+]);
+
+/**
+ * Turns any MCP tool result into a clean { headline, details, links } summary.
+ * Handles: raw strings, JSON strings, dicts from every tool module.
+ */
+function formatActionResult(rawResult: unknown): FormattedResult {
+  // Normalise to a plain object when possible
+  let data: Record<string, unknown> | null = null;
+
+  if (typeof rawResult === 'string') {
+    try { data = JSON.parse(rawResult) as Record<string, unknown>; } catch { /* noop */ }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return { headline: rawResult || 'Action completed', details: [], links: [] };
+    }
+  } else if (rawResult && typeof rawResult === 'object' && !Array.isArray(rawResult)) {
+    data = rawResult as Record<string, unknown>;
+  } else if (rawResult == null) {
+    return { headline: 'Action completed', details: [], links: [] };
+  } else {
+    return { headline: String(rawResult), details: [], links: [] };
+  }
+
+  // Build headline – try the most informative fields first
+  let headline = 'Action completed successfully';
+  if (typeof data.message === 'string' && data.message) {
+    headline = data.message;
+  } else if (typeof data.summary === 'string' && data.summary) {
+    headline = `Event: ${data.summary}`;
+  } else if (typeof data.title === 'string' && data.title) {
+    headline = `Created: ${data.title}`;
+  } else if (typeof data.full_name === 'string' && data.full_name) {
+    headline = `Repository: ${data.full_name}`;
+  } else if (typeof data.name === 'string' && data.name && !data.full_name) {
+    headline = `Created: ${data.name}`;
+  } else if (typeof data.blocks_added === 'number') {
+    headline = `${data.blocks_added} block${data.blocks_added !== 1 ? 's' : ''} added`;
+  } else if (typeof data.deleted === 'string') {
+    headline = 'Item deleted successfully';
+  } else if (data.archived === true) {
+    headline = 'Page archived';
+  }
+
+  // Collect supplementary details (skip noisy / internal keys)
+  const details: Array<{ label: string; value: string }> = [];
+  for (const [k, v] of Object.entries(data)) {
+    if (RESULT_SKIP_KEYS.has(k) || v == null) continue;
+    if (typeof v === 'object') continue; // skip nested dicts / arrays
+    details.push({ label: k.replace(/_/g, ' '), value: String(v) });
+  }
+
+  // Surface any clickable URLs
+  const links: Array<{ label: string; url: string }> = [];
+  if (typeof data.url === 'string' && data.url) links.push({ label: 'Open', url: data.url });
+  if (typeof data.htmlLink === 'string' && data.htmlLink) links.push({ label: 'Open in Calendar', url: data.htmlLink });
+
+  return { headline, details, links };
+}
+
+/**
+ * Cleans up Python-style error messages for display.
+ * Strips "Execution error: " prefix and trims overly long tracebacks.
+ */
+function formatActionError(error: unknown): string {
+  const msg = String(error ?? 'Unknown error');
+  const cleaned = msg.replace(/^Execution error:\s*/i, '').trim();
+  return cleaned.length > 400 ? cleaned.substring(0, 400) + '…' : cleaned;
+}
+
 const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({ 
   actions, 
   isRunning, 
@@ -837,52 +921,82 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
                 </span>
               </div>
 
-              {executionResults.map((result, idx) => (
-                <div 
-                  key={result.step_id} 
-                  style={{
-                    ...styles.resultCard,
-                    borderLeftColor: result.status === 'success' ? 'rgba(74, 222, 128, 0.7)' : 'rgba(248, 113, 113, 0.7)',
-                  }}
-                >
-                  <div style={styles.resultHeader}>
-                    <span style={{
-                      ...styles.resultIconBadge,
-                      backgroundColor: result.status === 'success' ? 'rgba(34, 197, 94, 0.18)' : 'rgba(239, 68, 68, 0.18)',
-                      borderColor: result.status === 'success' ? 'rgba(74, 222, 128, 0.5)' : 'rgba(248, 113, 113, 0.5)',
-                      color: result.status === 'success' ? '#4ade80' : '#f87171',
-                    }}>
-                      {result.status === 'success' ? '✓' : '✕'}
-                    </span>
-                    <span style={styles.resultTitle}>
-                      Step {idx + 1}: {result.tool_name}
-                    </span>
-                    <span style={{
-                      ...styles.resultStatus,
-                      color: result.status === 'success' ? '#4ade80' : '#f87171',
-                    }}>
-                      {result.status === 'success' ? 'Success' : 'Failed'}
-                    </span>
+              {executionResults.map((result, idx) => {
+                const isSuccess = result.status === 'success';
+                const formatted = isSuccess ? formatActionResult(result.result) : null;
+                const errorMsg = !isSuccess ? formatActionError(result.error) : null;
+                return (
+                  <div
+                    key={result.step_id}
+                    style={{
+                      ...styles.resultCard,
+                      borderLeftColor: isSuccess ? 'rgba(74, 222, 128, 0.7)' : 'rgba(248, 113, 113, 0.7)',
+                    }}
+                  >
+                    {/* Card header */}
+                    <div style={styles.resultHeader}>
+                      <span style={{
+                        ...styles.resultIconBadge,
+                        backgroundColor: isSuccess ? 'rgba(34, 197, 94, 0.18)' : 'rgba(239, 68, 68, 0.18)',
+                        borderColor: isSuccess ? 'rgba(74, 222, 128, 0.5)' : 'rgba(248, 113, 113, 0.5)',
+                        color: isSuccess ? '#4ade80' : '#f87171',
+                      }}>
+                        {isSuccess ? '✓' : '✕'}
+                      </span>
+                      <span style={styles.resultTitle}>
+                        Step {idx + 1}: <span style={{ fontWeight: 400, opacity: 0.8 }}>{result.tool_name.replace(/_/g, ' ')}</span>
+                      </span>
+                      <span style={{
+                        ...styles.resultStatus,
+                        color: isSuccess ? '#4ade80' : '#f87171',
+                      }}>
+                        {isSuccess ? 'Success' : 'Failed'}
+                      </span>
+                    </div>
+
+                    {/* Success content */}
+                    {isSuccess && formatted && (
+                      <div style={styles.resultSuccess}>
+                        <div style={{ fontWeight: 600, marginBottom: (formatted.details.length || formatted.links.length) ? '0.45rem' : 0 }}>
+                          {formatted.headline}
+                        </div>
+                        {formatted.details.map(d => (
+                          <div key={d.label} style={{ fontSize: '0.8rem', color: 'rgba(74, 222, 128, 0.75)', marginTop: '0.2rem' }}>
+                            <span style={{ opacity: 0.65, textTransform: 'capitalize' as const }}>{d.label}:</span>{' '}
+                            {d.value}
+                          </div>
+                        ))}
+                        {formatted.links.map(l => (
+                          <a
+                            key={l.url}
+                            href={l.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{
+                              display: 'inline-block',
+                              marginTop: '0.5rem',
+                              fontSize: '0.8rem',
+                              color: '#4ade80',
+                              textDecoration: 'underline',
+                              textDecorationColor: 'rgba(74, 222, 128, 0.4)',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            {l.label} ↗
+                          </a>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Error content */}
+                    {!isSuccess && errorMsg && (
+                      <div style={styles.resultError}>
+                        {errorMsg}
+                      </div>
+                    )}
                   </div>
-                  {result.error && (
-                    <div style={styles.resultError}>
-                      {String(result.error)}
-                    </div>
-                  )}
-                  {result.status === 'success' && Boolean(result.result) && (
-                    <div style={styles.resultSuccess}>
-                      {(() => {
-                        const resultStr = typeof result.result === 'string' 
-                          ? result.result 
-                          : JSON.stringify(result.result, null, 2);
-                        return resultStr.length > 200 
-                          ? resultStr.substring(0, 200) + '...'
-                          : resultStr;
-                      })()}
-                    </div>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
             <div style={styles.planModalActions}>
               <button 
@@ -1483,9 +1597,7 @@ const styles = {
     borderRadius: '8px',
     fontSize: '0.85rem',
     color: 'rgba(74, 222, 128, 0.95)',
-    lineHeight: '1.4',
-    fontFamily: 'monospace',
-    whiteSpace: 'pre-wrap' as const,
+    lineHeight: '1.5',
     wordBreak: 'break-word' as const,
   },
   closeButton: {

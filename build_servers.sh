@@ -9,6 +9,7 @@ DIST_DIR="dist-servers"
 
 echo "=== Building Flask server ==="
 pyinstaller server/app.py \
+  --noconfirm \
   --name flask-server \
   --distpath "$DIST_DIR" \
   --paths=context-engine \
@@ -25,6 +26,7 @@ pyinstaller server/app.py \
   --hidden-import=pypdf \
   --hidden-import=googleapiclient.discovery \
   --hidden-import=google.auth.transport.requests \
+  --hidden-import=posthog \
   --add-data="server/htmlstuff:server/htmlstuff" \
   --add-data="model_config.yml:." \
   --copy-metadata=fastmcp \
@@ -37,6 +39,7 @@ pyinstaller server/app.py \
 echo ""
 echo "=== Building MCP server ==="
 pyinstaller run_mcp.py \
+  --noconfirm \
   --name mcp-server \
   --distpath "$DIST_DIR" \
   --paths=. \
