@@ -28,12 +28,12 @@ def _configure_logging() -> None:
 
     handler = logging.StreamHandler()
     handler.setFormatter(fmt)
-    handler.setLevel(logging.DEBUG)
+    handler.setLevel(logging.INFO)
 
     root = logging.getLogger()
     if not root.handlers:
         root.addHandler(handler)
-    root.setLevel(logging.DEBUG)
+    root.setLevel(logging.INFO)
 
 
 _configure_logging()
