@@ -19,6 +19,16 @@
 
 set -e
 
+# Load from .env file if it exists
+if [ -f .env ]; then
+  echo "Loading variables from .env..."
+  grep -E '^APPLE_' .env > /tmp/apple_env_vars.sh
+  set -a
+  source /tmp/apple_env_vars.sh
+  set +a
+  rm /tmp/apple_env_vars.sh
+fi
+
 # Check required environment variables
 if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
   echo "Error: APPLE_SIGNING_IDENTITY is not set"
@@ -138,9 +148,32 @@ echo ""
 echo "=== Step 4: Building Tauri app with signing + notarization ==="
 npm run tauri build
 
+# Step 5: Notarize and staple the DMG (Tauri only notarizes the .app, not the DMG)
+echo ""
+echo "=== Step 5: Notarizing the DMG ==="
+DMG_FILE=$(find src-tauri/target/release/bundle/dmg -name "*.dmg" | head -1)
+
+if [ -n "$DMG_FILE" ]; then
+  echo "Found DMG: $DMG_FILE"
+  echo "Submitting for notarization (this may take a few minutes)..."
+  
+  xcrun notarytool submit "$DMG_FILE" \
+    --apple-id "$APPLE_ID" \
+    --password "$APPLE_PASSWORD" \
+    --team-id "$APPLE_TEAM_ID" \
+    --wait
+  
+  echo ""
+  echo "Stapling notarization ticket to DMG..."
+  xcrun stapler staple "$DMG_FILE"
+  
+  echo ""
+  echo "Verifying notarization..."
+  spctl --assess --verbose=4 --type open --context context:primary-signature "$DMG_FILE"
+else
+  echo "Warning: No DMG file found in src-tauri/target/release/bundle/dmg/"
+fi
+
 echo ""
 echo "=== Build complete ==="
 echo "Output: src-tauri/target/release/bundle/"
-echo ""
-echo "If notarization succeeded, the .dmg should be ready for distribution."
-echo "If notarization failed, check the output above for details."
