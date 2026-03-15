@@ -902,8 +902,7 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
             result_data = result
         elif isinstance(result, str):
             try:
-                import json as _json
-                result_data = _json.loads(result)
+                result_data = json.loads(result)
             except (ValueError, TypeError):
                 pass
 
@@ -931,7 +930,7 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
                     texts.append(text)
             combined = "\n".join(texts) if texts else str(result)
             try:
-                result_data = _json.loads(combined)
+                result_data = json.loads(combined)
             except (ValueError, TypeError):
                 result_data = {"message": combined} if combined else None
 
