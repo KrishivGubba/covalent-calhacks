@@ -1,45 +1,52 @@
-import boto3
-from botocore.exceptions import ClientError
-from dotenv import load_dotenv
-import os
+"""
+Test script for AWS Bedrock via the unified model interface.
+
+This script tests the bedrock provider integration through model_interface.py,
+which routes through GatewayClient -> Lambda -> AWS Bedrock.
+
+Usage:
+    python aws_test.py
+"""
 import sys
 from pathlib import Path
+from dotenv import load_dotenv
 
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 from logger import get_logger
 log = get_logger()
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-# Get AWS credentials from environment variables
-aws_access_key_id = os.getenv('AWS_ACCESS_KEY_ID')
-aws_secret_access_key = os.getenv('AWS_SECRET_ACCESS_KEY')
-aws_region = os.getenv('AWS_DEFAULT_REGION', 'us-east-1')  # default to us-east-1 if not set
+from model_interface import ModelFactory
 
-# Create a Bedrock Runtime client in the AWS Region you want to use.
-client = boto3.client("bedrock-runtime", region_name="us-east-1")
-# Set the model ID, e.g., Claude 3 Haiku.
-model_id = "us.anthropic.claude-sonnet-4-20250514-v1:0"
-# Start a conversation with the user message.
-user_message = "this is a test message - say hello!"
-conversation = [
- {
- "role": "user",
- "content": [{"text": user_message}],
- }
-]
-try:
- # Send the message to the model, using a basic inference configuration.
- response = client.converse(
- modelId=model_id,
- messages=conversation,
- inferenceConfig={"maxTokens": 512, "temperature": 0.5, "topP": 0.9},
- )
- # Extract and print the response text.
- response_text = response["output"]["message"]["content"][0]["text"]
- log.info(response_text)
-except (ClientError, Exception) as e:
- log.error(f"ERROR: Can't invoke '{model_id}'. Reason: {e}")
- exit(1)
+
+def main():
+    """Test the Bedrock integration via model_interface."""
+    log.info("Testing Bedrock integration via model_interface...")
+    
+    try:
+        # Create model factory and get a chat model
+        factory = ModelFactory()
+        model = factory.get_chat_model("action_creation")
+        
+        log.info(f"Provider: {model.provider}")
+        log.info(f"Model: {model.model_name}")
+        
+        # Test message
+        user_message = "this is a test message - say hello!"
+        
+        log.info(f"Sending: {user_message}")
+        response = model.generate(user_message)
+        
+        log.info(f"Response: {response}")
+        log.info("Test completed successfully!")
+        
+    except Exception as e:
+        log.error(f"ERROR: Test failed. Reason: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

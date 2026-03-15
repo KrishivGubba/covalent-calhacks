@@ -252,6 +252,7 @@ class GatewayClient:
         system: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        **kwargs,
     ) -> GatewayResponse:
         """
         Invoke the model with a list of messages.
@@ -263,6 +264,7 @@ class GatewayClient:
             system: Optional system prompt.
             max_tokens: Max tokens to generate.
             temperature: Sampling temperature (0-1).
+            **kwargs: Additional parameters passed to the gateway (e.g., use_converse=False for vision).
             
         Returns:
             GatewayResponse: Response with content, usage stats, etc.
@@ -279,6 +281,7 @@ class GatewayClient:
             "model": self._resolve_model(model) if model else self.default_model,
             "max_tokens": max_tokens or self.default_max_tokens,
             "temperature": temperature if temperature is not None else self.default_temperature,
+            **kwargs,
         }
         
         if system:

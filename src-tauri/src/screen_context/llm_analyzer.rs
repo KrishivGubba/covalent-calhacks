@@ -9,7 +9,8 @@ use crate::screen_context::context_data::RawContext;
 use crate::screen_context::context_type::ContextType;
 use crate::screen_context::region_analyzer::RegionChangeAnalysis;
 use crate::screen_context::screen_capture::ScreenCapture;
-use crate::ai_provider::{LLMProvider, ClaudeProvider};
+use base64::{engine::general_purpose, Engine as _};
+use crate::ai_provider::LLMProvider;
 
 /// LLM-powered context analyzer that generates structured output
 pub struct LLMAnalyzer {
@@ -283,7 +284,7 @@ impl LLMAnalyzer {
         };
         
         // Encode to base64
-        let screenshot_base64 = ClaudeProvider::encode_image_to_base64(&image_bytes);
+        let screenshot_base64 = general_purpose::STANDARD.encode(&image_bytes);
         
         let system_prompt = "You are an AI assistant that analyzes user activity and context. \
             Generate a concise, natural description of what the user is currently doing. \

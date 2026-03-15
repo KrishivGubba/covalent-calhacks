@@ -6,11 +6,36 @@ from dotenv import load_dotenv
 
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
+
+# Add context-engine to path for model_interface
+_context_engine_path = _project_root / "context-engine"
+if str(_context_engine_path) not in sys.path:
+    sys.path.insert(0, str(_context_engine_path))
+
 from logger import get_logger
 log = get_logger()
-from anthropic import Anthropic
-import base64
+from model_interface import ModelFactory
 from executor.vocab_code import capture_screenshot
+
+# Bedrock model ID mapping
+BEDROCK_MODELS = {
+    "claude-sonnet-4-5-20250929": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-3-5-sonnet-20241022": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "claude-3-7-sonnet-20250219": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+}
+
+# Cached model factory instance
+_model_factory = None
+
+
+def _get_model_factory() -> ModelFactory:
+    """Get or create the cached ModelFactory instance."""
+    global _model_factory
+    load_dotenv()
+    if _model_factory is None:
+        _model_factory = ModelFactory()
+    return _model_factory
+
 
 class LLM_Client:
 
@@ -19,43 +44,34 @@ class LLM_Client:
                  sys_prompt = "You are an automation agent. Respond ONLY with strict JSON for the action to execute.",
                  model = "claude-sonnet-4-5-20250929") -> dict:
         """
-        Sends a prompt to Claude and returns parsed JSON.
-        Expects Claude to respond with *only* JSON (no prose).
+        Sends a prompt to the LLM via Bedrock Gateway and returns the response.
+        Expects the LLM to respond with *only* JSON (no prose).
         """
-        # load your .env file once
-        load_dotenv()
-
-        # initialize client (make sure the key matches your .env variable)
-        client = Anthropic(api_key=os.getenv("CLAUDE_API_KEY"))
-
-        if not client.api_key:
-            raise ValueError("❌ CLAUDE_API_KEY not found. Check your .env or environment variables.")
-
-        # use the latest non-deprecated model
-        response = client.messages.create(
-            model=model,
+        factory = _get_model_factory()
+        chat_model = factory.get_chat_model("action_creation")
+        
+        # Map Anthropic model name to Bedrock ID if needed
+        bedrock_model = BEDROCK_MODELS.get(model, model)
+        
+        response = chat_model.generate(
+            prompt=prompt,
+            system_prompt=sys_prompt,
+            model=bedrock_model,
             max_tokens=512,
             temperature=0,
-            system=sys_prompt,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
         )
 
-        # Claude returns content as a list of message blocks
-        raw_output = response.content[0].text.strip()
+        raw_output = response.strip()
         log.debug("this is the raw output\n" + raw_output)
         try:
             return raw_output
         except json.JSONDecodeError:
-            raise ValueError(f"Claude returned invalid JSON:\n{raw_output}")
-
-        return parsed
+            raise ValueError(f"LLM returned invalid JSON:\n{raw_output}")
     
     @staticmethod
     def queryClaudeVision(prompt: str, image_path: str) -> dict:
         """
-        Sends a prompt + screenshot to Claude (vision model)
+        Sends a prompt + screenshot to the vision model via Bedrock Gateway
         and expects a pure JSON response describing one action,
         e.g. {"type": "click", "coords": {"x": 512, "y": 300}}
 
@@ -64,41 +80,27 @@ class LLM_Client:
             image_path (str): Path to the screenshot (PNG/JPG).
 
         Returns:
-            dict: Parsed JSON from Claude.
+            dict: Parsed JSON from the model.
         """
-        load_dotenv()
-
-        api_key = os.getenv("CLAUDE_API_KEY")
-        if not api_key:
-            raise ValueError("❌ CLAUDE_API_KEY missing. Check your .env file.")
-
-        client = Anthropic(api_key=api_key)
-
-        with open(image_path, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode()
-
-        response = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+        factory = _get_model_factory()
+        chat_model = factory.get_chat_model("action_creation")
+        
+        bedrock_model = BEDROCK_MODELS.get("claude-3-5-sonnet-20241022", "us.anthropic.claude-3-5-sonnet-20241022-v2:0")
+        
+        response = chat_model.generate_with_vision(
+            prompt=prompt,
+            image_path=image_path,
+            system_prompt="You are a coordinate-finding vision model. Respond only with valid JSON.",
+            model=bedrock_model,
             max_tokens=256,
             temperature=0,
-            system="You are a coordinate-finding vision model. Respond only with valid JSON.",
-            messages=[
-                {"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image", "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": img_b64
-                    }}
-                ]}
-            ]
         )
 
-        raw = response.content[0].text.strip()
+        raw = response.strip()
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
-            raise ValueError(f"❌ Claude returned invalid JSON:\n{raw}")
+            raise ValueError(f"LLM returned invalid JSON:\n{raw}")
 
         return parsed
     
@@ -115,17 +117,11 @@ class LLM_Client:
         Returns:
             str: A long, natural language message (no JSON, no markup).
         """
-        load_dotenv()
-        api_key = os.getenv("CLAUDE_API_KEY")
-        if not api_key:
-            raise ValueError("❌ CLAUDE_API_KEY missing. Check your .env file.")
-
-        client = Anthropic(api_key=api_key)
+        factory = _get_model_factory()
+        chat_model = factory.get_chat_model("action_creation")
 
         # take screenshot of current page
         screenshot_path = capture_screenshot("msg_context.png")
-        with open(screenshot_path, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode()
 
         # build prompt
         prompt = f"""
@@ -144,7 +140,7 @@ Your job:
 
 Example output (correct):
 Hi Alex! I saw your post about distributed systems — super interesting work. 
-I’ve been exploring similar topics for a project at UW–Madison and would love to connect!
+I've been exploring similar topics for a project at UW–Madison and would love to connect!
 
 Example output (incorrect):
 {{ "message": "Hi Alex..." }}  ❌
@@ -155,35 +151,19 @@ Respond ONLY with the raw message body.
 Action: {action}
 Details: {json.dumps(details, indent=4)}
         """
+        
+        bedrock_model = BEDROCK_MODELS.get("claude-3-7-sonnet-20250219", "us.anthropic.claude-3-7-sonnet-20250219-v1:0")
 
-        response = client.messages.create(
-            model="claude-3-7-sonnet-20250219",  # Sonnet is better for writing quality here
+        response = chat_model.generate_with_vision(
+            prompt=prompt,
+            image_path=screenshot_path,
+            system_prompt="You are a message-writing assistant. Respond only with the message text.",
+            model=bedrock_model,
             max_tokens=500,
             temperature=0.7,
-            system="You are a message-writing assistant. Respond only with the message text.",
-            messages=[
-                {"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image", "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": img_b64
-                    }}
-                ]}
-            ]
         )
 
         # extract and clean the message
-        message = response.content[0].text.strip()
-        log.info("📨 Generated message:\n" + message)
+        message = response.strip()
+        log.info("Generated message:\n" + message)
         return message
-
-
-# # test it
-# if __name__ == "__main__":
-#     output = LLM_Client.queryClaude("""
-#     The current webpage has a login form.
-#     Decide the next action as JSON with keys {action, selector, value}.
-#     """)
-
-#     print(output)

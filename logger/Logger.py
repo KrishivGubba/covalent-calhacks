@@ -1,11 +1,14 @@
 """
 Unified Logger for Covalent.
 
-- Console output: timestamped lines to stderr (captured by flask_server.log shell redirect)
+- Console output: timestamped lines to stderr
+- File output: rotating log files in the Covalent data directory
 - PostHog analytics: action_success, action_failure, authentication, integration
 """
 import os
+import platform
 import logging
+from logging.handlers import RotatingFileHandler
 from typing import Optional
 
 _posthog = None
@@ -15,24 +18,53 @@ import sys as _sys
 _dbg_proc = {"pid": os.getpid(), "exe": os.path.basename(_sys.executable)}
 
 
+def _get_log_dir() -> str:
+    data_dir = os.environ.get('COVALENT_DATA_DIR')
+    if not data_dir:
+        if platform.system() == 'Darwin':
+            data_dir = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Covalent")
+        else:
+            data_dir = os.path.join(os.path.expanduser("~"), ".covalent")
+    return os.path.join(data_dir, "logs")
+
+
 def _configure_logging() -> None:
     global _logging_configured
     if _logging_configured:
         return
     _logging_configured = True
 
-    fmt = logging.Formatter(
+    console_fmt = logging.Formatter(
         '%(asctime)s [%(levelname)s]: %(message)s',
         datefmt='%H:%M:%S',
     )
+    file_fmt = logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    )
 
-    handler = logging.StreamHandler()
-    handler.setFormatter(fmt)
-    handler.setLevel(logging.INFO)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(console_fmt)
+    console_handler.setLevel(logging.INFO)
 
     root = logging.getLogger()
     if not root.handlers:
-        root.addHandler(handler)
+        root.addHandler(console_handler)
+
+    try:
+        log_dir = _get_log_dir()
+        os.makedirs(log_dir, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            os.path.join(log_dir, "covalent.log"),
+            maxBytes=5 * 1024 * 1024,  # 5 MB
+            backupCount=3,
+        )
+        file_handler.setFormatter(file_fmt)
+        file_handler.setLevel(logging.INFO)
+        root.addHandler(file_handler)
+    except OSError:
+        pass
+
     root.setLevel(logging.INFO)
 
 
