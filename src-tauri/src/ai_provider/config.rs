@@ -29,6 +29,10 @@ struct ProviderSettingsEntry {
     base_url: Option<String>,
     #[serde(default)]
     api_key_env: Option<String>,
+    #[serde(default)]
+    gateway_url_env: Option<String>,
+    #[serde(default)]
+    access_token_env: Option<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -130,6 +134,8 @@ impl ProviderConfig {
         let mut anthropic_key_env = String::from("ANTHROPIC_API_KEY");
         let mut openai_model = String::new();
         let mut openai_key_env = String::from("OPENAI_API_KEY");
+        let mut bedrock_model = String::new();
+        let mut has_bedrock_tasks = false;
 
         // Prioritized task order: action_creation first, then others alphabetically
         let priority_tasks = ["action_creation", "data_condensation", "graph_operations",
@@ -142,6 +148,12 @@ impl ProviderConfig {
                         anthropic_model = task.model_name.clone();
                         if let Some(ref key_env) = task.api_key_env {
                             anthropic_key_env = key_env.clone();
+                        }
+                    }
+                    "bedrock" => {
+                        has_bedrock_tasks = true;
+                        if bedrock_model.is_empty() {
+                            bedrock_model = task.model_name.clone();
                         }
                     }
                     "openai" if openai_model.is_empty() => {
@@ -163,6 +175,10 @@ impl ProviderConfig {
                     if let Some(ref key_env) = task.api_key_env {
                         anthropic_key_env = key_env.clone();
                     }
+                }
+                "bedrock" if bedrock_model.is_empty() => {
+                    has_bedrock_tasks = true;
+                    bedrock_model = task.model_name.clone();
                 }
                 "openai" if openai_model.is_empty() => {
                     openai_model = task.model_name.clone();
@@ -205,8 +221,10 @@ impl ProviderConfig {
         let ollama_model = env::var("OLLAMA_MODEL")
             .unwrap_or_else(|_| "qwen2.5-coder:3b".to_string());
 
-        // Determine primary provider
-        let provider = if anthropic_api_key.is_some() {
+        // Determine primary provider — prefer gateway/bedrock when configured
+        let provider = if has_bedrock_tasks {
+            "gateway".to_string()
+        } else if anthropic_api_key.is_some() {
             "claude".to_string()
         } else if openai_api_key.is_some() {
             "openai".to_string()
@@ -214,21 +232,31 @@ impl ProviderConfig {
             "ollama".to_string()
         };
 
-        // Gateway config (optional — only used when user is authenticated)
-        let gateway_url = env::var("GATEWAY_URL").ok();
-        let gateway_model = env::var("GATEWAY_MODEL").unwrap_or_else(|_| {
-            "us.anthropic.claude-sonnet-4-20250514-v1:0".to_string()
-        });
+        // Gateway config: resolve URL from bedrock provider_settings or env var
+        let bedrock_settings = file.provider_settings.get("bedrock");
+        let gateway_url_env = bedrock_settings
+            .and_then(|s| s.gateway_url_env.clone())
+            .unwrap_or_else(|| "GATEWAY_URL".to_string());
+        let gateway_url = env::var(&gateway_url_env).ok();
 
-        // Whether the gateway is active.
-        // Disabled by: GATEWAY_ENABLED=false|0, or DEV=1, or an explicit
-        // AI_FALLBACK_CHAIN that does not include "gateway".
-        let gateway_enabled = gateway_enabled_from_env(gateway_url.is_some());
+        // Use bedrock model from YAML tasks, then GATEWAY_MODEL env, then default
+        let gateway_model = if !bedrock_model.is_empty() {
+            bedrock_model
+        } else {
+            env::var("GATEWAY_MODEL").unwrap_or_else(|_| {
+                "us.anthropic.claude-sonnet-4-20250514-v1:0".to_string()
+            })
+        };
+
+        // Gateway is active when: bedrock tasks in YAML + GATEWAY_URL set,
+        // or legacy env-var based check. Disabled by DEV=1 or GATEWAY_ENABLED=false.
+        let gateway_enabled = gateway_enabled_from_env(gateway_url.is_some())
+            || (has_bedrock_tasks && gateway_url.is_some());
 
         // Build fallback chain.
         // Priority: explicit AI_FALLBACK_CHAIN env var > dynamic construction.
+        // When bedrock tasks are configured, gateway leads the chain.
         let fallback_chain = if let Ok(chain) = env::var("AI_FALLBACK_CHAIN") {
-            // Honour whatever the developer put in .env; don't inject gateway.
             chain
                 .split(',')
                 .map(|s| s.trim().to_lowercase())

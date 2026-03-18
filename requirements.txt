@@ -18,6 +18,7 @@ google
 google-generativeai
 playwright
 langchain-anthropic
+langchain-aws
 langchain-openai
 Pillow
 pypdf

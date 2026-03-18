@@ -8,14 +8,28 @@ Usage:
     response = client.generate("What is the weather?")
 """
 import os
+import sys
 import json
 from pathlib import Path
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 
+# Add context-engine to path for model_interface
+_project_root = Path(__file__).resolve().parent.parent
+_context_engine_path = _project_root / "context-engine"
+if str(_context_engine_path) not in sys.path:
+    sys.path.insert(0, str(_context_engine_path))
+
 # Lazy imports for providers (only import what's needed)
 _openai_client = None
-_anthropic_client = None
+_model_factory = None
+
+# Bedrock model ID mapping
+BEDROCK_MODELS = {
+    "claude-sonnet-4-5-20250929": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-3-5-sonnet-20241022": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "claude-3-7-sonnet-20250219": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+}
 
 
 def _get_openai_client():
@@ -30,16 +44,13 @@ def _get_openai_client():
     return _openai_client
 
 
-def _get_anthropic_client():
-    """Lazy import Anthropic client."""
-    global _anthropic_client
-    if _anthropic_client is None:
-        try:
-            from anthropic import Anthropic
-            _anthropic_client = Anthropic
-        except ImportError:
-            raise ImportError("Anthropic package not installed. Install with: pip install anthropic")
-    return _anthropic_client
+def _get_model_factory():
+    """Lazy import and cache ModelFactory for bedrock/anthropic providers."""
+    global _model_factory
+    if _model_factory is None:
+        from model_interface import ModelFactory
+        _model_factory = ModelFactory()
+    return _model_factory
 
 
 class LLMClient:
@@ -64,7 +75,6 @@ class LLMClient:
         """
         load_dotenv()
         
-        #TODO: MAYBE change this such that the config stuff is read at "runtime" ie when the method is actually called?
         # Find config file
         if config_path is None:
             # Default to llm-interactions/llm_config.json
@@ -74,11 +84,12 @@ class LLMClient:
         self.config = self._load_config()
         if self.config.get("provider"):
             self.provider = self.config.get("provider")
-        else: raise ValueError("Provider not found in config. Must be specified in config or environment variable LLM_PROVIDER.")
+        else:
+            raise ValueError("Provider not found in config. Must be specified in config or environment variable LLM_PROVIDER.")
 
-        
-        if self.provider not in ["openai", "anthropic"]:
-            raise ValueError(f"Unsupported provider: {self.provider}. Supported: openai, anthropic")
+        # "anthropic" is now an alias for "bedrock" - routes through the gateway
+        if self.provider not in ["openai", "anthropic", "bedrock"]:
+            raise ValueError(f"Unsupported provider: {self.provider}. Supported: openai, anthropic, bedrock")
     
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from JSON file. Config file is required."""
@@ -131,8 +142,9 @@ class LLMClient:
         # Route to appropriate provider
         if self.provider == "openai":
             return self._call_openai(prompt, system_prompt, model, max_tokens, temperature, **kwargs)
-        elif self.provider == "anthropic":
-            return self._call_anthropic(prompt, system_prompt, model, max_tokens, temperature, **kwargs)
+        elif self.provider in ["anthropic", "bedrock"]:
+            # Both "anthropic" and "bedrock" route through the Bedrock gateway
+            return self._call_bedrock(prompt, system_prompt, model, max_tokens, temperature, **kwargs)
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
     
@@ -176,7 +188,7 @@ class LLMClient:
         except Exception as e:
             raise RuntimeError(f"OpenAI API call failed: {e}")
     
-    def _call_anthropic(
+    def _call_bedrock(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
@@ -185,33 +197,32 @@ class LLMClient:
         temperature: Optional[float] = None,
         **kwargs
     ) -> str:
-        """Private method to call Anthropic API."""
-        Anthropic = _get_anthropic_client()
+        """
+        Private method to call Bedrock via the model_interface.py ChatModel.
         
-        # Get Anthropic config
-        anthropic_config = self.config.get("anthropic", {})
-        api_key = os.getenv(anthropic_config.get("api_key_env", "ANTHROPIC_API_KEY"))
-        if not api_key:
-            raise ValueError(f"API key not found. Set {anthropic_config.get('api_key_env', 'ANTHROPIC_API_KEY')} environment variable.")
+        Routes through the GatewayClient -> Lambda -> Bedrock path.
+        """
+        factory = _get_model_factory()
+        chat_model = factory.get_chat_model("action_creation")
         
-        client = Anthropic(api_key=api_key)
-        model = model or anthropic_config.get("model", "claude-sonnet-4-5-20250929")
+        # Get model from config if not provided
+        if model is None:
+            # Check anthropic config for backward compatibility
+            anthropic_config = self.config.get("anthropic", {})
+            model = anthropic_config.get("model", "claude-sonnet-4-5-20250929")
         
-        # Build request
-        request_params = {
-            "model": model,
-            "max_tokens": max_tokens or 4096,
-            "temperature": temperature if temperature is not None else 0.7,
-            "messages": [{"role": "user", "content": prompt}],
-            **kwargs
-        }
+        # Map Anthropic model name to Bedrock ID if needed
+        bedrock_model = BEDROCK_MODELS.get(model, model)
         
-        if system_prompt:
-            request_params["system"] = system_prompt
-        
-        # Call API
+        # Call API via model_interface
         try:
-            response = client.messages.create(**request_params)
-            return response.content[0].text
+            response = chat_model.generate(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                model=bedrock_model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return response
         except Exception as e:
-            raise RuntimeError(f"Anthropic API call failed: {e}")
+            raise RuntimeError(f"Bedrock API call failed: {e}")
