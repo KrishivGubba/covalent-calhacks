@@ -101,8 +101,15 @@ def get_gateway_client() -> GatewayClient:
     return _gateway_client
 
 # MCP Server Configuration
-# Uses HTTP transport - MCP server must be running (use covalent_mcp/start_mcp.sh)
-MCP_PORT = int(os.getenv("MCP_PORT", "8001"))
+# Uses HTTP transport - MCP server must be running
+# In merged mode (MOUNT_MCP_SERVER=true), MCP is at the same port as FastAPI
+# In split mode, MCP runs on its own port (MCP_PORT)
+_MOUNT_MCP = os.getenv("MOUNT_MCP_SERVER", "true").lower() in ("true", "1", "yes")
+_FASTAPI_PORT = int(os.getenv("VITE_FLASK_PORT", "15001"))
+_MCP_PORT = int(os.getenv("MCP_PORT", "8001"))
+
+# Use FastAPI port if MCP is mounted there, otherwise use separate MCP_PORT
+MCP_PORT = _FASTAPI_PORT if _MOUNT_MCP else _MCP_PORT
 MCP_SERVERS = {
     "covalent": {
         "transport": "streamable_http",
@@ -953,7 +960,10 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
         _err_msg = str(e)
         _is_connect_err = "ConnectError" in type(e).__name__ or "connection" in _err_msg.lower() or "All connection attempts failed" in _err_msg
         if _is_connect_err:
-            _hint = f"MCP server unreachable at http://localhost:{MCP_PORT}/mcp. Start it with: bash covalent_mcp/start_mcp.sh (or use start_servers.sh)"
+            if _MOUNT_MCP:
+                _hint = f"MCP server unreachable at http://localhost:{MCP_PORT}/mcp. Ensure FastAPI server is running with MCP mounted."
+            else:
+                _hint = f"MCP server unreachable at http://localhost:{MCP_PORT}/mcp. Start it with: bash covalent_mcp/start_mcp.sh (or use start_servers.sh)"
             return {"status": "error", "result": None, "error": _hint}
         return {
             "status": "error",
