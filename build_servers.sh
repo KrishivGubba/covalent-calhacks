@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build standalone executables for the Flask and MCP servers using PyInstaller.
+# Build standalone executables for the FastAPI and MCP servers using PyInstaller.
 # Run from the project root with the venv activated.
 # Output goes to dist-servers/ (dist/ is reserved for Vite frontend build).
 
@@ -7,8 +7,8 @@ set -e
 
 DIST_DIR="dist-servers"
 
-echo "=== Building Flask server ==="
-pyinstaller server/app.py \
+echo "=== Building FastAPI server ==="
+pyinstaller server/run_fastapi.py \
   --noconfirm \
   --name flask-server \
   --distpath "$DIST_DIR" \
@@ -18,6 +18,35 @@ pyinstaller server/app.py \
   --paths=. \
   --hidden-import=server.auth_dao \
   --hidden-import=server.integration_dao \
+  --hidden-import=server.fastapi_app \
+  --hidden-import=server.fastapi_app.main \
+  --hidden-import=server.fastapi_app.dependencies \
+  --hidden-import=server.fastapi_app.routers \
+  --hidden-import=server.fastapi_app.routers.health \
+  --hidden-import=server.fastapi_app.routers.graph \
+  --hidden-import=server.fastapi_app.routers.screen \
+  --hidden-import=server.fastapi_app.routers.actions \
+  --hidden-import=server.fastapi_app.routers.tab_completion \
+  --hidden-import=server.fastapi_app.routers.auth \
+  --hidden-import=server.fastapi_app.routers.integrations \
+  --hidden-import=server.fastapi_app.routers.mcp \
+  --hidden-import=fastapi \
+  --hidden-import=uvicorn \
+  --hidden-import=uvicorn.logging \
+  --hidden-import=uvicorn.loops \
+  --hidden-import=uvicorn.loops.auto \
+  --hidden-import=uvicorn.protocols \
+  --hidden-import=uvicorn.protocols.http \
+  --hidden-import=uvicorn.protocols.http.auto \
+  --hidden-import=uvicorn.protocols.websockets \
+  --hidden-import=uvicorn.protocols.websockets.auto \
+  --hidden-import=uvicorn.lifespan \
+  --hidden-import=uvicorn.lifespan.on \
+  --hidden-import=starlette \
+  --hidden-import=starlette.routing \
+  --hidden-import=starlette.middleware \
+  --hidden-import=starlette.middleware.cors \
+  --hidden-import=pydantic \
   --hidden-import=google.generativeai \
   --hidden-import=anthropic \
   --hidden-import=openai \
@@ -60,5 +89,5 @@ pyinstaller run_mcp.py \
 
 echo ""
 echo "=== Build complete ==="
-echo "Flask server: $DIST_DIR/flask-server/flask-server"
-echo "MCP server:   $DIST_DIR/mcp-server/mcp-server"
+echo "FastAPI server: $DIST_DIR/flask-server/flask-server"
+echo "MCP server:     $DIST_DIR/mcp-server/mcp-server"

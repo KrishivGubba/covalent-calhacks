@@ -5,15 +5,15 @@ Hits /plan_action_direct with various action texts that should trigger
 different tools (calendar, email, github, drive, notion, filesystem).
 Then validates the 'display' key in the response.
 
-Requires: Flask server + MCP server running.
+Requires: FastAPI server + MCP server running.
 """
 import os
 import requests
 import json
 import sys
 
-FLASK_URL = f"http://localhost:{os.environ.get('VITE_FLASK_PORT', '15001')}"
-ENDPOINT = f"{FLASK_URL}/plan_action_direct"
+BACKEND_URL = f"http://localhost:{os.environ.get('VITE_FLASK_PORT', '15001')}"
+ENDPOINT = f"{BACKEND_URL}/plan_action_direct"
 
 # Each test case: (label, payload)
 TEST_CASES = [
@@ -147,7 +147,7 @@ def run_tests():
             print(f"  Duration: {data.get('duration_ms', '?')}ms")
 
         except requests.exceptions.ConnectionError:
-            print(f"  ❌ Connection failed — is the Flask server running on {FLASK_URL}?")
+            print(f"  ❌ Connection failed — is the server running on {BACKEND_URL}?")
             failed += 1
         except Exception as e:
             print(f"  ❌ Error: {e}")

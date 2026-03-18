@@ -4,7 +4,7 @@ Test multi-action chain execution.
 Plans an action that requires multiple tools, then executes ALL
 proposed actions via the /execute_action chain endpoint.
 
-Requires: Flask server + MCP server running.
+Requires: FastAPI server + MCP server running.
 """
 import os
 import requests
@@ -12,7 +12,7 @@ import json
 import time
 import sys
 
-FLASK_URL = f"http://localhost:{os.environ.get('VITE_FLASK_PORT', '15001')}"
+BACKEND_URL = f"http://localhost:{os.environ.get('VITE_FLASK_PORT', '15001')}"
 
 # A multi-step task: create a GitHub issue AND send an email
 TASK = {
@@ -45,12 +45,12 @@ def run_plan(payload: dict) -> dict | None:
     t0 = time.perf_counter()
     try:
         resp = requests.post(
-            f"{FLASK_URL}/plan_action_direct",
+            f"{BACKEND_URL}/plan_action_direct",
             json=payload,
             timeout=180,
         )
     except requests.exceptions.ConnectionError:
-        print(f"  ❌ Connection failed — is the Flask server running on {FLASK_URL}?")
+        print(f"  ❌ Connection failed — is the server running on {BACKEND_URL}?")
         return None
 
     elapsed = time.perf_counter() - t0
@@ -106,7 +106,7 @@ def run_execute_chain(actions: list) -> dict | None:
     t0 = time.perf_counter()
     try:
         resp = requests.post(
-            f"{FLASK_URL}/execute_action",
+            f"{BACKEND_URL}/execute_action",
             json=payload,
             timeout=120,
         )

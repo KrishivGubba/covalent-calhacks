@@ -2,6 +2,7 @@
 FastAPI Application Entry Point for Covalent Context Engine.
 
 This replaces the Flask server (app.py) with a FastAPI-based server.
+Optionally mounts the MCP server at /mcp for single-process deployment.
 """
 import os
 import sys
@@ -31,7 +32,28 @@ from .dependencies import get_db_path, get_encrypted_conn, get_tree, get_auth_da
 from init_db import create_schema, ensure_parent_dir
 
 # Import routers
-from .routers import health, graph, screen, actions, tab_completion, auth, integrations, mcp
+from .routers import health, graph, screen, actions, tab_completion, auth, integrations, mcp as mcp_router
+
+# Check if MCP should be mounted (controlled by env var, default: enabled)
+MOUNT_MCP = os.environ.get('MOUNT_MCP_SERVER', 'true').lower() in ('true', '1', 'yes')
+
+
+def create_mcp_server():
+    """Create and configure the MCP server for mounting."""
+    try:
+        from fastmcp import FastMCP
+        from covalent_mcp.tools import register_tools
+        
+        mcp_server = FastMCP("Covalent MCP Server")
+        register_tools(mcp_server)
+        log.info("✅ MCP server created and tools registered")
+        return mcp_server
+    except ImportError as e:
+        log.warning(f"⚠️ Could not import MCP dependencies: {e}")
+        return None
+    except Exception as e:
+        log.warning(f"⚠️ Failed to create MCP server: {e}")
+        return None
 
 
 @asynccontextmanager
@@ -58,6 +80,11 @@ async def lifespan(app: FastAPI):
     
     # Note: Tree is NOT initialized here - it's lazy-loaded on first request
     # This enables sub-second startup times
+    
+    if MOUNT_MCP:
+        log.info("✅ MCP server mounted at /mcp")
+    else:
+        log.info("ℹ️ MCP server not mounted (MOUNT_MCP_SERVER=false)")
     
     log.info("✅ FastAPI application ready to serve requests")
     
@@ -104,7 +131,18 @@ app.include_router(actions.router, tags=["Actions"])
 app.include_router(tab_completion.router, tags=["Tab Completion"])
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(integrations.router, prefix="/integrations", tags=["Integrations"])
-app.include_router(mcp.router, tags=["MCP"])
+app.include_router(mcp_router.router, tags=["MCP"])
+
+# Optionally mount MCP server at /mcp
+if MOUNT_MCP:
+    mcp_server = create_mcp_server()
+    if mcp_server:
+        try:
+            # Mount the MCP HTTP app - this enables MCP protocol at /mcp
+            mcp_http_app = mcp_server.http_app(path="/mcp")
+            app.mount("/mcp", mcp_http_app)
+        except Exception as e:
+            log.warning(f"⚠️ Failed to mount MCP server: {e}")
 
 
 # Global exception handler

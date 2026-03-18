@@ -8,7 +8,7 @@ import os
 import requests
 import json
 
-FLASK_URL = f"http://localhost:{os.environ.get('VITE_FLASK_PORT', '15001')}"
+BACKEND_URL = f"http://localhost:{os.environ.get('VITE_FLASK_PORT', '15001')}"
 
 
 def test_plan_action_direct():
@@ -20,13 +20,13 @@ def test_plan_action_direct():
         "skip_research": False
     }
     
-    print(f"🔄 Calling {FLASK_URL}/plan_action_direct")
+    print(f"🔄 Calling {BACKEND_URL}/plan_action_direct")
     print(f"📤 Payload: {json.dumps(payload, indent=2)}")
     print()
     
     try:
         response = requests.post(
-            f"{FLASK_URL}/plan_action_direct",
+            f"{BACKEND_URL}/plan_action_direct",
             json=payload,
             timeout=120  # LLM calls can take a while
         )
@@ -36,7 +36,7 @@ def test_plan_action_direct():
         print(json.dumps(response.json(), indent=2))
         
     except requests.exceptions.ConnectionError:
-        print("❌ Connection failed - is the Flask server running?")
+        print("❌ Connection failed - is the server running?")
         print("   Run: ./server/start_server.sh")
     except Exception as e:
         print(f"❌ Error: {e}")
