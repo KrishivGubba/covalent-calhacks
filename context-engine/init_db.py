@@ -45,10 +45,17 @@ def create_schema(conn: sqlite3.Connection) -> None:
             last_modified TEXT,
             parent_uuid TEXT,
             children_uuid_arr TEXT,
+            embedding BLOB,
             FOREIGN KEY (parent_uuid) REFERENCES node_table(UUID) ON DELETE SET NULL
         );
         """
     )
+    
+    # Migration: add embedding column if it doesn't exist (for existing databases)
+    try:
+        conn.execute("ALTER TABLE node_table ADD COLUMN embedding BLOB")
+    except Exception:
+        pass  # Column already exists
 
     conn.execute(
         """

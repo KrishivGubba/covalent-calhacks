@@ -258,11 +258,11 @@ fn wait_for_server(url: &str, timeout_secs: u64, accept_any: bool) -> bool {
     false
 }
 
-struct FlaskServer {
+struct PythonServer {
     process: Arc<Mutex<Option<Child>>>,
 }
 
-impl FlaskServer {
+impl PythonServer {
     fn new() -> Self {
         Self {
             process: Arc::new(Mutex::new(None)),
@@ -270,22 +270,24 @@ impl FlaskServer {
     }
 
     fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>, mcp_port: u16) -> Result<(), String> {
+        // Server binary is still named "flask-server" for backwards compatibility
+        // but can run either Flask or FastAPI depending on the entry point
         let binary = resolve_server_binary(&app_dir, "flask-server", is_dev);
 
         if !binary.exists() {
-            return Err(format!("Flask server binary not found at {:?}", binary));
+            return Err(format!("Python server binary not found at {:?}", binary));
         }
 
-        let flask_port: u16 = std::env::var("VITE_FLASK_PORT")
+        let server_port: u16 = std::env::var("VITE_FLASK_PORT")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(15001);
 
-        check_port_available(flask_port)?;
+        check_port_available(server_port)?;
         ensure_executable(&binary);
 
         let work_dir = binary.parent().unwrap().to_path_buf();
-        println!("Starting Flask server binary: {:?}", binary);
+        println!("Starting Python server binary: {:?}", binary);
 
         let mut cmd = Command::new(&binary);
         cmd.current_dir(&work_dir)
@@ -304,7 +306,7 @@ impl FlaskServer {
             }
         }
 
-        cmd.env("VITE_FLASK_PORT", flask_port.to_string());
+        cmd.env("VITE_FLASK_PORT", server_port.to_string());
         cmd.env("MCP_PORT", mcp_port.to_string());
 
         let db_path = if let Some(dir) = data_dir {
@@ -319,20 +321,20 @@ impl FlaskServer {
 
         match cmd.spawn() {
             Ok(child) => {
-                println!("Flask server started with PID: {:?}", child.id());
+                println!("Python server started with PID: {:?}", child.id());
                 *self.process.lock().unwrap() = Some(child);
 
-                let health_url = format!("http://127.0.0.1:{}/health", flask_port);
+                let health_url = format!("http://127.0.0.1:{}/health", server_port);
                 if wait_for_server(&health_url, 30, false) {
-                    println!("✅ Flask server is healthy and serving on port {}", flask_port);
+                    println!("✅ Python server is healthy and serving on port {}", server_port);
                 } else {
-                    eprintln!("⚠️  Flask server started but health check timed out after 30s");
+                    eprintln!("⚠️  Python server started but health check timed out after 30s");
                 }
                 Ok(())
             }
             Err(e) => {
-                eprintln!("Failed to start Flask server: {}", e);
-                Err(format!("Failed to start Flask server: {}", e))
+                eprintln!("Failed to start Python server: {}", e);
+                Err(format!("Failed to start Python server: {}", e))
             }
         }
     }
@@ -340,7 +342,7 @@ impl FlaskServer {
     fn stop(&self) {
         if let Ok(mut process_guard) = self.process.lock() {
             if let Some(mut child) = process_guard.take() {
-                println!("Stopping Flask server (PID: {:?})", child.id());
+                println!("Stopping Python server (PID: {:?})", child.id());
                 let _ = child.kill();
                 let _ = child.wait();
             }
@@ -348,7 +350,7 @@ impl FlaskServer {
     }
 }
 
-impl Drop for FlaskServer {
+impl Drop for PythonServer {
     fn drop(&mut self) {
         self.stop();
     }
@@ -1107,14 +1109,14 @@ pub fn run() {
             };
             app.manage(mcp_server);
 
-            let flask_server = FlaskServer::new();
+            let python_server = PythonServer::new();
             if !manual_servers {
-                match flask_server.start(app_dir.clone(), is_dev, data_dir.as_ref(), mcp_port) {
-                    Ok(_) => println!("✓ Flask server started successfully"),
-                    Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
+                match python_server.start(app_dir.clone(), is_dev, data_dir.as_ref(), mcp_port) {
+                    Ok(_) => println!("✓ Python server started successfully"),
+                    Err(e) => eprintln!("✗ Failed to start Python server: {}", e),
                 }
             }
-            app.manage(flask_server);
+            app.manage(python_server);
 
             println!("Starting Ollama serve...");
             let ollama_server = OllamaServer::new();

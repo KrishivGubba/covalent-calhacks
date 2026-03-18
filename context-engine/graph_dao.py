@@ -60,7 +60,7 @@ class GraphDAO:
         self.cursor = self.conn.cursor()
 
     def get_all_nodes(self):
-        '''Retrieve all nodes from the database with their associated actions.'''
+        '''Retrieve all nodes from the database with their associated actions and embeddings.'''
         query = """
         SELECT 
             n.UUID as node_uuid,
@@ -69,10 +69,11 @@ class GraphDAO:
             n.last_modified,
             n.parent_uuid,
             n.children_uuid_arr,
-            GROUP_CONCAT(a.UUID || '|' || a.Action_name) as actions
+            GROUP_CONCAT(a.UUID || '|' || a.Action_name) as actions,
+            n.embedding
         FROM node_table n
         LEFT JOIN action_table a ON n.UUID = a.Node_UUID
-        GROUP BY n.UUID, n.Metadata, n.created, n.last_modified, n.parent_uuid, n.children_uuid_arr
+        GROUP BY n.UUID, n.Metadata, n.created, n.last_modified, n.parent_uuid, n.children_uuid_arr, n.embedding
         """
         # returns a list of tuples
         return self.execute_query(query)
@@ -510,13 +511,14 @@ class GraphDAO:
 
     # ==================== GRAPH STRUCTURE METHODS ====================
 
-    def create_node(self, metadata, parent_uuid=None):
+    def create_node(self, metadata, parent_uuid=None, embedding=None):
         '''
         Create a new node with the given metadata.
 
         Args:
             metadata (str): Metadata/name for the node
             parent_uuid (str, optional): UUID of parent node (None for root-level)
+            embedding (bytes, optional): Serialized embedding vector
 
         Returns:
             str: UUID of the newly created node
@@ -530,11 +532,46 @@ class GraphDAO:
         children_uuid_arr = json.dumps([])
 
         query = """
-            INSERT INTO node_table (UUID, Metadata, created, last_modified, parent_uuid, children_uuid_arr)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO node_table (UUID, Metadata, created, last_modified, parent_uuid, children_uuid_arr, embedding)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """
-        self.execute_query(query, (node_uuid, metadata, current_time, current_time, parent_uuid, children_uuid_arr))
+        self.execute_query(query, (node_uuid, metadata, current_time, current_time, parent_uuid, children_uuid_arr, embedding))
         return node_uuid
+
+    def update_node_embedding(self, node_uuid, embedding):
+        '''
+        Update a node's embedding.
+
+        Args:
+            node_uuid (str): UUID of the node
+            embedding (bytes): Serialized embedding vector
+
+        Returns:
+            bool: True on success
+        '''
+        from datetime import datetime
+        current_time = datetime.now().isoformat()
+        query = """
+            UPDATE node_table
+            SET embedding = ?, last_modified = ?
+            WHERE UUID = ?
+        """
+        self.execute_query(query, (embedding, current_time, node_uuid))
+        return True
+
+    def get_nodes_without_embeddings(self):
+        '''
+        Get all nodes that don't have embeddings (for migration).
+
+        Returns:
+            list: List of tuples (uuid, metadata)
+        '''
+        query = """
+            SELECT UUID, Metadata
+            FROM node_table
+            WHERE embedding IS NULL
+        """
+        return self.execute_query(query)
 
     def add_child_to_node(self, parent_uuid, child_uuid):
         '''

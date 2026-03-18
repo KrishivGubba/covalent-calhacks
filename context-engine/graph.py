@@ -18,6 +18,20 @@ from graph_dao import GraphDAO, TestGraphDAO
 from model_interface import ModelFactory
 from graph_config import GraphConfig
 
+
+def serialize_embedding(embedding: np.ndarray) -> bytes:
+    """Serialize a numpy embedding array to bytes for DB storage."""
+    if embedding is None:
+        return None
+    return embedding.tobytes()
+
+
+def deserialize_embedding(data: bytes, dtype=np.float32) -> np.ndarray:
+    """Deserialize bytes from DB to a numpy embedding array."""
+    if data is None:
+        return None
+    return np.frombuffer(data, dtype=dtype)
+
 # Add parent directory to path to import LLMGraph
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -56,64 +70,109 @@ class Tree:
     def __init__(self, db_path, config_path=None):
         self.nodes = {}  # Dictionary to store nodes by UUID for easy lookup
         self.root = None
+        self._graph_constructed = False  # Track if graph has been loaded
 
         self.dao = GraphDAO(db_path)
+        self._config_path = config_path
+        self._db_path = db_path
 
-        # Initialize graph configuration for thresholds
+        # Initialize graph configuration for thresholds (lightweight, no API calls)
         try:
             self.config = GraphConfig(config_path)
         except Exception as e:
             log.warning(f"Warning: Failed to initialize GraphConfig: {e}")
             self.config = None
 
-        # Initialize model factory with configuration
-        try:
-            self.model_factory = ModelFactory(config_path)
-        except Exception as e:
-            log.warning(f"Warning: Failed to initialize model factory: {e}")
-            log.warning("Models will not be available for this session.")
-            self.model_factory = None
+        # Lazy-loaded model factory and models (defer expensive initialization)
+        self._model_factory = None
+        self._embedding_model = None
+        self._traversal_model = None
+        self._action_model = None
+        self._condensation_model = None
+        self._fit_validation_model = None
+        self._graph_operations_model = None
         
-        # Initialize each model independently
-        self.embedding_model = None
-        self.traversal_model = None
-        self.action_model = None
-        self.condensation_model = None
-        self.fit_validation_model = None
-        self.graph_operations_model = None
+        # Don't construct graph at init - defer to first use
+        # This eliminates N embedding API calls at startup
+        log.info("✅ Tree initialized (lazy mode - graph construction deferred)")
 
-        if self.model_factory:
+    def _ensure_graph_constructed(self):
+        """Ensure the graph is constructed before any operation that needs it."""
+        if not self._graph_constructed:
+            log.info("📊 First graph access - constructing graph from database...")
+            self.construct_graph(self.dao.get_all_nodes())
+            self._graph_constructed = True
+
+    @property
+    def model_factory(self):
+        """Lazy-load the model factory."""
+        if self._model_factory is None:
             try:
-                self.embedding_model = self.model_factory.get_embedding_model("embedding")
+                self._model_factory = ModelFactory(self._config_path)
+            except Exception as e:
+                log.warning(f"Warning: Failed to initialize model factory: {e}")
+                log.warning("Models will not be available for this session.")
+        return self._model_factory
+
+    @property
+    def embedding_model(self):
+        """Lazy-load the embedding model."""
+        if self._embedding_model is None and self.model_factory:
+            try:
+                self._embedding_model = self.model_factory.get_embedding_model("embedding")
             except Exception as e:
                 log.warning(f"Warning: Failed to initialize embedding model: {e}")
+        return self._embedding_model
 
+    @property
+    def traversal_model(self):
+        """Lazy-load the traversal model."""
+        if self._traversal_model is None and self.model_factory:
             try:
-                self.traversal_model = self.model_factory.get_chat_model("traversal")
+                self._traversal_model = self.model_factory.get_chat_model("traversal")
             except Exception as e:
                 log.warning(f"Warning: Failed to initialize traversal model: {e}")
+        return self._traversal_model
 
+    @property
+    def action_model(self):
+        """Lazy-load the action model."""
+        if self._action_model is None and self.model_factory:
             try:
-                self.action_model = self.model_factory.get_chat_model("action_creation")
+                self._action_model = self.model_factory.get_chat_model("action_creation")
             except Exception as e:
                 log.warning(f"Warning: Failed to initialize action model: {e}")
+        return self._action_model
 
+    @property
+    def condensation_model(self):
+        """Lazy-load the condensation model."""
+        if self._condensation_model is None and self.model_factory:
             try:
-                self.condensation_model = self.model_factory.get_chat_model("data_condensation")
+                self._condensation_model = self.model_factory.get_chat_model("data_condensation")
             except Exception as e:
                 log.warning(f"Warning: Failed to initialize condensation model: {e}")
+        return self._condensation_model
 
+    @property
+    def fit_validation_model(self):
+        """Lazy-load the fit validation model."""
+        if self._fit_validation_model is None and self.model_factory:
             try:
-                self.fit_validation_model = self.model_factory.get_chat_model("fit_validation")
+                self._fit_validation_model = self.model_factory.get_chat_model("fit_validation")
             except Exception as e:
                 log.warning(f"Warning: Failed to initialize fit validation model: {e}")
+        return self._fit_validation_model
 
+    @property
+    def graph_operations_model(self):
+        """Lazy-load the graph operations model."""
+        if self._graph_operations_model is None and self.model_factory:
             try:
-                self.graph_operations_model = self.model_factory.get_chat_model("graph_operations")
+                self._graph_operations_model = self.model_factory.get_chat_model("graph_operations")
             except Exception as e:
                 log.warning(f"Warning: Failed to initialize graph operations model: {e}")
-
-        self.construct_graph(self.dao.get_all_nodes())
+        return self._graph_operations_model
 
        
         # This prompt should contain key information about how the graph is structured
@@ -302,8 +361,10 @@ class Tree:
         Args:
             node_data: List of tuples from database with structure:
                       (node_uuid, metadata, created, last_modified, 
-                       parent_uuid, children_uuid_arr, actions)
+                       parent_uuid, children_uuid_arr, actions, embedding)
         """
+        nodes_needing_embeddings = []
+        
         # First pass: Create all nodes and store them in the dictionary
         for row in node_data:
             node_uuid = row[0]
@@ -313,6 +374,7 @@ class Tree:
             parent_uuid = row[4]
             children_uuid_arr_str = row[5]  # This is stored as a string in SQLite
             actions_str = row[6]  # Concatenated actions from the join
+            embedding_bytes = row[7] if len(row) > 7 else None  # Embedding from DB
             
             # Parse children_uuid_arr from string format (assuming JSON array format)
             children_uuid_arr = []
@@ -336,6 +398,9 @@ class Tree:
                             'action_name': action_name
                         })
             
+            # Deserialize embedding from DB if present
+            embedding = deserialize_embedding(embedding_bytes) if embedding_bytes else None
+            
             # Create the node with all database fields
             node = Node(
                 node_uuid=node_uuid,
@@ -344,11 +409,9 @@ class Tree:
                 last_modified=last_modified,
                 parent_uuid=parent_uuid,
                 children_uuid_arr=children_uuid_arr,
-                actions=actions
+                actions=actions,
+                embedding=embedding
             )
-            
-            # metadata_chain to include parent's metadata (recursively till the root)
-        
             
             # Store the node in our dictionary for quick lookup
             self.nodes[node_uuid] = node
@@ -356,6 +419,10 @@ class Tree:
             # If this node has no parent, it's the root
             if parent_uuid is None:
                 self.root = node
+            
+            # Track nodes that need embeddings computed
+            if embedding is None and metadata:
+                nodes_needing_embeddings.append(node_uuid)
         
         # Second pass: Build the parent-child relationships
         for node_uuid, node in self.nodes.items():
@@ -364,19 +431,22 @@ class Tree:
                 parent_node = self.nodes[node.parent_uuid]
                 node.parent = parent_node
                 parent_node.add_child(node)
-                
-            
-            # Note: children_uuid_arr are already stored in the node, 
-            # but the actual child objects are linked via parent relationships above
-        # Third pass: Generate embeddings for all nodes
 
         log.debug("NODES: " + str(self.nodes))
-        for node_uuid, node in self.nodes.items():
-            metadata_chain = self.get_parent_metadata(node)
-            #print("Metadata chain for node", node_uuid, ":", metadata_chain)
-            # Vectorize the metadata and store the embedding
-            if metadata:
-                node.embedding = self.vectorize_text(metadata_chain)
+        
+        # Third pass: Generate and persist embeddings only for nodes that don't have them
+        if nodes_needing_embeddings:
+            log.info(f"Computing embeddings for {len(nodes_needing_embeddings)} nodes without persisted embeddings...")
+            for node_uuid in nodes_needing_embeddings:
+                node = self.nodes[node_uuid]
+                metadata_chain = self.get_parent_metadata(node)
+                if metadata_chain:
+                    embedding = self.vectorize_text(metadata_chain)
+                    if embedding is not None:
+                        node.embedding = embedding
+                        # Persist to database
+                        self.dao.update_node_embedding(node_uuid, serialize_embedding(embedding))
+            log.info(f"Finished computing and persisting embeddings.")
     
 
     def traverse(self, screen, curr=None):
@@ -390,6 +460,9 @@ class Tree:
         Returns:
             Node: The node with the highest cosine similarity to the screen input
         """
+        # Ensure graph is loaded on first access
+        self._ensure_graph_constructed()
+        
         if not screen:
             return self.root if curr is None else curr
             
@@ -1354,6 +1427,7 @@ IMPORTANT:
         """
         Regenerate a node's embedding based on its current metadata chain.
         Call this after moving a node or changing its metadata.
+        Persists the new embedding to the database.
 
         Args:
             node: The node to refresh the embedding for
@@ -1364,8 +1438,12 @@ IMPORTANT:
         try:
             metadata_chain = self.get_parent_metadata(node)
             if metadata_chain:
-                node.embedding = self.vectorize_text(metadata_chain)
-                log.debug(f"🔄 Refreshed embedding for node '{node.metadata}'")
+                embedding = self.vectorize_text(metadata_chain)
+                if embedding is not None:
+                    node.embedding = embedding
+                    # Persist to database
+                    self.dao.update_node_embedding(node.node_uuid, serialize_embedding(embedding))
+                    log.debug(f"🔄 Refreshed and persisted embedding for node '{node.metadata}'")
         except Exception as e:
             log.warning(f"⚠️ Failed to refresh embedding for node {node.node_uuid}: {e}")
 
@@ -2020,6 +2098,9 @@ Return ONLY a JSON object:
                 "reasoning": str              # Why this operation was chosen
             }
         """
+        # Ensure graph is loaded on first access
+        self._ensure_graph_constructed()
+        
         log.info(f"\n{'='*70}")
         log.info("LEARN WITH STRUCTURE")
         log.info(f"{'='*70}")
@@ -2033,7 +2114,12 @@ Return ONLY a JSON object:
             # ============================================================
             if self.root is None:
                 log.info("\n🌱 No root node found - creating root in database")
-                root_uuid = self.dao.create_node("Root", parent_uuid=None)
+                
+                # Generate embedding for root
+                root_embedding = self.vectorize_text("Root")
+                embedding_bytes = serialize_embedding(root_embedding) if root_embedding is not None else None
+                
+                root_uuid = self.dao.create_node("Root", parent_uuid=None, embedding=embedding_bytes)
                 if not root_uuid:
                     raise RuntimeError("Failed to create root node in database")
                 
@@ -2049,7 +2135,7 @@ Return ONLY a JSON object:
                     children_uuid_arr=[],
                     actions=[],
                     data=None,
-                    embedding=None
+                    embedding=root_embedding
                 )
                 self.nodes[root_uuid] = self.root
                 log.info(f"✅ Created root node with UUID: {root_uuid[:8]}...")
