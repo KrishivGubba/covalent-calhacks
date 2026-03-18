@@ -67,29 +67,5 @@ pyinstaller server/run_fastapi.py \
   --collect-submodules=rich
 
 echo ""
-echo "=== Building MCP server ==="
-pyinstaller run_mcp.py \
-  --noconfirm \
-  --name mcp-server \
-  --distpath "$DIST_DIR" \
-  --paths=. \
-  --paths=server \
-  --paths=context-engine \
-  --hidden-import=server.auth_dao \
-  --hidden-import=server.integration_dao \
-  --hidden-import=auth_dao \
-  --hidden-import=security \
-  --hidden-import=security.key_manager \
-  --hidden-import=security.validation \
-  --hidden-import=pypdf \
-  --hidden-import=googleapiclient.discovery \
-  --hidden-import=google.auth.transport.requests \
-  --hidden-import=lupa.lua51 \
-  --collect-all=fakeredis \
-  --collect-submodules=rich \
-  --copy-metadata=fastmcp
-
-echo ""
 echo "=== Build complete ==="
-echo "FastAPI server: $DIST_DIR/flask-server/flask-server"
-echo "MCP server:     $DIST_DIR/mcp-server/mcp-server"
+echo "FastAPI server (with MCP mounted at /mcp): $DIST_DIR/flask-server/flask-server"

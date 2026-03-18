@@ -8,7 +8,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build && rm -rf src-tauri/servers && mkdir -p src-tauri/servers && cp -R dist-servers/flask-server src-tauri/servers/ && cp -R dist-servers/mcp-server src-tauri/servers/ && cp .env src-tauri/.env",
+    "beforeBuildCommand": "npm run build && rm -rf src-tauri/servers && mkdir -p src-tauri/servers && cp -R dist-servers/flask-server src-tauri/servers/ && cp .env src-tauri/.env",
     "frontendDist": "../dist"
   },
   "app": {
@@ -104,7 +104,6 @@
     ],
     "resources": [
       "servers/flask-server",
-      "servers/mcp-server",
       ".env"
     ],
     "createUpdaterArtifacts": true,

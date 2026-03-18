@@ -128,17 +128,15 @@ find dist-servers -type f | while read -r file; do
   fi
 done
 
-# Re-sign main executables last
+# Re-sign main executable last
 echo ""
-echo "Re-signing main executables..."
+echo "Re-signing main executable..."
 codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/flask-server/flask-server
-codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/mcp-server/mcp-server
 
-# Verify signatures
+# Verify signature
 echo ""
-echo "=== Verifying signatures ==="
+echo "=== Verifying signature ==="
 codesign --verify --verbose dist-servers/flask-server/flask-server
-codesign --verify --verbose dist-servers/mcp-server/mcp-server
 
 signed_count=$(find dist-servers -type f -exec sh -c 'file "$1" | grep -q "Mach-O" && echo "$1"' _ {} \; | wc -l)
 echo "Total signed binaries: $signed_count"

@@ -72,10 +72,9 @@ jobs:
           name: servers-aarch64-apple-darwin
           path: dist-servers/
 
-      - name: Restore executable permissions on server binaries
+      - name: Restore executable permissions on server binary
         run: |
           chmod +x dist-servers/flask-server/flask-server
-          chmod +x dist-servers/mcp-server/mcp-server
 
       - name: Import Apple certificate
         env:
@@ -186,18 +185,16 @@ jobs:
             fi
           done
           
-          # Re-sign the main server executables last to ensure they're properly signed
-          # after all their dependencies
-          echo "=== Re-signing main executables ==="
+          # Re-sign the main server executable last to ensure it's properly signed
+          # after all its dependencies
+          echo "=== Re-signing main executable ==="
           codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/flask-server/flask-server
-          codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/mcp-server/mcp-server
           
           echo "=== Server binary signing complete ==="
           
-          # Verify signatures on main executables
-          echo "=== Verifying signatures ==="
+          # Verify signature on main executable
+          echo "=== Verifying signature ==="
           codesign --verify --verbose dist-servers/flask-server/flask-server
-          codesign --verify --verbose dist-servers/mcp-server/mcp-server
           
           # List all signed binaries for debugging
           echo "=== Signed binary count ==="

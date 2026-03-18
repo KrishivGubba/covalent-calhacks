@@ -184,18 +184,6 @@ fn ensure_executable(path: &PathBuf) {
     }
 }
 
-/// Find a free port by binding to port 0 and letting the OS assign one.
-fn find_free_port() -> Result<u16, String> {
-    use std::net::TcpListener;
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| format!("Failed to find a free port: {}", e))?;
-    let port = listener.local_addr()
-        .map_err(|e| format!("Failed to get local address: {}", e))?
-        .port();
-    drop(listener);
-    Ok(port)
-}
-
 /// Check whether a port is available. If not, return an error describing which
 /// process is occupying it (macOS/Linux only; falls back to a generic message).
 fn check_port_available(port: u16) -> Result<(), String> {
@@ -269,9 +257,9 @@ impl PythonServer {
         }
     }
 
-    fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>, mcp_port: u16) -> Result<(), String> {
+    fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>) -> Result<(), String> {
         // Server binary is still named "flask-server" for backwards compatibility
-        // but can run either Flask or FastAPI depending on the entry point
+        // but runs FastAPI with MCP mounted at /mcp
         let binary = resolve_server_binary(&app_dir, "flask-server", is_dev);
 
         if !binary.exists() {
@@ -307,7 +295,7 @@ impl PythonServer {
         }
 
         cmd.env("VITE_FLASK_PORT", server_port.to_string());
-        cmd.env("MCP_PORT", mcp_port.to_string());
+        cmd.env("MOUNT_MCP_SERVER", "true");
 
         let db_path = if let Some(dir) = data_dir {
             dir.join("graph.db")
@@ -351,98 +339,6 @@ impl PythonServer {
 }
 
 impl Drop for PythonServer {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-struct McpServer {
-    process: Arc<Mutex<Option<Child>>>,
-}
-
-impl McpServer {
-    fn new() -> Self {
-        Self {
-            process: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    /// Start the MCP server on a dynamically assigned free port.
-    /// Returns the port number so callers can pass it to Flask.
-    fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>) -> Result<u16, String> {
-        let binary = resolve_server_binary(&app_dir, "mcp-server", is_dev);
-
-        if !binary.exists() {
-            return Err(format!("MCP server binary not found at {:?}", binary));
-        }
-
-        let mcp_port = find_free_port()?;
-        ensure_executable(&binary);
-
-        let work_dir = binary.parent().unwrap().to_path_buf();
-        println!("Starting MCP server binary: {:?} on port {}", binary, mcp_port);
-
-        let mut cmd = Command::new(&binary);
-        cmd.current_dir(&work_dir)
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit());
-
-        if let Ok(env_path) = std::fs::read_to_string(app_dir.join(".env")) {
-            for line in env_path.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                if let Some((key, value)) = line.split_once('=') {
-                    cmd.env(key.trim(), value.trim());
-                }
-            }
-        }
-
-        cmd.env("MCP_PORT", mcp_port.to_string());
-
-        let db_path = if let Some(dir) = data_dir {
-            dir.join("graph.db")
-        } else {
-            app_dir.join("context-engine").join("graph.db")
-        };
-        cmd.env("GRAPH_DB_PATH", db_path.to_string_lossy().as_ref());
-        if let Some(dir) = data_dir {
-            cmd.env("COVALENT_DATA_DIR", dir.to_string_lossy().as_ref());
-        }
-
-        match cmd.spawn() {
-            Ok(child) => {
-                println!("MCP server started with PID: {:?}", child.id());
-                *self.process.lock().unwrap() = Some(child);
-
-                let mcp_url = format!("http://127.0.0.1:{}/mcp", mcp_port);
-                if wait_for_server(&mcp_url, 15, true) {
-                    println!("✅ MCP server is healthy and serving on port {}", mcp_port);
-                } else {
-                    eprintln!("⚠️  MCP server started but health check timed out after 15s");
-                }
-                Ok(mcp_port)
-            }
-            Err(e) => {
-                eprintln!("Failed to start MCP server: {}", e);
-                Err(format!("Failed to start MCP server: {}", e))
-            }
-        }
-    }
-
-    fn stop(&self) {
-        if let Ok(mut process_guard) = self.process.lock() {
-            if let Some(mut child) = process_guard.take() {
-                println!("Stopping MCP server (PID: {:?})", child.id());
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    }
-}
-
-impl Drop for McpServer {
     fn drop(&mut self) {
         self.stop();
     }
@@ -1076,42 +972,18 @@ pub fn run() {
             };
 
             // In dev mode, MANUAL_SERVERS=1 skips spawning bundled servers
-            // so you can run `python server/app.py` and `python run_mcp.py` yourself.
+            // so you can run the server yourself with: ./start_servers.sh
             let manual_servers = is_dev && std::env::var("MANUAL_SERVERS").unwrap_or_default() == "1";
 
             if manual_servers {
                 println!("⏭️  MANUAL_SERVERS=1 — skipping bundled server startup");
-                println!("   Start servers yourself:");
-                println!("     python run_mcp.py");
-                println!("     python server/app.py");
+                println!("   Start the server yourself: ./start_servers.sh");
             }
-
-            let mcp_server = McpServer::new();
-            let mcp_port: u16 = if !manual_servers {
-                match mcp_server.start(app_dir.clone(), is_dev, data_dir.as_ref()) {
-                    Ok(port) => {
-                        println!("✓ MCP server started successfully on port {}", port);
-                        port
-                    }
-                    Err(e) => {
-                        eprintln!("✗ Failed to start MCP server: {}", e);
-                        8001
-                    }
-                }
-            } else {
-                let port: u16 = std::env::var("MCP_PORT")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(8001);
-                println!("⏭️  Manual mode — assuming MCP on port {}", port);
-                port
-            };
-            app.manage(mcp_server);
 
             let python_server = PythonServer::new();
             if !manual_servers {
-                match python_server.start(app_dir.clone(), is_dev, data_dir.as_ref(), mcp_port) {
-                    Ok(_) => println!("✓ Python server started successfully"),
+                match python_server.start(app_dir.clone(), is_dev, data_dir.as_ref()) {
+                    Ok(_) => println!("✓ Python server started successfully (MCP mounted at /mcp)"),
                     Err(e) => eprintln!("✗ Failed to start Python server: {}", e),
                 }
             }
@@ -1527,7 +1399,6 @@ pub fn run() {
         if let tauri::RunEvent::Exit = event {
             println!("🧹 Running cleanup on exit...");
             let _ = Command::new("pkill").args(["-f", "flask-server"]).output();
-            let _ = Command::new("pkill").args(["-f", "mcp-server"]).output();
             println!("🧹 Cleanup complete");
         }
     });
