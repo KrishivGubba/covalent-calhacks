@@ -5,6 +5,7 @@ Example usage:
     python -m mcp.agent_integration
 """
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -14,12 +15,12 @@ from logger import get_logger
 log = get_logger()
 from langchain.agents import create_agent
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langchain.chat_models import init_chat_model
+from langchain_aws import ChatBedrockConverse
 
 
 async def create_agent_with_mcp_tools():
     """Create a LangChain agent with MCP tools."""
-    log.info("🤖 Creating agent with MCP tools...")
+    log.info("Creating agent with MCP tools...")
     
     # Connect to MCP server
     client = MultiServerMCPClient({
@@ -32,12 +33,13 @@ async def create_agent_with_mcp_tools():
     
     # Get tools
     tools = await client.get_tools()
-    log.info(f"📋 Loaded {len(tools)} tools into agent")
+    log.info(f"Loaded {len(tools)} tools into agent")
     
-    # Initialize LLM
-    llm = init_chat_model(
-        model_provider="anthropic",
-        model="claude-sonnet-4-5-20250929",
+    # Initialize LLM via AWS Bedrock
+    region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+    llm = ChatBedrockConverse(
+        model="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        region_name=region,
     )
     
     # Create agent with tools
@@ -47,7 +49,7 @@ async def create_agent_with_mcp_tools():
     )
     
     # Test the agent
-    log.info("\n💬 Testing agent...")
+    log.info("\nTesting agent...")
     result = await agent.ainvoke({
         "messages": [{
             "role": "user",
@@ -55,7 +57,7 @@ async def create_agent_with_mcp_tools():
         }]
     })
     
-    log.info("\n🤖 Agent response:")
+    log.info("\nAgent response:")
     log.info(str(result))
     
     return agent

@@ -63,7 +63,8 @@ pyinstaller server/run_fastapi.py \
   --copy-metadata=langchain \
   --copy-metadata=langchain-core \
   --copy-metadata=langchain-openai \
-  --copy-metadata=openai
+  --copy-metadata=openai \
+  --collect-submodules=rich
 
 echo ""
 echo "=== Building MCP server ==="
@@ -85,6 +86,7 @@ pyinstaller run_mcp.py \
   --hidden-import=google.auth.transport.requests \
   --hidden-import=lupa.lua51 \
   --collect-all=fakeredis \
+  --collect-submodules=rich \
   --copy-metadata=fastmcp
 
 echo ""

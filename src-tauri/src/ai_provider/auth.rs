@@ -6,8 +6,21 @@
 /// logged-in desktop user.
 use serde::Deserialize;
 
-const DEFAULT_BACKEND_URL: &str = "http://localhost:5001";
+const DEFAULT_FLASK_PORT: u16 = 15001;
 const FETCH_TIMEOUT_SECS: u64 = 5;
+
+/// Derive the Flask base URL from the same env var (`VITE_FLASK_PORT`) that `lib.rs`
+/// uses to start the server, falling back to `FLASK_BASE_URL` for backwards compat.
+pub fn flask_base_url() -> String {
+    if let Ok(url) = std::env::var("FLASK_BASE_URL") {
+        return url;
+    }
+    let port: u16 = std::env::var("VITE_FLASK_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_FLASK_PORT);
+    format!("http://127.0.0.1:{}", port)
+}
 
 /// Full session info returned by `/auth/current`.
 #[derive(Debug, Deserialize, Clone)]
@@ -55,12 +68,9 @@ pub async fn fetch_current_jwt(backend_url: &str) -> Option<String> {
         .and_then(|s| s.access_token)
 }
 
-/// Return the active session using the default backend URL (`http://localhost:5001`),
-/// falling back to the `FLASK_BASE_URL` environment variable for backward compatibility.
+/// Return the active session using the resolved Flask URL.
 pub async fn fetch_current_session_default() -> Option<CurrentSession> {
-    let url = std::env::var("FLASK_BASE_URL")
-        .unwrap_or_else(|_| DEFAULT_BACKEND_URL.to_string());
-    fetch_current_session(&url).await
+    fetch_current_session(&flask_base_url()).await
 }
 
 /// Return just the JWT using the default backend URL.

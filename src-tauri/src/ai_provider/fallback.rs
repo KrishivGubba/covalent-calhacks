@@ -29,7 +29,7 @@ impl FallbackProvider {
         // Build providers based on fallback chain
         for provider_name in &config.fallback_chain {
             match provider_name.as_str() {
-                "gateway" => {
+                "gateway" | "bedrock" => {
                     match GatewayProvider::new_with_config(config) {
                         Ok(gateway) => {
                             println!("✓ Gateway/Bedrock provider initialized (JWT fetched per-request)");

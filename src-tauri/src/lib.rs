@@ -899,8 +899,7 @@ fn set_excluded_apps(
 async fn get_auth_status() -> Result<serde_json::Value, String> {
     println!("🔐 Checking auth status");
 
-    let flask_base_url = std::env::var("FLASK_BASE_URL")
-        .unwrap_or_else(|_| "http://localhost:5001".to_string());
+    let flask_base_url = crate::ai_provider::auth::flask_base_url();
 
     match crate::ai_provider::auth::fetch_current_session(&flask_base_url).await {
         Some(session) => Ok(serde_json::json!({
@@ -1015,12 +1014,12 @@ pub fn run() {
     if cfg!(dev) {
         if let Err(e) = dotenvy::dotenv() {
             eprintln!("⚠️  Warning: Could not load .env file: {}", e);
-            eprintln!("   Make sure ANTHROPIC_API_KEY is set in your environment or .env file");
+            eprintln!("   Make sure GATEWAY_URL and API keys are set in your environment or .env file");
         } else {
             println!("✓ Loaded environment variables from .env file");
         }
     }
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
@@ -1521,6 +1520,15 @@ pub fn run() {
             open_main_window,
             is_covalent_focused
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|_app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            println!("🧹 Running cleanup on exit...");
+            let _ = Command::new("pkill").args(["-f", "flask-server"]).output();
+            let _ = Command::new("pkill").args(["-f", "mcp-server"]).output();
+            println!("🧹 Cleanup complete");
+        }
+    });
 }

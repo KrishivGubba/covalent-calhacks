@@ -34,9 +34,14 @@ pub fn create_provider_from_config(config: &ProviderConfig) -> Result<Arc<dyn LL
 
 /// Factory function to create a specific provider by name
 pub fn create_single_provider(provider_name: &str) -> Result<Arc<dyn LLMProvider>> {
+    let config = ProviderConfig::from_env();
     match provider_name.to_lowercase().as_str() {
         "claude" | "anthropic" => {
             let provider = ClaudeProvider::new()?;
+            Ok(Arc::new(provider))
+        }
+        "gateway" | "bedrock" => {
+            let provider = GatewayProvider::new_with_config(&config)?;
             Ok(Arc::new(provider))
         }
         "openai" => {
