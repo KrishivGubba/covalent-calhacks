@@ -61,41 +61,60 @@ impl ModelInvoker {
             println!("⚠️  Local Ollama failed: {}", e);
         }
 
-        // 2. Fallback to Claude Haiku
-        println!("🔄 Falling back to Claude Haiku...");
+        // 2. Fallback to Bedrock Haiku via gateway
+        println!("🔄 Falling back to Bedrock Haiku via gateway...");
         match self.predict_haiku(prompt, max_tokens) {
             Ok(pred) => {
                 let elapsed = start.elapsed().as_millis();
-                println!("✅ Haiku prediction ({}ms): {}", elapsed, &pred[..pred.len().min(50)]);
+                println!("✅ Bedrock Haiku prediction ({}ms): {}", elapsed, &pred[..pred.len().min(50)]);
                 Ok(pred)
             }
             Err(e) => {
-                println!("❌ Haiku fallback also failed: {}", e);
-                // Return original local result if Haiku fails (might be better than nothing)
+                println!("❌ Bedrock Haiku fallback also failed: {}", e);
                 local_result
             }
         }
     }
 
-    /// Call Claude Haiku API for fast, accurate completions
+    /// Call Bedrock Haiku via the Lambda gateway for fast, accurate completions
     fn predict_haiku(&self, prompt: &str, max_tokens: usize) -> Result<String> {
-        let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .or_else(|_| std::env::var("CLAUDE_API_KEY"))
-            .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY or CLAUDE_API_KEY not set"))?;
+        let gateway_url = std::env::var("GATEWAY_URL")
+            .map_err(|_| anyhow::anyhow!("GATEWAY_URL not set — cannot call Bedrock gateway for Haiku fallback"))?;
 
-        let client = reqwest::blocking::Client::new();
+        let flask_base_url = crate::ai_provider::auth::flask_base_url();
 
-        // Use a completion-focused system prompt for Haiku
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_millis(5000))
+            .build()?;
+
+        // Fetch JWT from Flask (blocking)
+        let jwt_response = client
+            .get(format!("{}/auth/current", flask_base_url.trim_end_matches('/')))
+            .timeout(std::time::Duration::from_millis(2000))
+            .send();
+
+        let jwt = jwt_response.ok()
+            .and_then(|r| r.json::<serde_json::Value>().ok())
+            .and_then(|v| {
+                if v["authenticated"].as_bool() == Some(true) && v["expired"].as_bool() != Some(true) {
+                    v["access_token"].as_str().map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| anyhow::anyhow!("No active user session for Bedrock gateway"))?;
+
         let system_prompt = "You are a command-line autocomplete assistant. Output ONLY the completion text that should be appended to the user's input. No explanations, no quotes, no markdown. Just the raw completion.";
 
+        let invoke_url = format!("{}/invoke", gateway_url.trim_end_matches('/'));
+
         let response = client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .post(&invoke_url)
+            .header("Authorization", format!("Bearer {}", jwt))
+            .header("Content-Type", "application/json")
             .json(&serde_json::json!({
-                "model": "claude-3-haiku-20240307",
-                "max_tokens": max_tokens.max(50),  // At least 50 tokens for reasonable completions
+                "model": "anthropic.claude-3-haiku-20240307-v1:0",
+                "max_tokens": max_tokens.max(50),
                 "system": system_prompt,
                 "messages": [{"role": "user", "content": prompt}]
             }))
@@ -105,11 +124,11 @@ impl ModelInvoker {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().unwrap_or_default();
-            return Err(anyhow::anyhow!("Haiku API error {}: {}", status, error_text));
+            return Err(anyhow::anyhow!("Bedrock gateway error {}: {}", status, error_text));
         }
 
         let result: serde_json::Value = response.json()?;
-        let text = result["content"][0]["text"]
+        let text = result["content"]
             .as_str()
             .unwrap_or("")
             .to_string();

@@ -4,39 +4,36 @@
 models:
   # Model for generating embeddings/vectors
   embedding:
-    provider: "google"  # Options: google, openai, anthropic
+    provider: "google"  # Options: google, openai, bedrock
     model_name: "gemini-embedding-001"
     api_key_env: "GOOGLE_API_KEY"
     
   # Model for action creation and learning decisions
   action_creation:
-    provider: "anthropic"  # Options: google, openai, anthropic, qwen
-    model_name: "claude-sonnet-4-5-20250929"
-    api_key_env: "ANTHROPIC_API_KEY"
+    provider: "bedrock"  # Options: google, openai, bedrock, qwen
+    model_name: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
     
   # Model for data condensation/cleanup
   data_condensation:
-    provider: "anthropic"  # Options: google, openai, anthropic, qwen
-    model_name: "claude-sonnet-4-5-20250929"
-    api_key_env: "ANTHROPIC_API_KEY"
+    provider: "bedrock"  # Options: google, openai, bedrock, qwen
+    model_name: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
     
   # Model for node traversal and validation
   traversal:
-    provider: "google"  # Options: google, openai, anthropic, qwen
+    provider: "google"  # Options: google, openai, bedrock, qwen
     model_name: "gemini-2.5-flash"
     api_key_env: "GOOGLE_API_KEY"
     
   # Model for fit validation (lightweight model for quick validation checks)
   fit_validation:
-    provider: "openai"  # Options: google, openai, anthropic, qwen
+    provider: "openai"  # Options: google, openai, bedrock, qwen
     model_name: "gpt-5-nano"
     api_key_env: "OPENAI_API_KEY"
 
   # Model for graph structure operations (creating nodes, splitting, etc.)
   graph_operations:
-    provider: "anthropic"  # Options: google, openai, anthropic, qwen
-    model_name: "claude-sonnet-4-5-20250929"
-    api_key_env: "ANTHROPIC_API_KEY"
+    provider: "bedrock"  # Options: google, openai, bedrock, qwen
+    model_name: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 # Provider-specific settings
 provider_settings:
@@ -54,6 +51,11 @@ provider_settings:
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"  # Qwen API endpoint
     api_key_env: "QWEN_API_KEY"
     timeout: 30
+    
+  bedrock:
+    gateway_url_env: "GATEWAY_URL"
+    access_token_env: "GATEWAY_ACCESS_TOKEN"
+    timeout: 60
 
 # Graph construction settings for the context tree
 graph_construction:

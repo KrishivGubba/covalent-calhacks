@@ -45,7 +45,7 @@ fn map_to_bedrock_model(model: &str) -> &str {
 #[derive(Debug, Serialize)]
 struct GatewayMessage {
     role: String,
-    content: String,
+    content: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,6 +55,8 @@ struct GatewayRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<String>,
     max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    use_converse: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,8 +90,7 @@ impl GatewayProvider {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("GATEWAY_URL is not configured"))?;
 
-        let flask_base_url = std::env::var("FLASK_BASE_URL")
-            .unwrap_or_else(|_| "http://localhost:5001".to_string());
+        let flask_base_url = auth::flask_base_url();
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(GATEWAY_TIMEOUT_SECS))
@@ -112,6 +113,7 @@ impl GatewayProvider {
         &self,
         system_prompt: &str,
         messages: Vec<GatewayMessage>,
+        use_converse: Option<bool>,
     ) -> Result<String> {
         // Require a live JWT — no JWT means the user is not logged in.
         let jwt = auth::fetch_current_jwt(&self.flask_base_url)
@@ -135,6 +137,7 @@ impl GatewayProvider {
             messages,
             system,
             max_tokens: 4096,
+            use_converse,
         };
 
         let response = self
@@ -175,27 +178,49 @@ impl LLMProvider for GatewayProvider {
     async fn generate(&self, system_prompt: &str, user_prompt: &str) -> Result<String> {
         let messages = vec![GatewayMessage {
             role: "user".to_string(),
-            content: user_prompt.to_string(),
+            content: serde_json::Value::String(user_prompt.to_string()),
         }];
-        self.call_gateway(system_prompt, messages).await
+        self.call_gateway(system_prompt, messages, None).await
     }
 
     async fn generate_with_image(
         &self,
-        _system_prompt: &str,
-        _user_prompt: &str,
-        _image_base64: &str,
+        system_prompt: &str,
+        user_prompt: &str,
+        image_base64: &str,
     ) -> Result<String> {
-        // The Bedrock Converse API supports images, but GatewayRequest currently
-        // sends plain-string content only.  Return an error so the FallbackProvider
-        // can route vision calls to Claude or OpenAI directly.
-        Err(anyhow::anyhow!(
-            "GatewayProvider does not support vision requests; falling back to direct provider"
-        ))
+        // Detect media type from base64 prefix
+        let media_type = if image_base64.starts_with("/9j/") {
+            "image/jpeg"
+        } else {
+            "image/png"
+        };
+
+        // Construct Anthropic-format multi-part content with base64 image.
+        // use_converse=false routes through the Lambda's invoke_bedrock_raw path,
+        // which natively handles Anthropic-format base64 images.
+        let content = serde_json::json!([
+            {"type": "text", "text": user_prompt},
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": image_base64
+                }
+            }
+        ]);
+
+        let messages = vec![GatewayMessage {
+            role: "user".to_string(),
+            content,
+        }];
+
+        self.call_gateway(system_prompt, messages, Some(false)).await
     }
 
     fn supports_vision(&self) -> bool {
-        false
+        true
     }
 
     fn provider_name(&self) -> &str {
