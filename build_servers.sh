@@ -18,7 +18,7 @@ pyinstaller server/app.py \
   --paths=. \
   --hidden-import=server.auth_dao \
   --hidden-import=server.integration_dao \
-  --hidden-import=google.generativeai \
+  --hidden-import=google.genai \
   --hidden-import=anthropic \
   --hidden-import=openai \
   --hidden-import=langchain_mcp_adapters \
