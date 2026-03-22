@@ -57,6 +57,8 @@ from decimal import Decimal
 from typing import Any, Dict, Optional
 from functools import lru_cache
 
+from budget_metadata import get_or_create_budget_row_minimal, sync_budget_user_row
+
 import boto3
 from botocore.config import Config
 import jwt
@@ -271,12 +273,14 @@ def calculate_request_cost(model: str, input_tokens: int, output_tokens: int) ->
     return (input_tokens * pricing["input"]) + (output_tokens * pricing["output"])
 
 
-def get_user_budget(user_id: str) -> Dict[str, Any]:
+def get_user_budget(
+    user_id: str, jwt_payload: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
     Fetch the user's budget record from DynamoDB.
-    
-    Returns dict with 'total_spend' and 'budget_limit'.
-    Creates a new record with defaults if the user doesn't exist yet.
+
+    For authenticated users (non-anonymous), refreshes human-readable JWT metadata
+    on the row (display name, email, picture, etc.) and returns spend/limit.
     """
     table = get_dynamodb_table()
     if not table:
@@ -284,20 +288,13 @@ def get_user_budget(user_id: str) -> Dict[str, Any]:
         return {"total_spend": 0.0, "budget_limit": float("inf")}
 
     try:
-        resp = table.get_item(Key={"user_id": user_id})
-        item = resp.get("Item")
-        if item:
-            return {
-                "total_spend": float(item.get("total_spend", 0)),
-                "budget_limit": float(item.get("budget_limit", DEFAULT_BUDGET_LIMIT)),
-            }
-        # First time user — create record with defaults
-        table.put_item(Item={
-            "user_id": user_id,
-            "total_spend": 0,
-            "budget_limit": DEFAULT_BUDGET_LIMIT,
-        })
-        return {"total_spend": 0.0, "budget_limit": DEFAULT_BUDGET_LIMIT}
+        if user_id != "anonymous":
+            return sync_budget_user_row(
+                table, user_id, jwt_payload or {}, DEFAULT_BUDGET_LIMIT
+            )
+        return get_or_create_budget_row_minimal(
+            table, user_id, DEFAULT_BUDGET_LIMIT
+        )
     except Exception as e:
         logger.error(f"DynamoDB get_user_budget error: {e}")
         # Fail open — don't block requests if DynamoDB is down
@@ -488,7 +485,11 @@ def invoke_bedrock_raw(
     }
 
 
-def handle_invoke(body: Dict[str, Any], user_id: str = "anonymous") -> Dict[str, Any]:
+def handle_invoke(
+    body: Dict[str, Any],
+    user_id: str = "anonymous",
+    jwt_payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Handle the /invoke endpoint with budget enforcement."""
     # Validate request
     error = validate_request(body)
@@ -496,7 +497,7 @@ def handle_invoke(body: Dict[str, Any], user_id: str = "anonymous") -> Dict[str,
         return create_response(400, {"error": error})
     
     # --- Budget pre-check: reject if user is already over budget ---
-    budget = get_user_budget(user_id)
+    budget = get_user_budget(user_id, jwt_payload)
     remaining = budget["budget_limit"] - budget["total_spend"]
     if remaining <= 0:
         logger.warning(f"User {user_id} over budget: spent ${budget['total_spend']:.4f} / ${budget['budget_limit']:.2f}")
@@ -572,7 +573,11 @@ def handle_invoke(body: Dict[str, Any], user_id: str = "anonymous") -> Dict[str,
 # Embedding Handler
 # ========================
 
-def handle_embed(body: Dict[str, Any], user_id: str = "anonymous") -> Dict[str, Any]:
+def handle_embed(
+    body: Dict[str, Any],
+    user_id: str = "anonymous",
+    jwt_payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     Handle the /embed endpoint with budget enforcement.
     
@@ -595,7 +600,7 @@ def handle_embed(body: Dict[str, Any], user_id: str = "anonymous") -> Dict[str, 
         return create_response(400, {"error": "Provide either 'text' or 'texts', not both"})
     
     # --- Budget pre-check: reject if user is already over budget ---
-    budget = get_user_budget(user_id)
+    budget = get_user_budget(user_id, jwt_payload)
     remaining = budget["budget_limit"] - budget["total_spend"]
     if remaining <= 0:
         logger.warning(f"User {user_id} over budget: spent ${budget['total_spend']:.4f} / ${budget['budget_limit']:.2f}")
@@ -1223,7 +1228,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             except json.JSONDecodeError:
                 return create_response(400, {"error": "Invalid JSON in request body"})
         
-        return handle_invoke(body, user_id=user_id)
+        return handle_invoke(body, user_id=user_id, jwt_payload=user_payload)
     
     # Embedding endpoint
     if path == "/embed" or path.endswith("/embed"):
@@ -1237,7 +1242,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             except json.JSONDecodeError:
                 return create_response(400, {"error": "Invalid JSON in request body"})
         
-        return handle_embed(body, user_id=user_id)
+        return handle_embed(body, user_id=user_id, jwt_payload=user_payload)
     
     # Google OAuth token exchange
     if path == "/integrations/google/exchange" or path.endswith("/integrations/google/exchange"):
@@ -1317,7 +1322,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 body = json.loads(body)
             except json.JSONDecodeError:
                 return create_response(400, {"error": "Invalid JSON in request body"})
-        return handle_invoke(body, user_id=user_id)
+        return handle_invoke(body, user_id=user_id, jwt_payload=user_payload)
     
     return create_response(404, {"error": f"Not found: {path}"})
 

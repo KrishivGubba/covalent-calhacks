@@ -75,7 +75,7 @@ This creates:
    # Package
    cd lambda
    pip install -r requirements.txt -t package/
-   cp ai-gateway.py package/
+   cp ai-gateway.py budget_metadata.py package/
    cd package && zip -r ../deployment.zip . && cd ..
    
    # Create function (AWS Console or CLI)
