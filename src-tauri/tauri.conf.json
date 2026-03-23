@@ -3,7 +3,7 @@
   "productName": "Covalent",
 
   "version": "0.1.25",
-  "identifier": "Covalent",
+  "identifier": "com.covalent.app",
 
   "build": {
     "beforeDevCommand": "npm run dev",
