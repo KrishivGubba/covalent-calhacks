@@ -32,7 +32,7 @@ struct ImageUrl {
 struct OpenAIRequest {
     model: String,
     messages: Vec<OpenAIMessage>,
-    max_tokens: u32,
+    max_completion_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -80,7 +80,7 @@ impl OpenAIProvider {
         let request = OpenAIRequest {
             model: self.model.clone(),
             messages,
-            max_tokens: 1024,
+            max_completion_tokens: 1024,
         };
 
         let response = self
