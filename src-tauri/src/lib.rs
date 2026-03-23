@@ -1219,6 +1219,11 @@ pub fn run() {
             let actions_store = ActionsStore::new();
             app.manage(actions_store.clone());
             
+            // Check screen recording permission once at startup.
+            // CGPreflightScreenCaptureAccess silently checks the current state;
+            // CGRequestScreenCaptureAccess only shows the system dialog if not yet granted.
+            screen_context::ScreenCapture::request_permission_if_needed();
+
             // Start context collection loop using Tauri's async runtime
             println!("🚀 Starting context loop spawn task...");
             let context_state_for_loop = context_state.clone();

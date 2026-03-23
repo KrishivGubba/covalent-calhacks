@@ -1,5 +1,5 @@
 use core_foundation::array::CFArray;
-use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
+use core_foundation::base::{CFTypeRef, TCFType};
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
@@ -22,9 +22,22 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use anyhow::Result;
+
+extern "C" {
+    /// Returns true if the app already has screen recording permission.
+    /// Does NOT show any system dialog.
+    fn CGPreflightScreenCaptureAccess() -> bool;
+
+    /// Opens System Settings to the Screen Recording pane and shows a prompt
+    /// if the app does not yet have permission. Returns true if already granted.
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+static PERMISSION_GRANTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Error, Debug)]
 pub enum ScreenCaptureError {
@@ -133,30 +146,86 @@ impl ScreenCapture {
         })
     }
     
-    /// Check if we have screen recording permission
+    /// Check if we have screen recording permission without triggering any system dialog.
+    /// Uses CGPreflightScreenCaptureAccess first, then falls back to a practical test
+    /// (reading window names) since the API can return false negatives on macOS 14+.
     pub fn check_permission(&self) -> bool {
+        let granted = Self::has_screen_recording_permission();
+        PERMISSION_GRANTED.store(granted, Ordering::Relaxed);
+        granted
+    }
+
+    /// Reliable permission check that doesn't trigger any system dialog.
+    /// CGPreflightScreenCaptureAccess is unreliable on macOS Sonoma/Sequoia — it can
+    /// return false even when permission is granted (especially after rebuilds or on
+    /// first launch). As a fallback we attempt to read window names via
+    /// CGWindowListCopyWindowInfo: if any non-empty kCGWindowName is returned, the app
+    /// definitely has screen recording access.
+    fn has_screen_recording_permission() -> bool {
+        if unsafe { CGPreflightScreenCaptureAccess() } {
+            return true;
+        }
+
         unsafe {
-            let displays = self.get_display_list().unwrap_or_default();
-            if displays.is_empty() {
+            let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+            let window_list_ref = CGWindowListCopyWindowInfo(options, kCGNullWindowID);
+            if window_list_ref.is_null() {
                 return false;
             }
-            
-            let main_display = displays[0];
-            let test_image = CGDisplayCreateImage(main_display);
-            
-            if test_image.is_null() {
-                false
-            } else {
-                CFRelease(test_image as CFTypeRef);
-                true
+            let window_list: CFArray<CFDictionary<CFString, CFTypeRef>> =
+                CFArray::wrap_under_create_rule(window_list_ref as *const _);
+
+            let name_key = CFString::new("kCGWindowName");
+            let owner_key = CFString::new("kCGWindowOwnerName");
+            for i in 0..window_list.len() {
+                if let Some(dict) = window_list.get(i) {
+                    if let Some(name_ref) = dict.find(&name_key) {
+                        let name: CFString = CFString::wrap_under_get_rule(*name_ref as *const _);
+                        if name.to_string().len() > 0 {
+                            return true;
+                        }
+                    }
+                    if let Some(owner_ref) = dict.find(&owner_key) {
+                        let owner: CFString = CFString::wrap_under_get_rule(*owner_ref as *const _);
+                        if owner.to_string().len() > 0 {
+                            return true;
+                        }
+                    }
+                }
             }
+            false
         }
+    }
+
+    /// Request screen recording permission, showing the system dialog only if
+    /// permission has not already been granted. Call once at app startup.
+    /// Returns true if permission is (now) granted.
+    pub fn request_permission_if_needed() -> bool {
+        if Self::has_screen_recording_permission() {
+            PERMISSION_GRANTED.store(true, Ordering::Relaxed);
+            println!("✓ Screen recording permission already granted");
+            return true;
+        }
+
+        println!("⚠️  Screen recording permission not granted — requesting...");
+        let granted = unsafe { CGRequestScreenCaptureAccess() };
+        PERMISSION_GRANTED.store(granted, Ordering::Relaxed);
+        granted
+    }
+
+    /// Fast cached check — avoids the syscall on every capture call.
+    pub fn has_permission_cached() -> bool {
+        PERMISSION_GRANTED.load(Ordering::Relaxed)
     }
     
     /// Capture full screen from the active display
     /// First tries to capture the frontmost window (works for fullscreen apps),
     /// then captures the display containing the active window for multi-monitor support.
     pub fn capture_full_screen(&self) -> Result<DynamicImage> {
+        if !Self::has_permission_cached() && !self.check_permission() {
+            return Err(ScreenCaptureError::PermissionDenied.into());
+        }
+
         // First, try to capture the frontmost window directly
         // This works for fullscreen apps which exist in their own Space
         if let Ok(window_id) = self.get_frontmost_window_id() {
@@ -225,6 +294,10 @@ impl ScreenCapture {
     
     /// Capture a specific region of the screen
     pub fn capture_region(&self, x: f32, y: f32, width: f32, height: f32) -> Result<DynamicImage> {
+        if !Self::has_permission_cached() && !self.check_permission() {
+            return Err(ScreenCaptureError::PermissionDenied.into());
+        }
+
         let region = Region::new(x, y, width, height);
         
         if !region.is_valid() {
@@ -266,6 +339,10 @@ impl ScreenCapture {
     /// Capture a specific window by its ID
     /// Uses kCGWindowListOptionIncludingWindow to capture windows even in fullscreen mode
     pub fn capture_window(&self, window_id: u32) -> Result<DynamicImage> {
+        if !Self::has_permission_cached() && !self.check_permission() {
+            return Err(ScreenCaptureError::PermissionDenied.into());
+        }
+
         unsafe {
             let cg_window_id = window_id as CGWindowID;
 
@@ -514,6 +591,10 @@ impl ScreenCapture {
     
     /// Capture a specific display by its ID
     pub fn capture_display(&self, display_id: u32) -> Result<DynamicImage> {
+        if !Self::has_permission_cached() && !self.check_permission() {
+            return Err(ScreenCaptureError::PermissionDenied.into());
+        }
+
         unsafe {
             let image_ref = CGDisplayCreateImage(display_id);
             if image_ref.is_null() {
