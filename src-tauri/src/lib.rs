@@ -291,9 +291,36 @@ impl FlaskServer {
 
         let mut cmd = Command::new(&binary);
         cmd.current_dir(&work_dir)
-            .process_group(0)
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit());
+            .process_group(0);
+
+        // In production, redirect the subprocess fd 1/2 to covalent.log so that
+        // every byte of output (including pre-Python bootstrap and C-level writes)
+        // lands in the same log file. In dev, inherit so output shows in terminal.
+        if let Some(dir) = data_dir {
+            let log_dir = dir.join("logs");
+            let _ = std::fs::create_dir_all(&log_dir);
+            let log_path = log_dir.join("covalent.log");
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                Ok(file) => {
+                    let file_clone = file.try_clone()
+                        .expect("Failed to clone log file handle");
+                    println!("Redirecting Flask stdout/stderr → {:?}", log_path);
+                    cmd.stdout(file).stderr(file_clone);
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Could not open log file {:?}: {}. Falling back to inherited stdio.", log_path, e);
+                    cmd.stdout(std::process::Stdio::inherit())
+                        .stderr(std::process::Stdio::inherit());
+                }
+            }
+        } else {
+            cmd.stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit());
+        }
 
         if let Ok(env_path) = std::fs::read_to_string(app_dir.join(".env")) {
             for line in env_path.lines() {
@@ -1083,7 +1110,7 @@ pub fn run() {
 
             // Compute writable data directory for the database.
             // In dev: None (servers use their default project-relative paths).
-            // In production: ~/Library/Application Support/com.hem.src-tauri/
+            // In production: ~/Library/Application Support/com.covalent.app/
             let data_dir: Option<PathBuf> = if is_dev {
                 None
             } else {
