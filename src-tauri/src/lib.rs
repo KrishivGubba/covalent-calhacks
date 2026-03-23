@@ -7,6 +7,8 @@ use tauri::{Manager, Emitter};
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}};
 use std::path::PathBuf;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 /// Find the overlap between the end of the buffer and the start of the prediction.
 /// Returns the number of characters that overlap.
@@ -289,8 +291,36 @@ impl FlaskServer {
 
         let mut cmd = Command::new(&binary);
         cmd.current_dir(&work_dir)
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit());
+            .process_group(0);
+
+        // In production, redirect the subprocess fd 1/2 to covalent.log so that
+        // every byte of output (including pre-Python bootstrap and C-level writes)
+        // lands in the same log file. In dev, inherit so output shows in terminal.
+        if let Some(dir) = data_dir {
+            let log_dir = dir.join("logs");
+            let _ = std::fs::create_dir_all(&log_dir);
+            let log_path = log_dir.join("covalent.log");
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                Ok(file) => {
+                    let file_clone = file.try_clone()
+                        .expect("Failed to clone log file handle");
+                    println!("Redirecting Flask stdout/stderr → {:?}", log_path);
+                    cmd.stdout(file).stderr(file_clone);
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Could not open log file {:?}: {}. Falling back to inherited stdio.", log_path, e);
+                    cmd.stdout(std::process::Stdio::inherit())
+                        .stderr(std::process::Stdio::inherit());
+                }
+            }
+        } else {
+            cmd.stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit());
+        }
 
         if let Ok(env_path) = std::fs::read_to_string(app_dir.join(".env")) {
             for line in env_path.lines() {
@@ -340,8 +370,15 @@ impl FlaskServer {
     fn stop(&self) {
         if let Ok(mut process_guard) = self.process.lock() {
             if let Some(mut child) = process_guard.take() {
-                println!("Stopping Flask server (PID: {:?})", child.id());
-                let _ = child.kill();
+                let pid = child.id();
+                println!("Stopping Flask server process group (PID: {})", pid);
+                unsafe {
+                    libc::killpg(pid as i32, libc::SIGTERM);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                unsafe {
+                    libc::killpg(pid as i32, libc::SIGKILL);
+                }
                 let _ = child.wait();
             }
         }
@@ -382,6 +419,7 @@ impl McpServer {
 
         let mut cmd = Command::new(&binary);
         cmd.current_dir(&work_dir)
+            .process_group(0)
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit());
 
@@ -432,8 +470,15 @@ impl McpServer {
     fn stop(&self) {
         if let Ok(mut process_guard) = self.process.lock() {
             if let Some(mut child) = process_guard.take() {
-                println!("Stopping MCP server (PID: {:?})", child.id());
-                let _ = child.kill();
+                let pid = child.id();
+                println!("Stopping MCP server process group (PID: {})", pid);
+                unsafe {
+                    libc::killpg(pid as i32, libc::SIGTERM);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                unsafe {
+                    libc::killpg(pid as i32, libc::SIGKILL);
+                }
                 let _ = child.wait();
             }
         }
@@ -477,6 +522,7 @@ impl OllamaServer {
         // Start ollama serve
         match Command::new("ollama")
             .arg("serve")
+            .process_group(0)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -505,8 +551,15 @@ impl OllamaServer {
 
         if let Ok(mut process_guard) = self.process.lock() {
             if let Some(mut child) = process_guard.take() {
-                println!("🦙 Stopping Ollama server (PID: {:?})", child.id());
-                let _ = child.kill();
+                let pid = child.id();
+                println!("🦙 Stopping Ollama server process group (PID: {})", pid);
+                unsafe {
+                    libc::killpg(pid as i32, libc::SIGTERM);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                unsafe {
+                    libc::killpg(pid as i32, libc::SIGKILL);
+                }
                 let _ = child.wait();
                 println!("✓ Ollama server stopped");
             }
@@ -1017,6 +1070,9 @@ pub fn run() {
             println!("✓ Loaded environment variables from .env file");
         }
     }
+    let app_quitting = Arc::new(AtomicBool::new(false));
+    let app_quitting_for_window = app_quitting.clone();
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1054,7 +1110,7 @@ pub fn run() {
 
             // Compute writable data directory for the database.
             // In dev: None (servers use their default project-relative paths).
-            // In production: ~/Library/Application Support/com.hem.src-tauri/
+            // In production: ~/Library/Application Support/com.covalent.app/
             let data_dir: Option<PathBuf> = if is_dev {
                 None
             } else {
@@ -1477,14 +1533,16 @@ pub fn run() {
             
             Ok(())
         })
-        .on_window_event(|window, event| {
-            // Prevent the dashboard window from being destroyed when closed
-            // Instead, just hide it so it can be reopened later
+        .on_window_event(move |window, event| {
             if window.label() == "dashboard" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    println!("🎛️  Hiding dashboard window instead of closing");
-                    let _ = window.hide();
-                    api.prevent_close();
+                    if app_quitting_for_window.load(Ordering::SeqCst) {
+                        println!("🎛️  App quitting — allowing dashboard to close");
+                    } else {
+                        println!("🎛️  Hiding dashboard window instead of closing");
+                        let _ = window.hide();
+                        api.prevent_close();
+                    }
                 }
             }
         })
@@ -1521,12 +1579,30 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|_app_handle, event| {
-        if let tauri::RunEvent::Exit = event {
-            println!("🧹 Running cleanup on exit...");
-            let _ = Command::new("pkill").args(["-f", "flask-server"]).output();
-            let _ = Command::new("pkill").args(["-f", "mcp-server"]).output();
-            println!("🧹 Cleanup complete");
+    app.run(move |app_handle, event| {
+        match event {
+            tauri::RunEvent::ExitRequested { .. } => {
+                println!("🧹 Exit requested — setting quit flag and stopping servers...");
+                app_quitting.store(true, Ordering::SeqCst);
+
+                if let Some(flask) = app_handle.try_state::<FlaskServer>() {
+                    flask.stop();
+                }
+                if let Some(mcp) = app_handle.try_state::<McpServer>() {
+                    mcp.stop();
+                }
+                if let Some(ollama) = app_handle.try_state::<OllamaServer>() {
+                    ollama.stop();
+                }
+                println!("🧹 Servers stopped");
+            }
+            tauri::RunEvent::Exit => {
+                println!("🧹 Running final pkill cleanup...");
+                let _ = Command::new("pkill").args(["-f", "flask-server"]).output();
+                let _ = Command::new("pkill").args(["-f", "mcp-server"]).output();
+                println!("🧹 Cleanup complete");
+            }
+            _ => {}
         }
     });
 }

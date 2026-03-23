@@ -1,11 +1,15 @@
 """
 Unified Logger for Covalent.
 
-- Console output: timestamped lines to stderr
+- Console output: timestamped lines to stderr (only when attached to a real terminal)
 - File output: rotating log files in the Covalent data directory
+- Stdout/stderr capture: all print() and traceback output is routed through the
+  logging system so it ends up in covalent.log
 - PostHog analytics: action_success, action_failure, authentication, integration
 """
+import io
 import os
+import sys
 import platform
 import logging
 from logging.handlers import RotatingFileHandler
@@ -14,8 +18,39 @@ from typing import Optional
 _posthog = None
 _logging_configured = False
 _info_call_count = 0
-import sys as _sys
-_dbg_proc = {"pid": os.getpid(), "exe": os.path.basename(_sys.executable)}
+_dbg_proc = {"pid": os.getpid(), "exe": os.path.basename(sys.executable)}
+
+
+class _StreamToLogger:
+    """File-like wrapper that routes writes to a Python logger."""
+
+    def __init__(self, logger: logging.Logger, level: int = logging.INFO):
+        self._logger = logger
+        self._level = level
+        self._buf = ""
+
+    def write(self, msg) -> int:
+        if not msg:
+            return 0
+        if isinstance(msg, bytes):
+            msg = msg.decode("utf-8", errors="replace")
+        self._buf += msg
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if line.strip():
+                self._logger.log(self._level, line.rstrip())
+        return len(msg)
+
+    def flush(self) -> None:
+        if self._buf.strip():
+            self._logger.log(self._level, self._buf.rstrip())
+        self._buf = ""
+
+    def isatty(self) -> bool:
+        return False
+
+    def fileno(self) -> int:
+        raise io.UnsupportedOperation("StreamToLogger has no file descriptor")
 
 
 def _get_log_dir() -> str:
@@ -43,13 +78,17 @@ def _configure_logging() -> None:
         datefmt='%Y-%m-%d %H:%M:%S',
     )
 
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(console_fmt)
-    console_handler.setLevel(logging.INFO)
-
     root = logging.getLogger()
-    if not root.handlers:
-        root.addHandler(console_handler)
+
+    # Only attach a console handler when stderr is a real terminal.
+    # In production the Tauri host redirects our fd 1/2 to the log file,
+    # so a StreamHandler would double-write every message into the same file.
+    if hasattr(sys.stderr, 'isatty') and sys.stderr.isatty():
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(console_fmt)
+        console_handler.setLevel(logging.INFO)
+        if not root.handlers:
+            root.addHandler(console_handler)
 
     try:
         log_dir = _get_log_dir()
@@ -66,6 +105,12 @@ def _configure_logging() -> None:
         pass
 
     root.setLevel(logging.INFO)
+
+    # Redirect sys.stdout / sys.stderr so that bare print() calls,
+    # traceback.print_exc(), and Werkzeug request logs all flow through
+    # the logging system → RotatingFileHandler → covalent.log.
+    sys.stdout = _StreamToLogger(logging.getLogger('stdout'), logging.INFO)
+    sys.stderr = _StreamToLogger(logging.getLogger('stderr'), logging.WARNING)
 
 
 _configure_logging()

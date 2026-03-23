@@ -15,7 +15,7 @@ langchain-mcp-adapters
 langgraph
 fastmcp
 google
-google-generativeai
+google-genai
 playwright
 langchain-anthropic
 langchain-aws

@@ -76,7 +76,7 @@ class EmbeddingModel:
     def _initialize_client(self):
         """Initialize the appropriate client based on provider"""
         if self.provider == "google":
-            import google.generativeai as genai
+            import google.genai as genai
             genai.configure(api_key=self.api_key)
             self.client = genai
         elif self.provider == "openai":
@@ -142,7 +142,7 @@ class ChatModel:
     def _initialize_client(self):
         """Initialize the appropriate client based on provider"""
         if self.provider == "google":
-            import google.generativeai as genai
+            import google.gen as genai
             genai.configure(api_key=self.api_key)
             self.client = genai
         elif self.provider == "openai":
