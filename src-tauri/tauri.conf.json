@@ -2,13 +2,13 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Covalent",
 
-  "version": "0.1.25",
+  "version": "0.1.26",
   "identifier": "com.covalent.app",
 
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build && rm -rf src-tauri/servers && mkdir -p src-tauri/servers && cp -R dist-servers/flask-server src-tauri/servers/ && cp .env src-tauri/.env",
+    "beforeBuildCommand": "npm run build && rm -rf src-tauri/servers && mkdir -p src-tauri/servers && cp -R dist-servers/flask-server src-tauri/servers/ && cp .env src-tauri/.env && cp model_config.yml src-tauri/model_config.yml",
     "frontendDist": "../dist"
   },
   "app": {
@@ -104,7 +104,8 @@
     ],
     "resources": [
       "servers/flask-server",
-      ".env"
+      ".env",
+      "model_config.yml"
     ],
     "createUpdaterArtifacts": true,
     "macOS": {

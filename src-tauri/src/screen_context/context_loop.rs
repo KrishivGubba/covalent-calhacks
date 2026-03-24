@@ -101,11 +101,24 @@ impl ContextLoop {
         self.running = true;
         println!("🚀 Starting synchronous context collection loop (interval: {}s)", self.interval.as_secs());
         
-        let mut iteration = 0;
+        let mut iteration: u64 = 0;
+        let auth_check_every: u64 = 15; // re-verify auth via Flask every ~30s (15 × 2s)
         
         while self.running {
             iteration += 1;
             
+            // Periodic auth safety net: verify auth via Flask in case the frontend
+            // failed to notify us of a logout (or the user logged in outside the dashboard).
+            if iteration % auth_check_every == 1 {
+                if let Some(ref state) = self.context_state {
+                    let flask_url = crate::ai_provider::auth::flask_base_url();
+                    let is_authed = crate::ai_provider::auth::fetch_current_session(&flask_url)
+                        .await
+                        .is_some();
+                    state.set_authenticated(is_authed);
+                }
+            }
+
             let start_time = std::time::Instant::now();
             
             match self.run_iteration(iteration).await {
@@ -134,6 +147,10 @@ impl ContextLoop {
         
         // Check if context collection is disabled BEFORE doing any work
         if let Some(ref state) = self.context_state {
+            if !state.is_authenticated() {
+                println!("  🔒 User not authenticated - skipping context collection");
+                return Ok(());
+            }
             if !state.is_enabled() {
                 println!("  ⏸️  Context collection is DISABLED - skipping iteration completely");
                 return Ok(());

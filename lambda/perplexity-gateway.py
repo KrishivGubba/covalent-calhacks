@@ -26,6 +26,8 @@ import boto3
 import jwt
 from jwt import PyJWKClient
 
+from budget_metadata import get_or_create_budget_row_minimal, sync_budget_user_row
+
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -62,12 +64,14 @@ def get_dynamodb_table():
     return _dynamodb
 
 
-def get_user_budget(user_id: str) -> Dict[str, Any]:
+def get_user_budget(
+    user_id: str, jwt_payload: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
     Fetch the user's budget record from DynamoDB.
-    
-    Returns dict with 'total_spend' and 'budget_limit'.
-    Creates a new record with defaults if the user doesn't exist yet.
+
+    For authenticated users (non-anonymous), refreshes human-readable JWT metadata
+    on the budget row.
     """
     table = get_dynamodb_table()
     if not table:
@@ -75,20 +79,13 @@ def get_user_budget(user_id: str) -> Dict[str, Any]:
         return {"total_spend": 0.0, "budget_limit": float("inf")}
 
     try:
-        resp = table.get_item(Key={"user_id": user_id})
-        item = resp.get("Item")
-        if item:
-            return {
-                "total_spend": float(item.get("total_spend", 0)),
-                "budget_limit": float(item.get("budget_limit", DEFAULT_BUDGET_LIMIT)),
-            }
-        # First time user — create record with defaults
-        table.put_item(Item={
-            "user_id": user_id,
-            "total_spend": 0,
-            "budget_limit": DEFAULT_BUDGET_LIMIT,
-        })
-        return {"total_spend": 0.0, "budget_limit": DEFAULT_BUDGET_LIMIT}
+        if user_id != "anonymous":
+            return sync_budget_user_row(
+                table, user_id, jwt_payload or {}, DEFAULT_BUDGET_LIMIT
+            )
+        return get_or_create_budget_row_minimal(
+            table, user_id, DEFAULT_BUDGET_LIMIT
+        )
     except Exception as e:
         logger.error(f"DynamoDB get_user_budget error: {e}")
         # Fail open — don't block requests if DynamoDB is down
@@ -175,7 +172,11 @@ def handle_health() -> Dict[str, Any]:
     })
 
 
-def handle_search(body: Dict[str, Any], user_id: str = "anonymous") -> Dict[str, Any]:
+def handle_search(
+    body: Dict[str, Any],
+    user_id: str = "anonymous",
+    jwt_payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     Perform a Perplexity search with budget enforcement.
     
@@ -203,7 +204,7 @@ def handle_search(body: Dict[str, Any], user_id: str = "anonymous") -> Dict[str,
         return create_response(400, {"error": "query is required"})
     
     # --- Budget pre-check: reject if user is already over budget ---
-    budget = get_user_budget(user_id)
+    budget = get_user_budget(user_id, jwt_payload)
     remaining = budget["budget_limit"] - budget["total_spend"]
     if remaining <= 0:
         logger.warning(f"User {user_id} over budget: spent ${budget['total_spend']:.4f} / ${budget['budget_limit']:.2f}")
@@ -338,6 +339,6 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     
     # Route to handler
     if (path == "/search" or path.endswith("/search")) and method == "POST":
-        return handle_search(body, user_id=user_id)
+        return handle_search(body, user_id=user_id, jwt_payload=decoded_token)
     
     return create_response(404, {"error": "Not found", "path": path, "method": method})

@@ -25,7 +25,7 @@ echo "  ✓ Dependencies installed"
 
 # Step 2: Copy Lambda code
 echo "Step 2: Copying Lambda code..."
-cp ai-gateway.py package/
+cp ai-gateway.py budget_metadata.py package/
 echo "  ✓ Code copied"
 
 # Step 3: Create deployment zip

@@ -48,6 +48,7 @@ pyinstaller server/run_fastapi.py \
   --hidden-import=starlette.middleware.cors \
   --hidden-import=pydantic \
   --hidden-import=google.generativeai \
+  --hidden-import=google.genai \
   --hidden-import=anthropic \
   --hidden-import=openai \
   --hidden-import=langchain_mcp_adapters \

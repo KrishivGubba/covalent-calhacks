@@ -373,27 +373,34 @@ impl ProviderConfig {
 
     /// Search common locations for model_config.yml
     fn find_yaml_path() -> Option<PathBuf> {
-        let candidates = [
-            // Relative to CWD (covers both `src-tauri/` and project root)
-            PathBuf::from("model_config.yml"),
-            PathBuf::from("../model_config.yml"),
-            // Relative to executable (for release builds)
-            std::env::current_exe().ok()
-                .and_then(|p| p.parent().map(|d| d.join("../../../model_config.yml")))
-                .unwrap_or_default(),
-        ];
-
-        for path in &candidates {
-            if path.exists() {
-                return Some(path.clone());
-            }
-        }
-
-        // Also check MODEL_CONFIG_PATH env var as explicit override
+        // Also check MODEL_CONFIG_PATH env var as explicit override first
         if let Ok(explicit) = env::var("MODEL_CONFIG_PATH") {
             let p = PathBuf::from(&explicit);
             if p.exists() {
                 return Some(p);
+            }
+        }
+
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+
+        let mut candidates = vec![
+            // Relative to CWD (covers `src-tauri/` and project root during dev)
+            PathBuf::from("model_config.yml"),
+            PathBuf::from("../model_config.yml"),
+        ];
+
+        if let Some(ref dir) = exe_dir {
+            // macOS .app bundle: binary is at Contents/MacOS/, resources land at Contents/Resources/
+            candidates.push(dir.join("../Resources/model_config.yml"));
+            // Raw binary at src-tauri/target/release/ -> project root is 3 levels up
+            candidates.push(dir.join("../../../model_config.yml"));
+        }
+
+        for path in &candidates {
+            if path.exists() {
+                return Some(path.clone());
             }
         }
 
