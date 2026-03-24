@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import Sidebar, { PageType } from './components/Sidebar';
 import UpdateButton from './components/UpdateButton';
 import AuthPage from './pages/AuthPage';
@@ -31,10 +32,14 @@ const Dashboard: React.FC = () => {
     setCurrentPage(page);
   }, []);
 
-  // Check auth status on mount
+  // Check auth status on mount and notify backend
   useEffect(() => {
     const userId = localStorage.getItem(USER_ID_KEY);
-    setIsAuthenticated(!!userId);
+    const authed = !!userId;
+    setIsAuthenticated(authed);
+    invoke('notify_auth_change', { authenticated: authed }).catch((err) =>
+      console.error('Failed to notify initial auth state:', err)
+    );
   }, []);
 
   // Listen for action completion events and auto-navigate to history
@@ -59,6 +64,9 @@ const Dashboard: React.FC = () => {
   // Callback for when auth state changes (login/logout)
   const handleAuthChange = (authenticated: boolean) => {
     setIsAuthenticated(authenticated);
+    invoke('notify_auth_change', { authenticated }).catch((err) =>
+      console.error('Failed to notify auth change:', err)
+    );
   };
 
   const renderPage = () => {

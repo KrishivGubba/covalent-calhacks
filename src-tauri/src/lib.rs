@@ -47,6 +47,9 @@ pub struct ContextState {
     pub user_paused: Arc<AtomicBool>,
     // List of app names/bundle IDs excluded from context collection
     pub excluded_apps: Arc<RwLock<Vec<String>>>,
+    // Whether the user is currently authenticated — context collection MUST NOT
+    // run when this is false to avoid collecting data without user consent.
+    pub is_authenticated: Arc<AtomicBool>,
 }
 
 // Store for suggested actions
@@ -102,6 +105,7 @@ impl ContextState {
             is_enabled: Arc::new(AtomicBool::new(true)), // Enabled by default
             user_paused: Arc::new(AtomicBool::new(false)), // Not manually paused by default
             excluded_apps: Arc::new(RwLock::new(Vec::new())),
+            is_authenticated: Arc::new(AtomicBool::new(false)), // NOT authenticated until login
         }
     }
 
@@ -163,6 +167,19 @@ impl ContextState {
             println!("🔴 Context collection DISABLED (toggled)");
         }
         new_state
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        self.is_authenticated.load(Ordering::Relaxed)
+    }
+
+    pub fn set_authenticated(&self, authenticated: bool) {
+        let prev = self.is_authenticated.swap(authenticated, Ordering::Relaxed);
+        if authenticated && !prev {
+            println!("🔓 User authenticated — context collection now permitted");
+        } else if !authenticated && prev {
+            println!("🔒 User logged out — context collection suspended");
+        }
     }
 }
 
@@ -619,6 +636,11 @@ fn get_context_collection_status(state: tauri::State<ContextState>) -> bool {
 #[tauri::command]
 fn enable_context_collection_if_not_user_paused(state: tauri::State<ContextState>) {
     state.enable_if_not_user_paused();
+}
+
+#[tauri::command]
+fn notify_auth_change(authenticated: bool, state: tauri::State<ContextState>) {
+    state.set_authenticated(authenticated);
 }
 
 // --- Settings persistence helpers ---
@@ -1571,6 +1593,7 @@ pub fn run() {
             get_excluded_apps,
             set_excluded_apps,
             get_auth_status,
+            notify_auth_change,
             get_mcp_integrations,
             open_dashboard_history,
             open_main_window,
