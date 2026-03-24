@@ -25,9 +25,12 @@ jobs:
           - name: AI Gateway
             function_name: covalent-ai-gateway
             handler_file: ai-gateway.py
+            # ai-gateway imports this module; must ship beside the handler in package/
+            extra_files: budget_metadata.py
           - name: Perplexity Gateway
             function_name: covalent-perplexity-gateway
             handler_file: perplexity-gateway.py
+            extra_files: ""
     
     permissions:
       id-token: write   # Required for OIDC
@@ -69,6 +72,10 @@ jobs:
           cd lambda
           # Copy the handler for this specific Lambda
           cp ${{ matrix.lambda.handler_file }} package/
+          # Optional companion modules (e.g. ai-gateway -> budget_metadata)
+          if [ -n "${{ matrix.lambda.extra_files }}" ]; then
+            cp ${{ matrix.lambda.extra_files }} package/
+          fi
           # Create deployment package
           cd package
           zip -r ../deployment-${{ matrix.lambda.function_name }}.zip .
