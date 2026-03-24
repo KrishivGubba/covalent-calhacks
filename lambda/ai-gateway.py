@@ -1184,7 +1184,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     Main Lambda handler.
     
     Routes requests based on HTTP method and path.
-    Authentication is required for all endpoints except /health and OPTIONS.
+    Authentication is required for all endpoints except /health, GET /updates/latest, and OPTIONS.
     """
     logger.info(f"Received event: {json.dumps(event)}")
     
@@ -1199,6 +1199,14 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # Health check (no auth required)
     if path == "/health" or path.endswith("/health"):
         return handle_health()
+
+    # Tauri updater manifest: no user JWT (dashboard webview often has empty sessionStorage).
+    # GitHub PAT stays server-side; download URLs in JSON are time-limited redirects.
+    if path == "/updates/latest" or path.endswith("/updates/latest"):
+        if http_method != "GET":
+            return create_response(405, {"error": "Method not allowed. Use GET."})
+        logger.info("Public GET /updates/latest (unauthenticated)")
+        return handle_updates_latest()
     
     # --- All other endpoints require authentication ---
     user_payload, auth_error = authenticate_request(event)
@@ -1209,12 +1217,6 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     logger.info(f"Request authenticated for user: {user_payload.get('sub', 'unknown')}")
     
     user_id = user_payload.get("sub", "anonymous")
-
-    # App update check (returns modified latest.json with temporary download URLs)
-    if path == "/updates/latest" or path.endswith("/updates/latest"):
-        if http_method != "GET":
-            return create_response(405, {"error": "Method not allowed. Use GET."})
-        return handle_updates_latest()
 
     if path == "/invoke" or path.endswith("/invoke"):
         if http_method != "POST":
