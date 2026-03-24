@@ -6,7 +6,11 @@
       "Bash(git -C /Users/hem/Downloads/covalent-new log --oneline -20)",
       "Bash(git checkout:*)",
       "Bash(git push:*)",
-      "Bash(git pull:*)"
+      "Bash(git pull:*)",
+      "Bash(grep -r \"google.*docs\\\\|Google.*Docs\\\\|docs.*google\" /Users/hem/Downloads/covalent-new/covalent_mcp --include=*.py)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }
