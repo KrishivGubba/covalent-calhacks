@@ -30,7 +30,8 @@ jobs:
           - name: Perplexity Gateway
             function_name: covalent-perplexity-gateway
             handler_file: perplexity-gateway.py
-            extra_files: ""
+            # perplexity-gateway imports this module; must ship beside the handler in package/
+            extra_files: budget_metadata.py
     
     permissions:
       id-token: write   # Required for OIDC
