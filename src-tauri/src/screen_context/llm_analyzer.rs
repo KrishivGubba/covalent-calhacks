@@ -221,7 +221,8 @@ impl LLMAnalyzer {
                 total_text_len > 50 && o.total_confidence > 50.0
             });
 
-        let has_sufficient_context = has_meaningful_dom || has_meaningful_accessibility || has_meaningful_ocr;
+        // let has_sufficient_context = has_meaningful_dom || has_meaningful_accessibility || has_meaningful_ocr;
+        let has_sufficient_context = false;
 
         if has_sufficient_context {
             // We have enough text context - use fast text-only LLM call

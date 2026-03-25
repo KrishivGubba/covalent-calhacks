@@ -115,7 +115,7 @@ MCP_SERVERS = {
 
 # Tool Routing Configuration
 TOOL_CACHE_DIR = Path.home() / ".cache" / "covalent_action_executor"
-TOP_K_TOOLS = 15  # Number of relevant tools/resources to select
+TOP_K_TOOLS = 25  # Number of relevant tools/resources to select
 
 # =============================================================================
 # MCP CLIENT MANAGEMENT
@@ -590,6 +590,21 @@ Which resources should I query to gather context for this action?"""
                         text = content.text if hasattr(content, 'text') else str(content)
                     else:
                         text = ""
+
+                # Research phase: log Perplexity (Lambda → api.perplexity.ai) responses for debugging
+                if uri.startswith("perplexity://"):
+                    _max = 24_000
+                    try:
+                        _parsed = json.loads(text)
+                        _body = json.dumps(_parsed, indent=2, default=str)
+                    except (json.JSONDecodeError, TypeError):
+                        _body = text
+                    if len(_body) > _max:
+                        _body = _body[:_max] + f"\n... [truncated for log, total chars={len(text)}]"
+                    log.info(
+                        "[research/pplx] response from read_resource — "
+                        f"name={resource_name!r} uri={uri!r} reason={reason!r}\n{_body}"
+                    )
                 
                 gathered_context.append(f"--- {resource_name} ---\n{text}")
                 resources_read.append(resource_name)
