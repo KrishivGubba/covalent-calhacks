@@ -2159,6 +2159,13 @@ def plan_action_endpoint():
         
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         
+        # Debug: Log what the LLM planned (parameters for each action)
+        _proposed_actions_debug = plan_result.get("proposed_actions") or []
+        log.info(f"📝 Plan result: {len(_proposed_actions_debug)} action(s) proposed")
+        for _i, _action in enumerate(_proposed_actions_debug):
+            _params = _action.get("parameters", {})
+            log.info(f"   📌 Action {_i+1}: {_action.get('tool_name')} - params: {json.dumps(_params, default=str)[:500]}")
+        
         if plan_result["status"] == "error":
             return jsonify({
                 "status": "error",
@@ -2385,6 +2392,9 @@ def execute_action_endpoint():
         if actions and isinstance(actions, list):
             # Multi-action execution
             log.info(f"🚀 Executing action chain with {len(actions)} actions")
+            # Debug: log what parameters each action has
+            for i, action in enumerate(actions):
+                log.info(f"   📦 Action {i+1}: tool={action.get('tool_name')}, params={list(action.get('parameters', {}).keys())}")
             
             # Get action data for logging
             action_data = tree.dao.get_action_by_id(action_uuid)

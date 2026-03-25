@@ -784,11 +784,72 @@ async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
                 "error": "No relevant tools found for this action"
             }
         
-        # Build tool descriptions for the prompt
+        # Build tool descriptions for the prompt with explicit required/optional marking
+        def format_tool_params(tool):
+            """Format tool parameters, clearly marking required vs optional."""
+            try:
+                schema = None
+                
+                # Try to get schema from args_schema
+                if hasattr(tool, 'args_schema') and tool.args_schema is not None:
+                    if hasattr(tool.args_schema, 'model_json_schema'):
+                        # It's a Pydantic model class
+                        schema = tool.args_schema.model_json_schema()
+                    elif isinstance(tool.args_schema, dict):
+                        # It's already a dict schema
+                        schema = tool.args_schema
+                
+                # If we have a proper schema with properties, format nicely
+                if schema and isinstance(schema, dict) and 'properties' in schema:
+                    required_set = set(schema.get('required', []))
+                    props = schema.get('properties', {})
+                    
+                    param_strs = []
+                    for name, info in props.items():
+                        param_type = info.get('type', 'any')
+                        desc = info.get('description', '')
+                        if name in required_set:
+                            param_strs.append(f"{name} (REQUIRED, {param_type}): {desc}")
+                        else:
+                            default = info.get('default', 'None')
+                            param_strs.append(f"{name} (optional, {param_type}, default={default}): {desc}")
+                    
+                    return "\n    ".join(param_strs) if param_strs else str(tool.args)
+                
+                # Fallback: try to format tool.args directly
+                if hasattr(tool, 'args') and isinstance(tool.args, dict):
+                    param_strs = []
+                    for name, info in tool.args.items():
+                        if isinstance(info, dict):
+                            param_type = info.get('type', 'any')
+                            desc = info.get('description', '')
+                            # Check if optional via anyOf/oneOf with null
+                            is_optional = False
+                            if 'anyOf' in info or 'oneOf' in info:
+                                types = info.get('anyOf', info.get('oneOf', []))
+                                is_optional = any(t.get('type') == 'null' for t in types)
+                            if 'default' in info:
+                                is_optional = True
+                            
+                            if is_optional:
+                                param_strs.append(f"{name} (optional, {param_type}): {desc}")
+                            else:
+                                param_strs.append(f"{name} (REQUIRED, {param_type}): {desc}")
+                        else:
+                            param_strs.append(f"{name}: {info}")
+                    return "\n    ".join(param_strs) if param_strs else str(tool.args)
+                
+                return str(tool.args)
+            except Exception:
+                return str(tool.args)
+        
         tool_descriptions = "\n".join([
-            f"- {tool.name}: {tool.description}\n  Parameters: {tool.args}"
+            f"- {tool.name}: {tool.description}\n  Parameters:\n    {format_tool_params(tool)}"
             for tool in relevant_tools
         ])
+        
+        # Log tool descriptions for debugging (truncated)
+        log.info(f"📋 Tool descriptions for planning (first 2000 chars):\n{tool_descriptions[:2000]}")
         
         # #region agent log
         import time as _time_mod
@@ -823,14 +884,25 @@ CRITICAL - KEEP OUTPUT CONCISE:
 - The user will fill in detailed content after reviewing the plan
 - Prefer SINGLE actions when possible - avoid multi-step plans unless absolutely necessary
 
+EMAIL FORMATTING:
+- For email body content (send_email, create_draft), use PLAIN TEXT only
+- Do NOT use markdown formatting (no **bold**, no *italic*, no bullet points with -)
+- Use simple line breaks and plain dashes for lists if needed
+- Keep emails professional and readable as plain text
+
 IMPORTANT INSTRUCTIONS:
 1. Analyze if the action requires ONE or MULTIPLE tools
 2. If the action involves multiple distinct operations (e.g., "create a doc AND add content to it"), propose MULTIPLE actions
 3. If the action is simple and requires only one tool, propose just that one
-4. Fill in ALL required parameters based on the provided context
+4. **CRITICAL**: You MUST fill in ALL parameters marked as REQUIRED - the action WILL FAIL if any required parameter is missing
 5. Use the context data to infer missing information (emails, names, dates, etc.)
-6. If information is missing, make reasonable assumptions or use placeholders like "[FILL IN]"
+6. If a REQUIRED parameter's value is unknown, use a placeholder like "[FILL IN: description]" - NEVER omit it
 7. DO NOT execute any tools - just propose them with all parameters filled
+
+PARAMETER REQUIREMENTS:
+- Every parameter marked "(REQUIRED, ...)" in the tool description MUST appear in your output
+- If you see 3 required parameters, your output MUST have all 3 - no exceptions
+- Missing required parameters will cause execution to fail
 
 CROSS-STEP DEPENDENCIES:
 When a later step needs output from an earlier step (e.g., step 2 needs the document ID from step 1),
@@ -1006,6 +1078,55 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
                 "status": "error",
                 "result": None,
                 "error": f"Tool '{tool_name}' not found"
+            }
+        
+        # Validate required parameters before execution
+        # LangChain MCP tools store param info in tool.args (dict with JSON schema info)
+        missing_params = []
+        try:
+            schema = None
+            
+            # Try to get schema from args_schema if it's a Pydantic model
+            if hasattr(tool, 'args_schema') and tool.args_schema is not None:
+                if hasattr(tool.args_schema, 'model_json_schema'):
+                    # It's a Pydantic model class
+                    schema = tool.args_schema.model_json_schema()
+                elif isinstance(tool.args_schema, dict):
+                    # It's already a dict schema
+                    schema = tool.args_schema
+            
+            # If we got a schema, extract required params from it
+            if schema and isinstance(schema, dict):
+                required_params = schema.get('required', [])
+                for param_name in required_params:
+                    if param_name not in parameters:
+                        missing_params.append(param_name)
+            elif hasattr(tool, 'args') and isinstance(tool.args, dict):
+                # Fallback: check args dict structure (JSON schema format)
+                # tool.args is typically {'param_name': {'type': '...', ...}, ...}
+                for param_name, param_info in tool.args.items():
+                    is_required = True
+                    if isinstance(param_info, dict):
+                        # Check various ways a param might be marked optional
+                        if 'default' in param_info:
+                            is_required = False
+                        # Check if type is Optional (contains 'null' in anyOf/oneOf)
+                        elif 'anyOf' in param_info or 'oneOf' in param_info:
+                            types = param_info.get('anyOf', param_info.get('oneOf', []))
+                            if any(t.get('type') == 'null' for t in types):
+                                is_required = False
+                    
+                    if is_required and param_name not in parameters:
+                        missing_params.append(param_name)
+        except Exception as e:
+            log.warning(f"⚠️ Could not validate parameters for {tool_name}: {e}")
+        
+        if missing_params:
+            return {
+                "status": "error",
+                "result": None,
+                "error": f"Missing required parameters for '{tool_name}': {', '.join(missing_params)}. "
+                         f"Provided: {list(parameters.keys())}"
             }
         
         # Execute the tool via LangChain's ainvoke

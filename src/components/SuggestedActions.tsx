@@ -224,11 +224,28 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
         setExecutionSummary(null);
         
         // Initialize editable params for all proposed actions
+        // IMPORTANT: Merge display schema defaults with LLM-generated params
+        // This ensures required fields with defaults are included even if LLM forgot them
         const proposedActions = getProposedActions(plan);
         console.log(`   - parsed proposedActions (${proposedActions.length}):`, proposedActions);
         const paramsMap: Record<number, Record<string, unknown>> = {};
         proposedActions.forEach(action => {
-          paramsMap[action.step_id] = { ...action.parameters };
+          // Start with LLM-generated parameters
+          const params: Record<string, unknown> = { ...action.parameters };
+          
+          // Merge in display schema defaults for any missing fields
+          const display = getDisplayForStep(plan, action.step_id);
+          if (display?.fields) {
+            display.fields.forEach(field => {
+              // If LLM didn't provide this field but display schema has a value, use it
+              if (!(field.key in params) && field.value !== undefined && field.value !== null && field.value !== '') {
+                params[field.key] = field.value;
+                console.log(`   ⚠️ Field '${field.key}' missing from LLM, using display default: ${String(field.value).substring(0, 50)}...`);
+              }
+            });
+          }
+          
+          paramsMap[action.step_id] = params;
         });
         setEditableParamsMap(paramsMap);
         
@@ -453,10 +470,25 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
       setExecutionSummary(null);
       
       // Initialize editable params for all proposed actions
+      // IMPORTANT: Merge display schema defaults with LLM-generated params
       const proposedActions = getProposedActions(plan);
       const paramsMap: Record<number, Record<string, unknown>> = {};
       proposedActions.forEach(action => {
-        paramsMap[action.step_id] = { ...action.parameters };
+        // Start with LLM-generated parameters
+        const params: Record<string, unknown> = { ...action.parameters };
+        
+        // Merge in display schema defaults for any missing fields
+        const display = getDisplayForStep(plan, action.step_id);
+        if (display?.fields) {
+          display.fields.forEach(field => {
+            if (!(field.key in params) && field.value !== undefined && field.value !== null && field.value !== '') {
+              params[field.key] = field.value;
+              console.log(`   ⚠️ Field '${field.key}' missing from LLM, using display default`);
+            }
+          });
+        }
+        
+        paramsMap[action.step_id] = params;
       });
       setEditableParamsMap(paramsMap);
       
