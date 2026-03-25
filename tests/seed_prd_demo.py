@@ -35,6 +35,17 @@ import os
 import sys
 from datetime import datetime
 
+# Preserve original stdout/stderr before importing modules that use the logger
+# (the logger module redirects stdout/stderr to log files)
+_real_stdout = sys.stdout
+_real_stderr = sys.stderr
+
+def cprint(*args, **kwargs):
+    """Print to the real console, bypassing logger capture."""
+    kwargs['file'] = _real_stdout
+    kwargs['flush'] = True
+    print(*args, **kwargs)
+
 # Add context-engine to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'context-engine'))
 
@@ -384,17 +395,17 @@ def _build_node(tree: Tree, parent: Node, metadata: str, data_list: list, action
 
 def seed_demo_data():
     """Build the PM demo knowledge graph using Tree class methods."""
-    print("📦 Initializing Tree from database...")
+    cprint("📦 Initializing Tree from database...")
     tree = Tree(DB_PATH)
 
     # Load existing graph into memory
     node_data = tree.dao.get_all_nodes()
     tree.construct_graph(node_data)
-    print(f"   Loaded {len(tree.nodes)} existing node(s)")
+    cprint(f"   Loaded {len(tree.nodes)} existing node(s)")
 
     # Ensure a root node exists
     if tree.root is None:
-        print("\n🌱 No root found — creating Root node...")
+        cprint("\n🌱 No root found — creating Root node...")
         root_uuid = tree.dao.create_node("Root", parent_uuid=None)
         current_time = datetime.now().isoformat()
         tree.root = Node(
@@ -409,81 +420,81 @@ def seed_demo_data():
             embedding=None,
         )
         tree.nodes[root_uuid] = tree.root
-        print(f"   ✓ Root ({root_uuid[:8]}...)")
+        cprint(f"   ✓ Root ({root_uuid[:8]}...)")
 
     root = tree.root
     total_data = 0
     total_actions = 0
 
-    print("\n📦 Creating PM Knowledge Graph...")
-    print("-" * 50)
-    print(f"   Root ({root.node_uuid[:8]}...)")
+    cprint("\n📦 Creating PM Knowledge Graph...")
+    cprint("-" * 50)
+    cprint(f"   Root ({root.node_uuid[:8]}...)")
 
     # ------------------------------------------------------------------
     # BRANCH 1: Projects
     # ------------------------------------------------------------------
     projects = _create_child(tree, root, "Projects")
-    print(f"   ├── Projects ({projects.node_uuid[:8]}...)")
+    cprint(f"   ├── Projects ({projects.node_uuid[:8]}...)")
 
     streamflow = _build_node(tree, projects, "StreamFlow AI Assistant", STREAMFLOW_AI_DATA, STREAMFLOW_AI_ACTIONS)
     total_data += len(STREAMFLOW_AI_DATA)
     total_actions += len(STREAMFLOW_AI_ACTIONS)
-    print(f"   │   ├── StreamFlow AI Assistant ({streamflow.node_uuid[:8]}...) [{len(STREAMFLOW_AI_DATA)} data, {len(STREAMFLOW_AI_ACTIONS)} actions]")
+    cprint(f"   │   ├── StreamFlow AI Assistant ({streamflow.node_uuid[:8]}...) [{len(STREAMFLOW_AI_DATA)} data, {len(STREAMFLOW_AI_ACTIONS)} actions]")
 
     mobile = _build_node(tree, projects, "Mobile App Redesign", MOBILE_REDESIGN_DATA, MOBILE_REDESIGN_ACTIONS)
     total_data += len(MOBILE_REDESIGN_DATA)
     total_actions += len(MOBILE_REDESIGN_ACTIONS)
-    print(f"   │   └── Mobile App Redesign ({mobile.node_uuid[:8]}...) [{len(MOBILE_REDESIGN_DATA)} data, {len(MOBILE_REDESIGN_ACTIONS)} actions]")
+    cprint(f"   │   └── Mobile App Redesign ({mobile.node_uuid[:8]}...) [{len(MOBILE_REDESIGN_DATA)} data, {len(MOBILE_REDESIGN_ACTIONS)} actions]")
 
     # ------------------------------------------------------------------
     # BRANCH 2: Communications
     # ------------------------------------------------------------------
     comms = _create_child(tree, root, "Communications")
-    print(f"   ├── Communications ({comms.node_uuid[:8]}...)")
+    cprint(f"   ├── Communications ({comms.node_uuid[:8]}...)")
 
     stakeholder = _build_node(tree, comms, "Stakeholder Updates", STAKEHOLDER_UPDATES_DATA, STAKEHOLDER_UPDATES_ACTIONS)
     total_data += len(STAKEHOLDER_UPDATES_DATA)
     total_actions += len(STAKEHOLDER_UPDATES_ACTIONS)
-    print(f"   │   ├── Stakeholder Updates ({stakeholder.node_uuid[:8]}...) [{len(STAKEHOLDER_UPDATES_DATA)} data, {len(STAKEHOLDER_UPDATES_ACTIONS)} actions]")
+    cprint(f"   │   ├── Stakeholder Updates ({stakeholder.node_uuid[:8]}...) [{len(STAKEHOLDER_UPDATES_DATA)} data, {len(STAKEHOLDER_UPDATES_ACTIONS)} actions]")
 
     syncs = _build_node(tree, comms, "Team Syncs", TEAM_SYNCS_DATA, TEAM_SYNCS_ACTIONS)
     total_data += len(TEAM_SYNCS_DATA)
     total_actions += len(TEAM_SYNCS_ACTIONS)
-    print(f"   │   ├── Team Syncs ({syncs.node_uuid[:8]}...) [{len(TEAM_SYNCS_DATA)} data, {len(TEAM_SYNCS_ACTIONS)} actions]")
+    cprint(f"   │   ├── Team Syncs ({syncs.node_uuid[:8]}...) [{len(TEAM_SYNCS_DATA)} data, {len(TEAM_SYNCS_ACTIONS)} actions]")
 
     emails = _build_node(tree, comms, "Emails", EMAILS_DATA, EMAILS_ACTIONS)
     total_data += len(EMAILS_DATA)
     total_actions += len(EMAILS_ACTIONS)
-    print(f"   │   └── Emails ({emails.node_uuid[:8]}...) [{len(EMAILS_DATA)} data, {len(EMAILS_ACTIONS)} actions]")
+    cprint(f"   │   └── Emails ({emails.node_uuid[:8]}...) [{len(EMAILS_DATA)} data, {len(EMAILS_ACTIONS)} actions]")
 
     # ------------------------------------------------------------------
     # BRANCH 3: Customer Research
     # ------------------------------------------------------------------
     research = _create_child(tree, root, "Customer Research")
-    print(f"   ├── Customer Research ({research.node_uuid[:8]}...)")
+    cprint(f"   ├── Customer Research ({research.node_uuid[:8]}...)")
 
     interviews = _build_node(tree, research, "User Interviews", USER_INTERVIEWS_DATA, USER_INTERVIEWS_ACTIONS)
     total_data += len(USER_INTERVIEWS_DATA)
     total_actions += len(USER_INTERVIEWS_ACTIONS)
-    print(f"   │   └── User Interviews ({interviews.node_uuid[:8]}...) [{len(USER_INTERVIEWS_DATA)} data, {len(USER_INTERVIEWS_ACTIONS)} actions]")
+    cprint(f"   │   └── User Interviews ({interviews.node_uuid[:8]}...) [{len(USER_INTERVIEWS_DATA)} data, {len(USER_INTERVIEWS_ACTIONS)} actions]")
 
     # ------------------------------------------------------------------
     # BRANCH 4: Personal
     # ------------------------------------------------------------------
     personal = _create_child(tree, root, "Personal")
-    print(f"   └── Personal ({personal.node_uuid[:8]}...)")
+    cprint(f"   └── Personal ({personal.node_uuid[:8]}...)")
 
     career = _build_node(tree, personal, "Career Development", CAREER_DATA, CAREER_ACTIONS)
     total_data += len(CAREER_DATA)
     total_actions += len(CAREER_ACTIONS)
-    print(f"       └── Career Development ({career.node_uuid[:8]}...) [{len(CAREER_DATA)} data, {len(CAREER_ACTIONS)} actions]")
+    cprint(f"       └── Career Development ({career.node_uuid[:8]}...) [{len(CAREER_DATA)} data, {len(CAREER_ACTIONS)} actions]")
 
     # Summary
     new_nodes = 9  # projects, streamflow, mobile, comms, stakeholder, syncs, emails, research, interviews, personal, career — 11 but count top-level separately
-    print("\n" + "=" * 50)
-    print("✅ PM Knowledge Graph seeded!")
-    print("=" * 50)
-    print(f"""
+    cprint("\n" + "=" * 50)
+    cprint("✅ PM Knowledge Graph seeded!")
+    cprint("=" * 50)
+    cprint(f"""
 Graph Structure:
   Root
   ├── Projects
@@ -516,16 +527,16 @@ def clear_demo_nodes():
         "Personal", "Career Development",
     ]
 
-    print("📦 Loading Tree for cleanup...")
+    cprint("📦 Loading Tree for cleanup...")
     tree = Tree(DB_PATH)
     node_data = tree.dao.get_all_nodes()
     tree.construct_graph(node_data)
-    print(f"   Loaded {len(tree.nodes)} node(s)")
+    cprint(f"   Loaded {len(tree.nodes)} node(s)")
 
     deleted_count = 0
     for node_uuid, node in list(tree.nodes.items()):
         if node.metadata in demo_metadata:
-            print(f"   Deleting: {node.metadata} ({node_uuid[:8]}...)")
+            cprint(f"   Deleting: {node.metadata} ({node_uuid[:8]}...)")
             # DAO handles: removing from parent's children_uuid_arr, cascading deletes
             tree.dao.delete_node(node_uuid, cascade=True)
 
@@ -551,11 +562,11 @@ def clear_demo_nodes():
 
 def watch_for_keystroke():
     """Watch for keystrokes to trigger seeding or clearing."""
-    print("\n⌨️  Keystroke watcher mode")
-    print("   Press 'D' to seed demo data")
-    print("   Press 'C' to clear demo data")
-    print("   Press 'Q' to quit")
-    print("-" * 40)
+    cprint("\n⌨️  Keystroke watcher mode")
+    cprint("   Press 'D' to seed demo data")
+    cprint("   Press 'C' to clear demo data")
+    cprint("   Press 'Q' to quit")
+    cprint("-" * 40)
 
     try:
         from pynput import keyboard
@@ -563,16 +574,16 @@ def watch_for_keystroke():
         def on_press(key):
             try:
                 if key.char and key.char.lower() == 'd':
-                    print("\n🚀 Triggered: Seeding demo data...")
+                    cprint("\n🚀 Triggered: Seeding demo data...")
                     seed_demo_data()
-                    print("\n⌨️  Waiting for keystroke...")
+                    cprint("\n⌨️  Waiting for keystroke...")
                 elif key.char and key.char.lower() == 'c':
-                    print("\n🗑️  Triggered: Clearing demo data...")
+                    cprint("\n🗑️  Triggered: Clearing demo data...")
                     deleted = clear_demo_nodes()
-                    print(f"   Deleted {deleted} demo nodes")
-                    print("\n⌨️  Waiting for keystroke...")
+                    cprint(f"   Deleted {deleted} demo nodes")
+                    cprint("\n⌨️  Waiting for keystroke...")
                 elif key.char and key.char.lower() == 'q':
-                    print("\n👋 Exiting watcher mode")
+                    cprint("\n👋 Exiting watcher mode")
                     return False
             except AttributeError:
                 pass
@@ -581,9 +592,9 @@ def watch_for_keystroke():
             listener.join()
 
     except ImportError:
-        print("\n⚠️  pynput not installed. Using simple input mode.")
-        print("   Install with: pip install pynput")
-        print("\nPress Enter to seed, 'c' to clear, 'q' to quit:")
+        cprint("\n⚠️  pynput not installed. Using simple input mode.")
+        cprint("   Install with: pip install pynput")
+        cprint("\nPress Enter to seed, 'c' to clear, 'q' to quit:")
 
         while True:
             user_input = input("> ").strip().lower()
@@ -591,11 +602,11 @@ def watch_for_keystroke():
                 break
             elif user_input == 'c':
                 deleted = clear_demo_nodes()
-                print(f"🗑️  Deleted {deleted} demo nodes")
+                cprint(f"🗑️  Deleted {deleted} demo nodes")
             else:
-                print("🚀 Seeding demo data...")
+                cprint("🚀 Seeding demo data...")
                 seed_demo_data()
-                print("\nPress Enter to seed again, 'c' to clear, 'q' to quit:")
+                cprint("\nPress Enter to seed again, 'c' to clear, 'q' to quit:")
 
 
 # ============================================================================
@@ -613,22 +624,22 @@ def main():
 
     DB_PATH = args.db_path
 
-    print("=" * 60)
-    print("🎬 StreamFlow AI Assistant - PRD Demo Seeder")
-    print("=" * 60)
-    print(f"📂 Database: {DB_PATH}")
+    cprint("=" * 60)
+    cprint("🎬 StreamFlow AI Assistant - PRD Demo Seeder")
+    cprint("=" * 60)
+    cprint(f"📂 Database: {DB_PATH}")
 
     if not os.path.exists(DB_PATH):
-        print("❌ Database file not found. Run init_db.py first.")
+        cprint("❌ Database file not found. Run init_db.py first.")
         sys.exit(1)
 
     if args.watch:
         watch_for_keystroke()
     else:
         if args.clear:
-            print("\n🗑️  Clearing existing demo nodes...")
+            cprint("\n🗑️  Clearing existing demo nodes...")
             deleted = clear_demo_nodes()
-            print(f"   Cleared {deleted} demo node(s)")
+            cprint(f"   Cleared {deleted} demo node(s)")
 
         seed_demo_data()
 
