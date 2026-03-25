@@ -146,7 +146,7 @@ class PerplexitySearchToolModule(MCPToolModule):
                 country: ISO 3166-1 alpha-2 country code (e.g., "US", "GB")
                 domains: Comma-separated domains to filter (e.g., "nytimes.com,bbc.com" or "-pinterest.com" to exclude)
                 recency: Filter by recency - "hour", "day", "week", "month", "year"
-                mode: Search mode - "web" (default), "academic" (scholarly), or "sec" (financial filings)
+                mode: Deprecated/unsupported by Perplexity /search; gateway ignores this field
             
             Returns:
                 JSON string with filtered search results

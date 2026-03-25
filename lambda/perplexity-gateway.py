@@ -188,7 +188,6 @@ def handle_search(
         "country": "US",
         "search_domain_filter": ["domain1.com", "-excluded.com"],
         "search_language_filter": ["en", "fr"],
-        "search_mode": "web" | "academic" | "sec",
         "search_recency_filter": "hour" | "day" | "week" | "month" | "year",
         "search_after_date_filter": "YYYY-MM-DD",
         "search_before_date_filter": "YYYY-MM-DD",
@@ -225,13 +224,18 @@ def handle_search(
     # Add optional parameters if provided
     optional_params = [
         "max_tokens", "country", "search_domain_filter", "search_language_filter",
-        "search_mode", "search_recency_filter", "search_after_date_filter",
+        "search_recency_filter", "search_after_date_filter",
         "search_before_date_filter", "last_updated_after_filter", "last_updated_before_filter"
     ]
     
     for param in optional_params:
         if param in body and body[param] is not None:
             payload[param] = body[param]
+
+    # Perplexity's /search endpoint currently rejects search_mode.
+    # Ignore it for backward compatibility with older clients.
+    if body.get("search_mode") is not None:
+        logger.warning("Ignoring unsupported parameter: search_mode")
     
     try:
         # Call Perplexity API
