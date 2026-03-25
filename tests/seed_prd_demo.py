@@ -33,6 +33,7 @@ import argparse
 import json
 import os
 import sys
+import platform
 from datetime import datetime
 
 # Preserve original stdout/stderr before importing modules that use the logger
@@ -51,8 +52,33 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'context-engine
 
 from graph import Tree, Node
 
+
+def _get_default_db_path() -> str:
+    """
+    Get the database path, checking in order:
+    1. GRAPH_DB_PATH environment variable (set by Tauri in production)
+    2. Production path: ~/Library/Application Support/Covalent/graph.db (macOS)
+    3. Dev fallback: context-engine/graph.db
+    """
+    # 1. Check env var (production mode via Tauri)
+    if os.environ.get('GRAPH_DB_PATH'):
+        return os.environ['GRAPH_DB_PATH']
+    
+    # 2. Check production Application Support path
+    if platform.system() == 'Darwin':
+        prod_path = os.path.join(
+            os.path.expanduser("~"), 
+            "Library", "Application Support", "Covalent", "graph.db"
+        )
+        if os.path.exists(prod_path):
+            return prod_path
+    
+    # 3. Fall back to dev path
+    return os.path.join(os.path.dirname(__file__), '..', 'context-engine', 'graph.db')
+
+
 # Database path
-DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'context-engine', 'graph.db')
+DB_PATH = _get_default_db_path()
 
 # ============================================================================
 # PRD-BASED DEMO DATA
@@ -613,16 +639,31 @@ def watch_for_keystroke():
 # MAIN
 # ============================================================================
 
+def _get_prod_db_path() -> str:
+    """Get the production database path in Application Support."""
+    if platform.system() == 'Darwin':
+        return os.path.join(
+            os.path.expanduser("~"), 
+            "Library", "Application Support", "Covalent", "graph.db"
+        )
+    return os.path.join(os.path.expanduser("~"), ".covalent", "graph.db")
+
+
 def main():
     global DB_PATH
 
     parser = argparse.ArgumentParser(description="Seed PRD-based demo nodes")
     parser.add_argument("--clear", action="store_true", help="Clear existing demo nodes")
     parser.add_argument("--watch", action="store_true", help="Watch for keystroke to trigger seeding")
-    parser.add_argument("--db-path", default=DB_PATH, help="Path to the SQLite database")
+    parser.add_argument("--prod", action="store_true", help="Use production database in Application Support")
+    parser.add_argument("--db-path", default=None, help="Path to the SQLite database (overrides --prod)")
     args = parser.parse_args()
 
-    DB_PATH = args.db_path
+    if args.db_path:
+        DB_PATH = args.db_path
+    elif args.prod:
+        DB_PATH = _get_prod_db_path()
+    # else: use the auto-detected default (already set)
 
     cprint("=" * 60)
     cprint("🎬 StreamFlow AI Assistant - PRD Demo Seeder")
