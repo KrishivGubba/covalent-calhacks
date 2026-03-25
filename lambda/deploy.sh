@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy script for AI Gateway Lambda
+# Deploy script for Lambda gateways
 #
 # Usage:
 #   ./deploy.sh [function-name]
@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FUNCTION_NAME="${1:-covalent-ai-gateway}"
 
 echo "=========================================="
-echo "AI Gateway Lambda Deployment"
+echo "Lambda Gateway Deployment"
 echo "=========================================="
 echo "Function: $FUNCTION_NAME"
 echo ""
@@ -25,7 +25,13 @@ echo "  ✓ Dependencies installed"
 
 # Step 2: Copy Lambda code
 echo "Step 2: Copying Lambda code..."
-cp ai-gateway.py budget_metadata.py package/
+if [[ "$FUNCTION_NAME" == *"perplexity"* ]]; then
+  HANDLER_FILE="perplexity-gateway.py"
+else
+  HANDLER_FILE="ai-gateway.py"
+fi
+cp "$HANDLER_FILE" budget_metadata.py package/
+echo "  ✓ Handler: $HANDLER_FILE"
 echo "  ✓ Code copied"
 
 # Step 3: Create deployment zip

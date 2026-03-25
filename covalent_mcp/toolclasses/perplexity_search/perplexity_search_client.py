@@ -72,7 +72,7 @@ class PerplexitySearchClient:
             country: ISO 3166-1 alpha-2 country code for regional filtering (e.g., "US", "GB")
             search_domain_filter: List of domains to include (allowlist) or exclude (denylist with "-" prefix)
             search_language_filter: List of ISO 639-1 language codes (e.g., ["en", "fr", "de"])
-            search_mode: Search mode - "web", "academic", or "sec"
+            search_mode: Deprecated/unsupported by Perplexity /search; ignored by gateway if provided
             search_recency_filter: Filter by recency - "hour", "day", "week", "month", "year"
             search_after_date_filter: Filter results published after this date (YYYY-MM-DD)
             search_before_date_filter: Filter results published before this date (YYYY-MM-DD)
