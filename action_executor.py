@@ -777,14 +777,14 @@ async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
         
         # #region agent log
         import time as _time_mod
-        _debug_log_path = "/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-4fb65e.log"
+        _debug_log_path = "/Users/hem/Downloads/covalent-new/.cursor/debug.log"
         _dl_ts = int(_time_mod.time() * 1000)
         _dl_tool_desc_len = len(tool_descriptions)
         _dl_context_len = len(context_data)
         _dl_action_len = len(action_text)
         try:
             with open(_debug_log_path, "a") as _dlf:
-                _dlf.write(json.dumps({"sessionId":"4fb65e","id":f"log_{_dl_ts}_prompt_sizes","timestamp":_dl_ts,"location":"action_executor.py:plan_action","message":"Prompt sizes before gateway call","data":{"tool_desc_chars":_dl_tool_desc_len,"context_data_chars":_dl_context_len,"action_text_chars":_dl_action_len},"runId":"run1","hypothesisId":"H1,H3,H4"}) + "\n")
+                _dlf.write(json.dumps({"id":f"log_{_dl_ts}_prompt_sizes","timestamp":_dl_ts,"location":"action_executor.py:plan_action","message":"Prompt sizes before gateway call","data":{"tool_desc_chars":_dl_tool_desc_len,"context_data_chars":_dl_context_len,"action_text_chars":_dl_action_len,"max_tokens_configured":3072},"runId":"post-fix-v2","hypothesisId":"H1,H3,H4"}) + "\n")
         except: pass
         # #endregion
         
@@ -800,6 +800,13 @@ the desired content.
 ENSURE THAT THE ENTIRE CHAIN OF ACTIONS IS COMPLETE. THERE'S NO MISSING PARAMETER THAT ANY OF THE ACTIONS FURTHER REQUIRES
 Every parameter that an action requires either must be provided directly or should be passed in as a cross-step dependency
 unless this is something that the user is expected to fill in directly.
+
+CRITICAL - KEEP OUTPUT CONCISE:
+- Keep ALL parameters SHORT and compact (under 500 chars each)
+- For document content: provide a BRIEF outline/summary (2-3 sentences max), NOT full document text
+- For text/content parameters: use "[Content to be generated]" placeholder if content is long
+- The user will fill in detailed content after reviewing the plan
+- Prefer SINGLE actions when possible - avoid multi-step plans unless absolutely necessary
 
 IMPORTANT INSTRUCTIONS:
 1. Analyze if the action requires ONE or MULTIPLE tools
@@ -868,14 +875,14 @@ Analyze this action and output a single JSON object with the tool call."""
         _dl_total_prompt_chars = _dl_sys_prompt_len + _dl_user_prompt_len
         try:
             with open(_debug_log_path, "a") as _dlf:
-                _dlf.write(json.dumps({"sessionId":"4fb65e","id":f"log_{_dl_pre_call_ts}_pre_gateway","timestamp":_dl_pre_call_ts,"location":"action_executor.py:plan_action:pre_gateway","message":"About to call gateway.generate","data":{"system_prompt_chars":_dl_sys_prompt_len,"user_prompt_chars":_dl_user_prompt_len,"total_prompt_chars":_dl_total_prompt_chars,"gateway_timeout":gateway.timeout,"gateway_model":gateway.default_model},"runId":"run1","hypothesisId":"H1,H3"}) + "\n")
+                _dlf.write(json.dumps({"id":f"log_{_dl_pre_call_ts}_pre_gateway","timestamp":_dl_pre_call_ts,"location":"action_executor.py:plan_action:pre_gateway","message":"About to call gateway.generate","data":{"system_prompt_chars":_dl_sys_prompt_len,"user_prompt_chars":_dl_user_prompt_len,"total_prompt_chars":_dl_total_prompt_chars,"gateway_timeout":gateway.timeout,"gateway_model":gateway.default_model},"runId":"post-fix-v2","hypothesisId":"H1,H3"}) + "\n")
         except: pass
         # #endregion
         
         response = gateway.generate(
             prompt=user_prompt,
             system_prompt=system_prompt,
-            max_tokens=2048,
+            max_tokens=3072,
             temperature=0.0,  # Deterministic
         )
         
@@ -884,7 +891,7 @@ Analyze this action and output a single JSON object with the tool call."""
         _dl_gateway_duration = _dl_post_call_ts - _dl_pre_call_ts
         try:
             with open(_debug_log_path, "a") as _dlf:
-                _dlf.write(json.dumps({"sessionId":"4fb65e","id":f"log_{_dl_post_call_ts}_post_gateway","timestamp":_dl_post_call_ts,"location":"action_executor.py:plan_action:post_gateway","message":"Gateway call completed successfully","data":{"duration_ms":_dl_gateway_duration,"response_len":len(response.content),"input_tokens":response.input_tokens,"output_tokens":response.output_tokens},"runId":"run1","hypothesisId":"H1,H3"}) + "\n")
+                _dlf.write(json.dumps({"id":f"log_{_dl_post_call_ts}_post_gateway","timestamp":_dl_post_call_ts,"location":"action_executor.py:plan_action:post_gateway","message":"Gateway call completed","data":{"duration_ms":_dl_gateway_duration,"response_len":len(response.content),"input_tokens":response.input_tokens,"output_tokens":response.output_tokens,"stop_reason":response.stop_reason,"response_preview":response.content[:500],"response_tail":response.content[-200:] if len(response.content) > 200 else ""},"runId":"post-fix-v2","hypothesisId":"H1,H2,H3,H4,H5"}) + "\n")
         except: pass
         # #endregion
         
@@ -898,6 +905,14 @@ Analyze this action and output a single JSON object with the tool call."""
         parsed_response = _parse_tool_response(response.content)
         
         if not parsed_response:
+            # #region agent log
+            try:
+                import time as _time_mod_parse
+                _dl_parse_fail_ts = int(_time_mod_parse.time() * 1000)
+                with open(_debug_log_path, "a") as _dlf:
+                    _dlf.write(json.dumps({"id":f"log_{_dl_parse_fail_ts}_parse_fail","timestamp":_dl_parse_fail_ts,"location":"action_executor.py:plan_action:parse_fail","message":"Failed to parse tool response","data":{"full_response":response.content,"response_len":len(response.content),"stop_reason":response.stop_reason,"input_tokens":response.input_tokens,"output_tokens":response.output_tokens,"has_closing_brace":response.content.rstrip().endswith("}")},"runId":"post-fix-v2","hypothesisId":"H1,H2,H3,H4,H5"}) + "\n")
+            except: pass
+            # #endregion
             return {
                 "status": "error",
                 "proposed_actions": None,
@@ -919,8 +934,8 @@ Analyze this action and output a single JSON object with the tool call."""
         try:
             import time as _time_mod3
             _dl_err_ts = int(_time_mod3.time() * 1000)
-            with open("/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-4fb65e.log", "a") as _dlf:
-                _dlf.write(json.dumps({"sessionId":"4fb65e","id":f"log_{_dl_err_ts}_gateway_error","timestamp":_dl_err_ts,"location":"action_executor.py:plan_action:except","message":"GatewayError caught in plan_action","data":{"error_message":str(e),"status_code":getattr(e,'status_code',None)},"runId":"run1","hypothesisId":"H1,H2,H3,H4,H5"}) + "\n")
+            with open("/Users/hem/Downloads/covalent-new/.cursor/debug.log", "a") as _dlf:
+                _dlf.write(json.dumps({"id":f"log_{_dl_err_ts}_gateway_error","timestamp":_dl_err_ts,"location":"action_executor.py:plan_action:except","message":"GatewayError caught in plan_action","data":{"error_message":str(e),"status_code":getattr(e,'status_code',None)},"runId":"run1","hypothesisId":"H1,H2,H3,H4,H5"}) + "\n")
         except: pass
         # #endregion
         return {

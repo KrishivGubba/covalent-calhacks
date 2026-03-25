@@ -198,10 +198,10 @@ class GatewayClient:
             import time as _time_mod
             _dl_req_start = _time_mod.time()
             _dl_payload_size = len(json.dumps(json_data)) if json_data else 0
-            _debug_log_path = "/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-4fb65e.log"
+            _debug_log_path = "/Users/hem/Downloads/covalent-new/.cursor/debug.log"
             try:
                 with open(_debug_log_path, "a") as _dlf:
-                    _dlf.write(json.dumps({"sessionId":"4fb65e","id":f"log_{int(_dl_req_start*1000)}_http_req","timestamp":int(_dl_req_start*1000),"location":"gateway_client.py:_make_request","message":"HTTP request starting","data":{"method":method,"endpoint":endpoint,"payload_bytes":_dl_payload_size,"timeout":self.timeout},"runId":"run1","hypothesisId":"H1,H4"}) + "\n")
+                    _dlf.write(json.dumps({"id":f"log_{int(_dl_req_start*1000)}_http_req","timestamp":int(_dl_req_start*1000),"location":"gateway_client.py:_make_request","message":"HTTP request starting","data":{"method":method,"endpoint":endpoint,"payload_bytes":_dl_payload_size,"timeout":self.timeout},"runId":"run1","hypothesisId":"H1,H4"}) + "\n")
             except: pass
             # #endregion
             
@@ -222,7 +222,7 @@ class GatewayClient:
             _dl_req_duration_ms = int((_dl_req_end - _dl_req_start) * 1000)
             try:
                 with open(_debug_log_path, "a") as _dlf:
-                    _dlf.write(json.dumps({"sessionId":"4fb65e","id":f"log_{int(_dl_req_end*1000)}_http_resp","timestamp":int(_dl_req_end*1000),"location":"gateway_client.py:_make_request","message":"HTTP response received","data":{"status_code":response.status_code,"duration_ms":_dl_req_duration_ms,"response_len":len(response.text),"response_preview":response.text[:300]},"runId":"run1","hypothesisId":"H1,H2,H3,H4,H5"}) + "\n")
+                    _dlf.write(json.dumps({"id":f"log_{int(_dl_req_end*1000)}_http_resp","timestamp":int(_dl_req_end*1000),"location":"gateway_client.py:_make_request","message":"HTTP response received","data":{"status_code":response.status_code,"duration_ms":_dl_req_duration_ms,"response_len":len(response.text),"response_preview":response.text[:500]},"runId":"run1","hypothesisId":"H1,H2,H3,H4,H5"}) + "\n")
             except: pass
             # #endregion
             
@@ -252,7 +252,7 @@ class GatewayClient:
             try:
                 with open(_debug_log_path, "a") as _dlf:
                     _dl_to_ts = int(_time_mod.time() * 1000)
-                    _dlf.write(json.dumps({"sessionId":"4fb65e","id":f"log_{_dl_to_ts}_timeout","timestamp":_dl_to_ts,"location":"gateway_client.py:_make_request","message":"Request timed out on client side","data":{"timeout":self.timeout,"endpoint":endpoint},"runId":"run1","hypothesisId":"H1"}) + "\n")
+                    _dlf.write(json.dumps({"id":f"log_{_dl_to_ts}_timeout","timestamp":_dl_to_ts,"location":"gateway_client.py:_make_request","message":"Request timed out on client side","data":{"timeout":self.timeout,"endpoint":endpoint},"runId":"run1","hypothesisId":"H3"}) + "\n")
             except: pass
             # #endregion
             raise GatewayError("Request timed out", 504)
@@ -261,7 +261,7 @@ class GatewayClient:
             try:
                 with open(_debug_log_path, "a") as _dlf:
                     _dl_ce_ts = int(_time_mod.time() * 1000)
-                    _dlf.write(json.dumps({"sessionId":"4fb65e","id":f"log_{_dl_ce_ts}_conn_err","timestamp":_dl_ce_ts,"location":"gateway_client.py:_make_request","message":"Connection error","data":{"error":str(e)[:200],"endpoint":endpoint},"runId":"run1","hypothesisId":"H5"}) + "\n")
+                    _dlf.write(json.dumps({"id":f"log_{_dl_ce_ts}_conn_err","timestamp":_dl_ce_ts,"location":"gateway_client.py:_make_request","message":"Connection error","data":{"error":str(e)[:200],"endpoint":endpoint},"runId":"run1","hypothesisId":"H5"}) + "\n")
             except: pass
             # #endregion
             raise GatewayError(f"Connection failed: {e}", 503)
