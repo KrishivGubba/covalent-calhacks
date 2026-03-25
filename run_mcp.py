@@ -7,6 +7,16 @@ script to import covalent_mcp as a proper package.
 """
 import os
 import sys
+import logging
+
+# Pre-configure logging BEFORE importing covalent_mcp modules.
+# This prevents a RecursionError caused by Logger.py's stdout/stderr redirect
+# when it runs during the toolclasses import chain.
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s]: %(message)s',
+    datefmt='%H:%M:%S',
+)
 
 from covalent_mcp.server import mcp
 

@@ -51,7 +51,7 @@ def _encrypted_conn(path=None, timeout=10.0):
 
 # Import display schema registry for tool approval UI
 from covalent_mcp.tools import get_display_schema
-from covalent_mcp.toolclasses.base import resolve_display_fields
+from covalent_mcp.toolclasses.base import resolve_display_fields, _is_inherited_value
 
 
 # =============================================================================
@@ -93,14 +93,16 @@ def _resolve_tool_display(proposed_action: dict, loop=None) -> dict:
 
     if schema is None:
         # Fallback: show all params as editable text fields
+        # BUT mark inherited values (from previous steps) as read-only
         fallback_fields = []
         for key, value in parameters.items():
+            is_inherited = _is_inherited_value(value)
             fallback_fields.append({
                 "key": key,
                 "label": key.replace("_", " ").title(),
-                "source": "param",
-                "editable": True,
-                "widget": "text_input",
+                "source": "inherited" if is_inherited else "param",
+                "editable": not is_inherited,  # Inherited values are read-only
+                "widget": "display_text" if is_inherited else "text_input",
                 "required": False,
                 "value": value,
             })

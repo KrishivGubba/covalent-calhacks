@@ -33,6 +33,9 @@ from auth_dao import AuthDAO
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from logger import get_logger
 
+# Add covalent_mcp for passable outputs registry
+from covalent_mcp.tools import format_passable_outputs_for_prompt, get_passable_outputs
+
 load_dotenv()
 
 log = get_logger()
@@ -465,7 +468,7 @@ async def gather_context(action_text: str, existing_context: str = "") -> Dict[s
     try:
         # Get MCP client, tools, and resources separately
         client, tools, resources = await get_mcp_client()
-        print("in gather_context, client, tools, resources:", client, tools, resources)
+        
         # Initialize tool router if not already done
         if not tool_router._initialized:
             tool_router.initialize(tools, resources)
@@ -475,7 +478,12 @@ async def gather_context(action_text: str, existing_context: str = "") -> Dict[s
             action_text + " " + existing_context[:500],
             top_k=TOP_K_TOOLS
         )
-        print("in gather_context, relevant_resources:", relevant_resources)
+        
+        # Log which resources were shortlisted for research
+        log.info(f"📚 Shortlisted {len(relevant_resources)} resources for research:")
+        for i, res in enumerate(relevant_resources, 1):
+            log.info(f"   {i}. {res.name}")
+        
         if not relevant_resources:
             return {
                 "status": "success",
@@ -738,6 +746,11 @@ async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
             top_k=TOP_K_TOOLS
         )
         
+        # Log which tools were shortlisted for the LLM
+        log.info(f"🔧 Shortlisted {len(relevant_tools)} tools for planning:")
+        for i, tool in enumerate(relevant_tools, 1):
+            log.info(f"   {i}. {tool.name}")
+        
         if not relevant_tools:
             return {
                 "status": "error",
@@ -751,42 +764,56 @@ async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
             for tool in relevant_tools
         ])
         
-        system_prompt = """You are an action planning assistant.
+        # Get passable outputs info for the prompt
+        passable_outputs_info = format_passable_outputs_for_prompt()
+        
+        system_prompt = f"""You are an action planning assistant.
 
 Your task is to analyze the user's action and propose the tool(s) needed to accomplish it.
 
 IMPORTANT INSTRUCTIONS:
 1. Analyze if the action requires ONE or MULTIPLE tools
-2. If the action involves multiple distinct operations (e.g., "create an issue AND send an email AND update a note"), propose MULTIPLE actions
+2. If the action involves multiple distinct operations (e.g., "create a doc AND add content to it"), propose MULTIPLE actions
 3. If the action is simple and requires only one tool, propose just that one
 4. Fill in ALL required parameters based on the provided context
 5. Use the context data to infer missing information (emails, names, dates, etc.)
 6. If information is missing, make reasonable assumptions or use placeholders like "[FILL IN]"
 7. DO NOT execute any tools - just propose them with all parameters filled
-8. Each action is INDEPENDENT - do not assume you can use outputs from previous actions
+
+CROSS-STEP DEPENDENCIES:
+When a later step needs output from an earlier step (e.g., step 2 needs the document ID from step 1),
+use variable references with this syntax: {{{{$N.field_name}}}}
+  - N is the step number (1-indexed)
+  - field_name is the output field from that step
+
+Example: If step 1 creates a document, step 2 can reference its ID as: {{{{$1.id}}}}
+
+AVAILABLE PASSABLE OUTPUTS BY TOOL:
+{passable_outputs_info}
 
 The user will review and can edit your proposed parameters before execution.
 
 OUTPUT FORMAT - Return ONLY valid JSON with NO additional text:
-{
+{{
     "actions": [
-        {
+        {{
             "tool_name": "first_tool_name",
-            "parameters": {
+            "parameters": {{
                 "param1": "value1"
-            },
+            }},
             "reasoning": "Brief explanation for this action"
-        },
-        {
+        }},
+        {{
             "tool_name": "second_tool_name",
-            "parameters": {
-                "param1": "value1"
-            },
-            "reasoning": "Brief explanation for this action"
-        }
+            "parameters": {{
+                "document_id": "{{{{$1.id}}}}",
+                "other_param": "value"
+            }},
+            "reasoning": "Brief explanation - uses document ID from step 1"
+        }}
     ],
     "overall_reasoning": "Brief explanation of the overall plan"
-}
+}}
 
 For SINGLE actions, still use the same format with just one item in the actions array."""
 
@@ -961,37 +988,120 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
         }
 
 
+def resolve_variables(params: Any, step_outputs: Dict[str, Dict[str, Any]]) -> Any:
+    """
+    Resolve variable references in parameters using outputs from previous steps.
+    
+    Variable syntax: {{$N.field_name}} where N is the step number (1-indexed)
+    
+    Args:
+        params: Parameters dict (or any nested structure) that may contain variable refs
+        step_outputs: Dict mapping step number (as string) to that step's output dict
+                      e.g. {"1": {"id": "abc123", "url": "..."}, "2": {...}}
+    
+    Returns:
+        A new structure with all variable references replaced with actual values
+    """
+    if isinstance(params, str):
+        # Replace all {{$N.field}} patterns
+        def replacer(match):
+            step_num = match.group(1)
+            field = match.group(2)
+            step_data = step_outputs.get(step_num, {})
+            value = step_data.get(field)
+            if value is not None:
+                return str(value)
+            # Keep the original if not found (will show as unresolved)
+            log.warning(f"⚠️ Variable reference {{{{${step_num}.{field}}}}} not found in step outputs")
+            return match.group(0)
+        
+        return re.sub(r'\{\{\$(\d+)\.(\w+)\}\}', replacer, params)
+    
+    elif isinstance(params, dict):
+        return {k: resolve_variables(v, step_outputs) for k, v in params.items()}
+    
+    elif isinstance(params, list):
+        return [resolve_variables(v, step_outputs) for v in params]
+    
+    else:
+        return params
+
+
+def extract_passable_outputs(result: Any, tool_name: str) -> Dict[str, Any]:
+    """
+    Extract passable output fields from a tool's result.
+    
+    Uses the declared passable_outputs from the tool's display schema,
+    but falls back to all top-level keys if none declared.
+    
+    Args:
+        result: The tool's execution result
+        tool_name: Name of the tool (to look up passable_outputs)
+    
+    Returns:
+        Dict of field_name -> value for passable outputs
+    """
+    if result is None:
+        return {}
+    
+    # Ensure result is a dict
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return {"_raw": result}
+    
+    if not isinstance(result, dict):
+        return {"_raw": str(result)}
+    
+    # Get declared passable outputs for this tool
+    declared_outputs = get_passable_outputs(tool_name)
+    
+    if declared_outputs:
+        # Only extract declared fields
+        extracted = {}
+        for output in declared_outputs:
+            if output.key in result:
+                extracted[output.key] = result[output.key]
+        return extracted
+    else:
+        # Fallback: extract all top-level keys except 'success' and 'message'
+        return {k: v for k, v in result.items() if k not in ('success', 'message')}
+
+
 async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Execute a sequence of approved actions sequentially.
+    Execute a sequence of approved actions sequentially with variable passing.
     
-    Actions are executed in order. If one fails, execution continues to the next
-    (no dependencies between actions - each is independent).
+    Actions are executed in order. If one fails, execution STOPS immediately (fail-fast).
+    Outputs from each step are accumulated and can be referenced by subsequent steps
+    using variable syntax: {{$N.field_name}}
     
     Args:
         actions: List of action dicts, each with:
             - step_id: int
             - tool_name: str
-            - parameters: dict (user-approved/edited)
+            - parameters: dict (may contain {{$N.field}} variable references)
             
     Returns:
         {
-            "status": "success" | "partial" | "error",
+            "status": "success" | "error",
             "results": [
                 {"step_id": 1, "tool_name": "...", "status": "success", "result": {...}},
-                {"step_id": 2, "tool_name": "...", "status": "error", "error": "..."},
                 ...
             ],
             "summary": {
                 "total": int,
                 "succeeded": int,
                 "failed": int
-            }
+            },
+            "failed_at_step": int | None  (only set if status is "error")
         }
     """
     results = []
     succeeded = 0
     failed = 0
+    step_outputs = {}  # Accumulated outputs: {"1": {...}, "2": {...}}
     
     log.info(f"\n{'='*60}")
     log.info(f"🚀 EXECUTING ACTION CHAIN ({len(actions)} actions)")
@@ -1000,22 +1110,38 @@ async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
     for action in actions:
         step_id = action.get("step_id", len(results) + 1)
         tool_name = action.get("tool_name", "")
-        parameters = action.get("parameters", {})
+        raw_parameters = action.get("parameters", {})
         
+        # Resolve variable references from previous steps
+        resolved_parameters = resolve_variables(raw_parameters, step_outputs)
+        
+        # Log what we're doing
         log.info(f"\n📌 Step {step_id}: {tool_name}")
+        if raw_parameters != resolved_parameters:
+            log.info(f"   📎 Resolved variables from previous steps")
+            log.debug(f"   Raw params: {raw_parameters}")
+            log.debug(f"   Resolved params: {resolved_parameters}")
         
         try:
-            exec_result = await execute_action(tool_name, parameters)
+            exec_result = await execute_action(tool_name, resolved_parameters)
             
             if exec_result["status"] == "success":
                 succeeded += 1
+                
+                # Extract and store passable outputs for subsequent steps
+                passable = extract_passable_outputs(exec_result["result"], tool_name)
+                step_outputs[str(step_id)] = passable
+                log.info(f"   ✅ Step {step_id} succeeded")
+                if passable:
+                    log.info(f"   📤 Passable outputs: {list(passable.keys())}")
+                
                 results.append({
                     "step_id": step_id,
                     "tool_name": tool_name,
                     "status": "success",
-                    "result": exec_result["result"]
+                    "result": exec_result["result"],
+                    "passable_outputs": passable
                 })
-                log.info(f"   ✅ Step {step_id} succeeded")
             else:
                 failed += 1
                 results.append({
@@ -1025,7 +1151,24 @@ async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
                     "error": exec_result["error"]
                 })
                 log.error(f"   ❌ Step {step_id} failed: {exec_result['error']}")
-                # Continue to next action (no early exit)
+                
+                # FAIL-FAST: Stop immediately on error
+                log.info(f"\n{'='*60}")
+                log.info(f"⛔ CHAIN ABORTED at step {step_id}: {exec_result['error']}")
+                log.info(f"📊 Completed {succeeded}/{len(actions)} steps before failure")
+                log.info(f"{'='*60}\n")
+                
+                return {
+                    "status": "error",
+                    "results": results,
+                    "summary": {
+                        "total": len(actions),
+                        "succeeded": succeeded,
+                        "failed": 1
+                    },
+                    "failed_at_step": step_id,
+                    "error": exec_result["error"]
+                }
                 
         except Exception as e:
             failed += 1
@@ -1036,27 +1179,37 @@ async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "error": str(e)
             })
             log.error(f"   ❌ Step {step_id} exception: {e}")
-            # Continue to next action
+            
+            # FAIL-FAST: Stop immediately on exception
+            log.info(f"\n{'='*60}")
+            log.info(f"⛔ CHAIN ABORTED at step {step_id}: {e}")
+            log.info(f"📊 Completed {succeeded}/{len(actions)} steps before failure")
+            log.info(f"{'='*60}\n")
+            
+            return {
+                "status": "error",
+                "results": results,
+                "summary": {
+                    "total": len(actions),
+                    "succeeded": succeeded,
+                    "failed": 1
+                },
+                "failed_at_step": step_id,
+                "error": str(e)
+            }
     
-    # Determine overall status
-    if failed == 0:
-        overall_status = "success"
-    elif succeeded == 0:
-        overall_status = "error"
-    else:
-        overall_status = "partial"
-    
+    # All steps succeeded!
     log.info(f"\n{'='*60}")
-    log.info(f"📊 CHAIN COMPLETE: {succeeded}/{len(actions)} succeeded")
+    log.info(f"✅ CHAIN COMPLETE: All {len(actions)} steps succeeded!")
     log.info(f"{'='*60}\n")
     
     return {
-        "status": overall_status,
+        "status": "success",
         "results": results,
         "summary": {
             "total": len(actions),
             "succeeded": succeeded,
-            "failed": failed
+            "failed": 0
         }
     }
 

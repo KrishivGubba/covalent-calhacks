@@ -19,6 +19,7 @@ from covalent_mcp.toolclasses.base import (
     MCPToolModule,
     ToolDisplaySchema,
     DisplayField,
+    PassableOutput,
 )
 from covalent_mcp.toolclasses.notion.notion_client import NotionClient
 from fastmcp import FastMCP
@@ -285,6 +286,10 @@ class NotionToolModule(MCPToolModule):
                     DisplayField(key="icon", label="Icon", widget="text_input", placeholder="Emoji, e.g. \U0001f4dd"),
                 ],
                 resolve=self._resolve_parent_title,
+                passable_outputs=[
+                    PassableOutput(key="id", description="The page ID"),
+                    PassableOutput(key="url", description="URL to the page"),
+                ],
             ),
             "notion_update_page": ToolDisplaySchema(
                 tool_name="notion_update_page",
@@ -334,6 +339,10 @@ class NotionToolModule(MCPToolModule):
                                  placeholder='{"Name": {"title": {}}, "Status": {"select": {}}}'),
                 ],
                 resolve=self._resolve_parent_title,
+                passable_outputs=[
+                    PassableOutput(key="id", description="The database ID"),
+                    PassableOutput(key="url", description="URL to the database"),
+                ],
             ),
             "notion_create_comment": ToolDisplaySchema(
                 tool_name="notion_create_comment",

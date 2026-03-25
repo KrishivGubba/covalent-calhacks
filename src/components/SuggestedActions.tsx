@@ -157,6 +157,20 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
     return [];
   };
   
+  // Helper: Get the raw variable text for display (e.g., "{{$1.id}}" -> "$1.id")
+  const getVariableDisplay = (value: string): { isVar: boolean; displayText: string; stepNum?: number; field?: string } => {
+    const match = value.match(/^\{\{\$(\d+)\.(\w+)\}\}$/);
+    if (match) {
+      return {
+        isVar: true,
+        displayText: `From Step ${match[1]}: ${match[2]}`,
+        stepNum: parseInt(match[1]),
+        field: match[2],
+      };
+    }
+    return { isVar: false, displayText: value };
+  };
+
   // Helper: Get display for a step
   const getDisplayForStep = (plan: ActionPlan, stepId: number): ActionDisplay | undefined => {
     if (plan.displays && plan.displays.length > 0) {
@@ -723,74 +737,104 @@ const SuggestedActions: React.FC<SuggestedActionsProps> = ({ actions }) => {
                     {/* Editable parameters for this step */}
                     <div style={styles.paramsSection}>
                       {display?.fields ? (
-                        display.fields.map((field) => (
-                          <label key={field.key} style={styles.modalLabel}>
-                            {field.label} {field.required && <span style={{ color: '#ef4444' }}>*</span>}
-                            {field.widget === 'textarea' || (typeof stepParams[field.key] === 'string' && String(stepParams[field.key]).length > 100) ? (
-                              <textarea
-                                style={styles.modalTextarea}
-                                value={String(stepParams[field.key] ?? field.value ?? '')}
-                                onChange={(e) => handleStepParamChange(proposedAction.step_id, field.key, e.target.value)}
-                                disabled={!field.editable || isExecuting}
-                                rows={4}
-                                onFocus={(e) => {
-                                  e.currentTarget.style.borderColor = '#3f3f46';
-                                }}
-                                onBlur={(e) => {
-                                  e.currentTarget.style.borderColor = '#27272a';
-                                }}
-                              />
-                            ) : (
-                              <input
-                                style={styles.modalInput}
-                                value={String(stepParams[field.key] ?? field.value ?? '')}
-                                onChange={(e) => handleStepParamChange(proposedAction.step_id, field.key, e.target.value)}
-                                disabled={!field.editable || isExecuting}
-                                onFocus={(e) => {
-                                  e.currentTarget.style.borderColor = '#3f3f46';
-                                }}
-                                onBlur={(e) => {
-                                  e.currentTarget.style.borderColor = '#27272a';
-                                }}
-                              />
-                            )}
-                          </label>
-                        ))
+                        display.fields.map((field) => {
+                          const rawValue = String(stepParams[field.key] ?? field.value ?? '');
+                          const varInfo = getVariableDisplay(rawValue);
+                          
+                          return (
+                            <label key={field.key} style={styles.modalLabel}>
+                              {field.label} {field.required && <span style={{ color: '#ef4444' }}>*</span>}
+                              {varInfo.isVar ? (
+                                // Variable reference - show as non-editable with special styling
+                                <div style={styles.variableRefContainer}>
+                                  <span style={styles.variableRefBadge}>
+                                    ↩ {varInfo.displayText}
+                                  </span>
+                                  <span style={styles.variableRefHint}>
+                                    (resolved at execution time)
+                                  </span>
+                                </div>
+                              ) : field.widget === 'textarea' || rawValue.length > 100 ? (
+                                <textarea
+                                  style={styles.modalTextarea}
+                                  value={rawValue}
+                                  onChange={(e) => handleStepParamChange(proposedAction.step_id, field.key, e.target.value)}
+                                  disabled={!field.editable || isExecuting}
+                                  rows={4}
+                                  onFocus={(e) => {
+                                    e.currentTarget.style.borderColor = '#3f3f46';
+                                  }}
+                                  onBlur={(e) => {
+                                    e.currentTarget.style.borderColor = '#27272a';
+                                  }}
+                                />
+                              ) : (
+                                <input
+                                  style={styles.modalInput}
+                                  value={rawValue}
+                                  onChange={(e) => handleStepParamChange(proposedAction.step_id, field.key, e.target.value)}
+                                  disabled={!field.editable || isExecuting}
+                                  onFocus={(e) => {
+                                    e.currentTarget.style.borderColor = '#3f3f46';
+                                  }}
+                                  onBlur={(e) => {
+                                    e.currentTarget.style.borderColor = '#27272a';
+                                  }}
+                                />
+                              )}
+                            </label>
+                          );
+                        })
                       ) : (
                         // Fallback: render all parameters as editable fields
-                        Object.entries(stepParams).map(([key, value]) => (
-                          <label key={key} style={styles.modalLabel}>
-                            {key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                            {typeof value === 'string' && value.length > 100 ? (
-                              <textarea
-                                style={styles.modalTextarea}
-                                value={String(value)}
-                                onChange={(e) => handleStepParamChange(proposedAction.step_id, key, e.target.value)}
-                                disabled={isExecuting}
-                                rows={4}
-                                onFocus={(e) => {
-                                  e.currentTarget.style.borderColor = '#3f3f46';
-                                }}
-                                onBlur={(e) => {
-                                  e.currentTarget.style.borderColor = '#27272a';
-                                }}
-                              />
-                            ) : (
-                              <input
-                                style={styles.modalInput}
-                                value={String(value ?? '')}
-                                onChange={(e) => handleStepParamChange(proposedAction.step_id, key, e.target.value)}
-                                disabled={isExecuting}
-                                onFocus={(e) => {
-                                  e.currentTarget.style.borderColor = '#3f3f46';
-                                }}
-                                onBlur={(e) => {
-                                  e.currentTarget.style.borderColor = '#27272a';
-                                }}
-                              />
-                            )}
-                          </label>
-                        ))
+                        Object.entries(stepParams).map(([key, value]) => {
+                          const rawValue = String(value ?? '');
+                          const varInfo = getVariableDisplay(rawValue);
+                          
+                          return (
+                            <label key={key} style={styles.modalLabel}>
+                              {key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                              {varInfo.isVar ? (
+                                // Variable reference - show as non-editable with special styling
+                                <div style={styles.variableRefContainer}>
+                                  <span style={styles.variableRefBadge}>
+                                    ↩ {varInfo.displayText}
+                                  </span>
+                                  <span style={styles.variableRefHint}>
+                                    (resolved at execution time)
+                                  </span>
+                                </div>
+                              ) : rawValue.length > 100 ? (
+                                <textarea
+                                  style={styles.modalTextarea}
+                                  value={rawValue}
+                                  onChange={(e) => handleStepParamChange(proposedAction.step_id, key, e.target.value)}
+                                  disabled={isExecuting}
+                                  rows={4}
+                                  onFocus={(e) => {
+                                    e.currentTarget.style.borderColor = '#3f3f46';
+                                  }}
+                                  onBlur={(e) => {
+                                    e.currentTarget.style.borderColor = '#27272a';
+                                  }}
+                                />
+                              ) : (
+                                <input
+                                  style={styles.modalInput}
+                                  value={rawValue}
+                                  onChange={(e) => handleStepParamChange(proposedAction.step_id, key, e.target.value)}
+                                  disabled={isExecuting}
+                                  onFocus={(e) => {
+                                    e.currentTarget.style.borderColor = '#3f3f46';
+                                  }}
+                                  onBlur={(e) => {
+                                    e.currentTarget.style.borderColor = '#27272a';
+                                  }}
+                                />
+                              )}
+                            </label>
+                          );
+                        })
                       )}
                     </div>
                   </div>
@@ -1247,6 +1291,31 @@ const styles = {
     lineHeight: '1.5',
     fontFamily: 'inherit',
     transition: 'border-color 0.2s ease',
+  },
+  variableRefContainer: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '10px 14px',
+    borderRadius: '8px',
+    border: '1px dashed #3b82f6',
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+  },
+  variableRefBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '4px',
+    padding: '4px 10px',
+    borderRadius: '6px',
+    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+    color: '#60a5fa',
+    fontSize: '0.85rem',
+    fontWeight: '500' as const,
+  },
+  variableRefHint: {
+    color: '#6b7280',
+    fontSize: '0.8rem',
+    fontStyle: 'italic' as const,
   },
   modalCheckboxLabel: {
     display: 'flex',

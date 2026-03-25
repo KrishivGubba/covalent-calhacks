@@ -10,6 +10,7 @@ from covalent_mcp.toolclasses.base import (
     MCPToolModule,
     ToolDisplaySchema,
     DisplayField,
+    PassableOutput,
 )
 from covalent_mcp.toolclasses.google.mail.gmail_client import GmailService
 from fastmcp import FastMCP
@@ -57,6 +58,10 @@ class GmailToolModule(MCPToolModule):
                     ),
                     DisplayField(key="cc", label="CC", widget="text_input", placeholder="cc@example.com"),
                     DisplayField(key="bcc", label="BCC", widget="text_input", placeholder="bcc@example.com"),
+                ],
+                passable_outputs=[
+                    PassableOutput(key="id", description="The message ID"),
+                    PassableOutput(key="threadId", description="The thread ID"),
                 ],
             ),
         }

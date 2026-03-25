@@ -15,6 +15,7 @@ from covalent_mcp.toolclasses.base import (
     MCPToolModule,
     ToolDisplaySchema,
     DisplayField,
+    PassableOutput,
 )
 from covalent_mcp.toolclasses.google.docs.docs_client import DocsService
 from fastmcp import FastMCP
@@ -59,6 +60,11 @@ class DocsToolModule(MCPToolModule):
                         widget="text_input",
                         placeholder="My Document",
                     )
+                ],
+                passable_outputs=[
+                    PassableOutput(key="id", description="The unique document ID"),
+                    PassableOutput(key="name", description="The document title/name"),
+                    PassableOutput(key="webViewLink", description="URL to view the document"),
                 ],
             ),
             "append_text": ToolDisplaySchema(
@@ -159,6 +165,9 @@ class DocsToolModule(MCPToolModule):
                         required=True,
                         widget="text_input",
                     ),
+                ],
+                passable_outputs=[
+                    PassableOutput(key="id", description="The comment ID (use for replies)"),
                 ],
             ),
         }
