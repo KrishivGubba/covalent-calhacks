@@ -710,6 +710,8 @@ def _parse_tool_response(response_text: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+MAX_CONTEXT_CHARS = 30_000
+
 async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
     """
     Plan a single action based on the action text and context.
@@ -733,6 +735,15 @@ async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
         }
     """
     try:
+        # Truncate context to avoid exceeding API Gateway's 30s timeout.
+        # 223K chars caused a 503; 30K keeps the call well under 29s.
+        if len(context_data) > MAX_CONTEXT_CHARS:
+            log.warning(
+                f"⚠️ Truncating context_data from {len(context_data)} to {MAX_CONTEXT_CHARS} chars "
+                f"to stay within API Gateway timeout"
+            )
+            context_data = context_data[:MAX_CONTEXT_CHARS] + "\n\n[... context truncated for length ...]"
+        
         # Get MCP client, tools, and resources
         client, tools, resources = await get_mcp_client()
         
@@ -764,12 +775,31 @@ async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
             for tool in relevant_tools
         ])
         
+        # #region agent log
+        import time as _time_mod
+        _debug_log_path = "/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-4fb65e.log"
+        _dl_ts = int(_time_mod.time() * 1000)
+        _dl_tool_desc_len = len(tool_descriptions)
+        _dl_context_len = len(context_data)
+        _dl_action_len = len(action_text)
+        try:
+            with open(_debug_log_path, "a") as _dlf:
+                _dlf.write(json.dumps({"sessionId":"4fb65e","id":f"log_{_dl_ts}_prompt_sizes","timestamp":_dl_ts,"location":"action_executor.py:plan_action","message":"Prompt sizes before gateway call","data":{"tool_desc_chars":_dl_tool_desc_len,"context_data_chars":_dl_context_len,"action_text_chars":_dl_action_len},"runId":"run1","hypothesisId":"H1,H3,H4"}) + "\n")
+        except: pass
+        # #endregion
+        
         # Get passable outputs info for the prompt
         passable_outputs_info = format_passable_outputs_for_prompt()
         
         system_prompt = f"""You are an action planning assistant.
 
 Your task is to analyze the user's action and propose the tool(s) needed to accomplish it.
+Make sure you include ALL actions that are needed to accomplish the user's action. For example, if you need 
+to edit a specific document, you should include the action to fetch the document (to get the document ID) and the action to edit the document with
+the desired content. 
+ENSURE THAT THE ENTIRE CHAIN OF ACTIONS IS COMPLETE. THERE'S NO MISSING PARAMETER THAT ANY OF THE ACTIONS FURTHER REQUIRES
+Every parameter that an action requires either must be provided directly or should be passed in as a cross-step dependency
+unless this is something that the user is expected to fill in directly.
 
 IMPORTANT INSTRUCTIONS:
 1. Analyze if the action requires ONE or MULTIPLE tools
@@ -830,12 +860,33 @@ Analyze this action and output a single JSON object with the tool call."""
         # Call the Gateway (Lambda -> Bedrock)
         gateway = get_gateway_client()
         
+        # #region agent log
+        import time as _time_mod2
+        _dl_pre_call_ts = int(_time_mod2.time() * 1000)
+        _dl_sys_prompt_len = len(system_prompt)
+        _dl_user_prompt_len = len(user_prompt)
+        _dl_total_prompt_chars = _dl_sys_prompt_len + _dl_user_prompt_len
+        try:
+            with open(_debug_log_path, "a") as _dlf:
+                _dlf.write(json.dumps({"sessionId":"4fb65e","id":f"log_{_dl_pre_call_ts}_pre_gateway","timestamp":_dl_pre_call_ts,"location":"action_executor.py:plan_action:pre_gateway","message":"About to call gateway.generate","data":{"system_prompt_chars":_dl_sys_prompt_len,"user_prompt_chars":_dl_user_prompt_len,"total_prompt_chars":_dl_total_prompt_chars,"gateway_timeout":gateway.timeout,"gateway_model":gateway.default_model},"runId":"run1","hypothesisId":"H1,H3"}) + "\n")
+        except: pass
+        # #endregion
+        
         response = gateway.generate(
             prompt=user_prompt,
             system_prompt=system_prompt,
             max_tokens=2048,
             temperature=0.0,  # Deterministic
         )
+        
+        # #region agent log
+        _dl_post_call_ts = int(_time_mod2.time() * 1000)
+        _dl_gateway_duration = _dl_post_call_ts - _dl_pre_call_ts
+        try:
+            with open(_debug_log_path, "a") as _dlf:
+                _dlf.write(json.dumps({"sessionId":"4fb65e","id":f"log_{_dl_post_call_ts}_post_gateway","timestamp":_dl_post_call_ts,"location":"action_executor.py:plan_action:post_gateway","message":"Gateway call completed successfully","data":{"duration_ms":_dl_gateway_duration,"response_len":len(response.content),"input_tokens":response.input_tokens,"output_tokens":response.output_tokens},"runId":"run1","hypothesisId":"H1,H3"}) + "\n")
+        except: pass
+        # #endregion
         
         log.debug(f"\n{'='*60}")
         log.debug(f"LLM OUTPUT (PLANNING PHASE)")
@@ -864,6 +915,14 @@ Analyze this action and output a single JSON object with the tool call."""
         
     except GatewayError as e:
         log.error(f"❌ Gateway error: {e}")
+        # #region agent log
+        try:
+            import time as _time_mod3
+            _dl_err_ts = int(_time_mod3.time() * 1000)
+            with open("/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-4fb65e.log", "a") as _dlf:
+                _dlf.write(json.dumps({"sessionId":"4fb65e","id":f"log_{_dl_err_ts}_gateway_error","timestamp":_dl_err_ts,"location":"action_executor.py:plan_action:except","message":"GatewayError caught in plan_action","data":{"error_message":str(e),"status_code":getattr(e,'status_code',None)},"runId":"run1","hypothesisId":"H1,H2,H3,H4,H5"}) + "\n")
+        except: pass
+        # #endregion
         return {
             "status": "error",
             "proposed_action": None,
