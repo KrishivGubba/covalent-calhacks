@@ -65,7 +65,11 @@ pyinstaller server/run_fastapi.py \
   --copy-metadata=langchain-core \
   --copy-metadata=langchain-openai \
   --copy-metadata=openai \
-  --collect-submodules=rich
+  --collect-submodules=rich \
+  --collect-submodules=fastapi \
+  --collect-submodules=starlette \
+  --collect-submodules=uvicorn \
+  --collect-submodules=pydantic
 
 echo ""
 echo "=== Build complete ==="
