@@ -33,6 +33,9 @@ from auth_dao import AuthDAO
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from logger import get_logger
 
+# Add covalent_mcp for passable outputs registry
+from covalent_mcp.tools import format_passable_outputs_for_prompt, get_passable_outputs
+
 load_dotenv()
 
 log = get_logger()
@@ -119,7 +122,7 @@ MCP_SERVERS = {
 
 # Tool Routing Configuration
 TOOL_CACHE_DIR = Path.home() / ".cache" / "covalent_action_executor"
-TOP_K_TOOLS = 15  # Number of relevant tools/resources to select
+TOP_K_TOOLS = 25  # Number of relevant tools/resources to select
 
 # =============================================================================
 # MCP CLIENT MANAGEMENT
@@ -472,7 +475,7 @@ async def gather_context(action_text: str, existing_context: str = "") -> Dict[s
     try:
         # Get MCP client, tools, and resources separately
         client, tools, resources = await get_mcp_client()
-        print("in gather_context, client, tools, resources:", client, tools, resources)
+        
         # Initialize tool router if not already done
         if not tool_router._initialized:
             tool_router.initialize(tools, resources)
@@ -482,7 +485,12 @@ async def gather_context(action_text: str, existing_context: str = "") -> Dict[s
             action_text + " " + existing_context[:500],
             top_k=TOP_K_TOOLS
         )
-        print("in gather_context, relevant_resources:", relevant_resources)
+        
+        # Log which resources were shortlisted for research
+        log.info(f"📚 Shortlisted {len(relevant_resources)} resources for research:")
+        for i, res in enumerate(relevant_resources, 1):
+            log.info(f"   {i}. {res.name}")
+        
         if not relevant_resources:
             return {
                 "status": "success",
@@ -589,6 +597,21 @@ Which resources should I query to gather context for this action?"""
                         text = content.text if hasattr(content, 'text') else str(content)
                     else:
                         text = ""
+
+                # Research phase: log Perplexity (Lambda → api.perplexity.ai) responses for debugging
+                if uri.startswith("perplexity://"):
+                    _max = 24_000
+                    try:
+                        _parsed = json.loads(text)
+                        _body = json.dumps(_parsed, indent=2, default=str)
+                    except (json.JSONDecodeError, TypeError):
+                        _body = text
+                    if len(_body) > _max:
+                        _body = _body[:_max] + f"\n... [truncated for log, total chars={len(text)}]"
+                    log.info(
+                        "[research/pplx] response from read_resource — "
+                        f"name={resource_name!r} uri={uri!r} reason={reason!r}\n{_body}"
+                    )
                 
                 gathered_context.append(f"--- {resource_name} ---\n{text}")
                 resources_read.append(resource_name)
@@ -709,6 +732,8 @@ def _parse_tool_response(response_text: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+MAX_CONTEXT_CHARS = 30_000
+
 async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
     """
     Plan a single action based on the action text and context.
@@ -732,6 +757,15 @@ async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
         }
     """
     try:
+        # Truncate context to avoid exceeding API Gateway's 30s timeout.
+        # 223K chars caused a 503; 30K keeps the call well under 29s.
+        if len(context_data) > MAX_CONTEXT_CHARS:
+            log.warning(
+                f"⚠️ Truncating context_data from {len(context_data)} to {MAX_CONTEXT_CHARS} chars "
+                f"to stay within API Gateway timeout"
+            )
+            context_data = context_data[:MAX_CONTEXT_CHARS] + "\n\n[... context truncated for length ...]"
+        
         # Get MCP client, tools, and resources
         client, tools, resources = await get_mcp_client()
         
@@ -745,6 +779,11 @@ async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
             top_k=TOP_K_TOOLS
         )
         
+        # Log which tools were shortlisted for the LLM
+        log.info(f"🔧 Shortlisted {len(relevant_tools)} tools for planning:")
+        for i, tool in enumerate(relevant_tools, 1):
+            log.info(f"   {i}. {tool.name}")
+        
         if not relevant_tools:
             return {
                 "status": "error",
@@ -752,48 +791,160 @@ async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
                 "error": "No relevant tools found for this action"
             }
         
-        # Build tool descriptions for the prompt
+        # Build tool descriptions for the prompt with explicit required/optional marking
+        def format_tool_params(tool):
+            """Format tool parameters, clearly marking required vs optional."""
+            try:
+                schema = None
+                
+                # Try to get schema from args_schema
+                if hasattr(tool, 'args_schema') and tool.args_schema is not None:
+                    if hasattr(tool.args_schema, 'model_json_schema'):
+                        # It's a Pydantic model class
+                        schema = tool.args_schema.model_json_schema()
+                    elif isinstance(tool.args_schema, dict):
+                        # It's already a dict schema
+                        schema = tool.args_schema
+                
+                # If we have a proper schema with properties, format nicely
+                if schema and isinstance(schema, dict) and 'properties' in schema:
+                    required_set = set(schema.get('required', []))
+                    props = schema.get('properties', {})
+                    
+                    param_strs = []
+                    for name, info in props.items():
+                        param_type = info.get('type', 'any')
+                        desc = info.get('description', '')
+                        if name in required_set:
+                            param_strs.append(f"{name} (REQUIRED, {param_type}): {desc}")
+                        else:
+                            default = info.get('default', 'None')
+                            param_strs.append(f"{name} (optional, {param_type}, default={default}): {desc}")
+                    
+                    return "\n    ".join(param_strs) if param_strs else str(tool.args)
+                
+                # Fallback: try to format tool.args directly
+                if hasattr(tool, 'args') and isinstance(tool.args, dict):
+                    param_strs = []
+                    for name, info in tool.args.items():
+                        if isinstance(info, dict):
+                            param_type = info.get('type', 'any')
+                            desc = info.get('description', '')
+                            # Check if optional via anyOf/oneOf with null
+                            is_optional = False
+                            if 'anyOf' in info or 'oneOf' in info:
+                                types = info.get('anyOf', info.get('oneOf', []))
+                                is_optional = any(t.get('type') == 'null' for t in types)
+                            if 'default' in info:
+                                is_optional = True
+                            
+                            if is_optional:
+                                param_strs.append(f"{name} (optional, {param_type}): {desc}")
+                            else:
+                                param_strs.append(f"{name} (REQUIRED, {param_type}): {desc}")
+                        else:
+                            param_strs.append(f"{name}: {info}")
+                    return "\n    ".join(param_strs) if param_strs else str(tool.args)
+                
+                return str(tool.args)
+            except Exception:
+                return str(tool.args)
+        
         tool_descriptions = "\n".join([
-            f"- {tool.name}: {tool.description}\n  Parameters: {tool.args}"
+            f"- {tool.name}: {tool.description}\n  Parameters:\n    {format_tool_params(tool)}"
             for tool in relevant_tools
         ])
         
-        system_prompt = """You are an action planning assistant.
+        # Log tool descriptions for debugging (truncated)
+        log.info(f"📋 Tool descriptions for planning (first 2000 chars):\n{tool_descriptions[:2000]}")
+        
+        # #region agent log
+        import time as _time_mod
+        _debug_log_path = "/Users/hem/Downloads/covalent-new/.cursor/debug.log"
+        _dl_ts = int(_time_mod.time() * 1000)
+        _dl_tool_desc_len = len(tool_descriptions)
+        _dl_context_len = len(context_data)
+        _dl_action_len = len(action_text)
+        try:
+            with open(_debug_log_path, "a") as _dlf:
+                _dlf.write(json.dumps({"id":f"log_{_dl_ts}_prompt_sizes","timestamp":_dl_ts,"location":"action_executor.py:plan_action","message":"Prompt sizes before gateway call","data":{"tool_desc_chars":_dl_tool_desc_len,"context_data_chars":_dl_context_len,"action_text_chars":_dl_action_len,"max_tokens_configured":3072},"runId":"post-fix-v2","hypothesisId":"H1,H3,H4"}) + "\n")
+        except: pass
+        # #endregion
+        
+        # Get passable outputs info for the prompt
+        passable_outputs_info = format_passable_outputs_for_prompt()
+        
+        system_prompt = f"""You are an action planning assistant.
 
 Your task is to analyze the user's action and propose the tool(s) needed to accomplish it.
+Make sure you include ALL actions that are needed to accomplish the user's action. For example, if you need 
+to edit a specific document, you should include the action to fetch the document (to get the document ID) and the action to edit the document with
+the desired content. 
+ENSURE THAT THE ENTIRE CHAIN OF ACTIONS IS COMPLETE. THERE'S NO MISSING PARAMETER THAT ANY OF THE ACTIONS FURTHER REQUIRES
+Every parameter that an action requires either must be provided directly or should be passed in as a cross-step dependency
+unless this is something that the user is expected to fill in directly.
+
+CRITICAL - KEEP OUTPUT CONCISE:
+- Keep ALL parameters SHORT and compact (under 500 chars each)
+- For document content: provide a BRIEF outline/summary (2-3 sentences max), NOT full document text
+- For text/content parameters: use "[Content to be generated]" placeholder if content is long
+- The user will fill in detailed content after reviewing the plan
+- Prefer SINGLE actions when possible - avoid multi-step plans unless absolutely necessary
+
+EMAIL FORMATTING:
+- For email body content (send_email, create_draft), use PLAIN TEXT only
+- Do NOT use markdown formatting (no **bold**, no *italic*, no bullet points with -)
+- Use simple line breaks and plain dashes for lists if needed
+- Keep emails professional and readable as plain text
 
 IMPORTANT INSTRUCTIONS:
 1. Analyze if the action requires ONE or MULTIPLE tools
-2. If the action involves multiple distinct operations (e.g., "create an issue AND send an email AND update a note"), propose MULTIPLE actions
+2. If the action involves multiple distinct operations (e.g., "create a doc AND add content to it"), propose MULTIPLE actions
 3. If the action is simple and requires only one tool, propose just that one
-4. Fill in ALL required parameters based on the provided context
+4. **CRITICAL**: You MUST fill in ALL parameters marked as REQUIRED - the action WILL FAIL if any required parameter is missing
 5. Use the context data to infer missing information (emails, names, dates, etc.)
-6. If information is missing, make reasonable assumptions or use placeholders like "[FILL IN]"
+6. If a REQUIRED parameter's value is unknown, use a placeholder like "[FILL IN: description]" - NEVER omit it
 7. DO NOT execute any tools - just propose them with all parameters filled
-8. Each action is INDEPENDENT - do not assume you can use outputs from previous actions
+
+PARAMETER REQUIREMENTS:
+- Every parameter marked "(REQUIRED, ...)" in the tool description MUST appear in your output
+- If you see 3 required parameters, your output MUST have all 3 - no exceptions
+- Missing required parameters will cause execution to fail
+
+CROSS-STEP DEPENDENCIES:
+When a later step needs output from an earlier step (e.g., step 2 needs the document ID from step 1),
+use variable references with this syntax: {{{{$N.field_name}}}}
+  - N is the step number (1-indexed)
+  - field_name is the output field from that step
+
+Example: If step 1 creates a document, step 2 can reference its ID as: {{{{$1.id}}}}
+
+AVAILABLE PASSABLE OUTPUTS BY TOOL:
+{passable_outputs_info}
 
 The user will review and can edit your proposed parameters before execution.
 
 OUTPUT FORMAT - Return ONLY valid JSON with NO additional text:
-{
+{{
     "actions": [
-        {
+        {{
             "tool_name": "first_tool_name",
-            "parameters": {
+            "parameters": {{
                 "param1": "value1"
-            },
+            }},
             "reasoning": "Brief explanation for this action"
-        },
-        {
+        }},
+        {{
             "tool_name": "second_tool_name",
-            "parameters": {
-                "param1": "value1"
-            },
-            "reasoning": "Brief explanation for this action"
-        }
+            "parameters": {{
+                "document_id": "{{{{$1.id}}}}",
+                "other_param": "value"
+            }},
+            "reasoning": "Brief explanation - uses document ID from step 1"
+        }}
     ],
     "overall_reasoning": "Brief explanation of the overall plan"
-}
+}}
 
 For SINGLE actions, still use the same format with just one item in the actions array."""
 
@@ -810,12 +961,33 @@ Analyze this action and output a single JSON object with the tool call."""
         # Call the Gateway (Lambda -> Bedrock)
         gateway = get_gateway_client()
         
+        # #region agent log
+        import time as _time_mod2
+        _dl_pre_call_ts = int(_time_mod2.time() * 1000)
+        _dl_sys_prompt_len = len(system_prompt)
+        _dl_user_prompt_len = len(user_prompt)
+        _dl_total_prompt_chars = _dl_sys_prompt_len + _dl_user_prompt_len
+        try:
+            with open(_debug_log_path, "a") as _dlf:
+                _dlf.write(json.dumps({"id":f"log_{_dl_pre_call_ts}_pre_gateway","timestamp":_dl_pre_call_ts,"location":"action_executor.py:plan_action:pre_gateway","message":"About to call gateway.generate","data":{"system_prompt_chars":_dl_sys_prompt_len,"user_prompt_chars":_dl_user_prompt_len,"total_prompt_chars":_dl_total_prompt_chars,"gateway_timeout":gateway.timeout,"gateway_model":gateway.default_model},"runId":"post-fix-v2","hypothesisId":"H1,H3"}) + "\n")
+        except: pass
+        # #endregion
+        
         response = gateway.generate(
             prompt=user_prompt,
             system_prompt=system_prompt,
-            max_tokens=2048,
+            max_tokens=3072,
             temperature=0.0,  # Deterministic
         )
+        
+        # #region agent log
+        _dl_post_call_ts = int(_time_mod2.time() * 1000)
+        _dl_gateway_duration = _dl_post_call_ts - _dl_pre_call_ts
+        try:
+            with open(_debug_log_path, "a") as _dlf:
+                _dlf.write(json.dumps({"id":f"log_{_dl_post_call_ts}_post_gateway","timestamp":_dl_post_call_ts,"location":"action_executor.py:plan_action:post_gateway","message":"Gateway call completed","data":{"duration_ms":_dl_gateway_duration,"response_len":len(response.content),"input_tokens":response.input_tokens,"output_tokens":response.output_tokens,"stop_reason":response.stop_reason,"response_preview":response.content[:500],"response_tail":response.content[-200:] if len(response.content) > 200 else ""},"runId":"post-fix-v2","hypothesisId":"H1,H2,H3,H4,H5"}) + "\n")
+        except: pass
+        # #endregion
         
         log.debug(f"\n{'='*60}")
         log.debug(f"LLM OUTPUT (PLANNING PHASE)")
@@ -827,6 +999,14 @@ Analyze this action and output a single JSON object with the tool call."""
         parsed_response = _parse_tool_response(response.content)
         
         if not parsed_response:
+            # #region agent log
+            try:
+                import time as _time_mod_parse
+                _dl_parse_fail_ts = int(_time_mod_parse.time() * 1000)
+                with open(_debug_log_path, "a") as _dlf:
+                    _dlf.write(json.dumps({"id":f"log_{_dl_parse_fail_ts}_parse_fail","timestamp":_dl_parse_fail_ts,"location":"action_executor.py:plan_action:parse_fail","message":"Failed to parse tool response","data":{"full_response":response.content,"response_len":len(response.content),"stop_reason":response.stop_reason,"input_tokens":response.input_tokens,"output_tokens":response.output_tokens,"has_closing_brace":response.content.rstrip().endswith("}")},"runId":"post-fix-v2","hypothesisId":"H1,H2,H3,H4,H5"}) + "\n")
+            except: pass
+            # #endregion
             return {
                 "status": "error",
                 "proposed_actions": None,
@@ -844,6 +1024,14 @@ Analyze this action and output a single JSON object with the tool call."""
         
     except GatewayError as e:
         log.error(f"❌ Gateway error: {e}")
+        # #region agent log
+        try:
+            import time as _time_mod3
+            _dl_err_ts = int(_time_mod3.time() * 1000)
+            with open("/Users/hem/Downloads/covalent-new/.cursor/debug.log", "a") as _dlf:
+                _dlf.write(json.dumps({"id":f"log_{_dl_err_ts}_gateway_error","timestamp":_dl_err_ts,"location":"action_executor.py:plan_action:except","message":"GatewayError caught in plan_action","data":{"error_message":str(e),"status_code":getattr(e,'status_code',None)},"runId":"run1","hypothesisId":"H1,H2,H3,H4,H5"}) + "\n")
+        except: pass
+        # #endregion
         return {
             "status": "error",
             "proposed_action": None,
@@ -897,6 +1085,55 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
                 "status": "error",
                 "result": None,
                 "error": f"Tool '{tool_name}' not found"
+            }
+        
+        # Validate required parameters before execution
+        # LangChain MCP tools store param info in tool.args (dict with JSON schema info)
+        missing_params = []
+        try:
+            schema = None
+            
+            # Try to get schema from args_schema if it's a Pydantic model
+            if hasattr(tool, 'args_schema') and tool.args_schema is not None:
+                if hasattr(tool.args_schema, 'model_json_schema'):
+                    # It's a Pydantic model class
+                    schema = tool.args_schema.model_json_schema()
+                elif isinstance(tool.args_schema, dict):
+                    # It's already a dict schema
+                    schema = tool.args_schema
+            
+            # If we got a schema, extract required params from it
+            if schema and isinstance(schema, dict):
+                required_params = schema.get('required', [])
+                for param_name in required_params:
+                    if param_name not in parameters:
+                        missing_params.append(param_name)
+            elif hasattr(tool, 'args') and isinstance(tool.args, dict):
+                # Fallback: check args dict structure (JSON schema format)
+                # tool.args is typically {'param_name': {'type': '...', ...}, ...}
+                for param_name, param_info in tool.args.items():
+                    is_required = True
+                    if isinstance(param_info, dict):
+                        # Check various ways a param might be marked optional
+                        if 'default' in param_info:
+                            is_required = False
+                        # Check if type is Optional (contains 'null' in anyOf/oneOf)
+                        elif 'anyOf' in param_info or 'oneOf' in param_info:
+                            types = param_info.get('anyOf', param_info.get('oneOf', []))
+                            if any(t.get('type') == 'null' for t in types):
+                                is_required = False
+                    
+                    if is_required and param_name not in parameters:
+                        missing_params.append(param_name)
+        except Exception as e:
+            log.warning(f"⚠️ Could not validate parameters for {tool_name}: {e}")
+        
+        if missing_params:
+            return {
+                "status": "error",
+                "result": None,
+                "error": f"Missing required parameters for '{tool_name}': {', '.join(missing_params)}. "
+                         f"Provided: {list(parameters.keys())}"
             }
         
         # Execute the tool via LangChain's ainvoke
@@ -971,37 +1208,120 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
         }
 
 
+def resolve_variables(params: Any, step_outputs: Dict[str, Dict[str, Any]]) -> Any:
+    """
+    Resolve variable references in parameters using outputs from previous steps.
+    
+    Variable syntax: {{$N.field_name}} where N is the step number (1-indexed)
+    
+    Args:
+        params: Parameters dict (or any nested structure) that may contain variable refs
+        step_outputs: Dict mapping step number (as string) to that step's output dict
+                      e.g. {"1": {"id": "abc123", "url": "..."}, "2": {...}}
+    
+    Returns:
+        A new structure with all variable references replaced with actual values
+    """
+    if isinstance(params, str):
+        # Replace all {{$N.field}} patterns
+        def replacer(match):
+            step_num = match.group(1)
+            field = match.group(2)
+            step_data = step_outputs.get(step_num, {})
+            value = step_data.get(field)
+            if value is not None:
+                return str(value)
+            # Keep the original if not found (will show as unresolved)
+            log.warning(f"⚠️ Variable reference {{{{${step_num}.{field}}}}} not found in step outputs")
+            return match.group(0)
+        
+        return re.sub(r'\{\{\$(\d+)\.(\w+)\}\}', replacer, params)
+    
+    elif isinstance(params, dict):
+        return {k: resolve_variables(v, step_outputs) for k, v in params.items()}
+    
+    elif isinstance(params, list):
+        return [resolve_variables(v, step_outputs) for v in params]
+    
+    else:
+        return params
+
+
+def extract_passable_outputs(result: Any, tool_name: str) -> Dict[str, Any]:
+    """
+    Extract passable output fields from a tool's result.
+    
+    Uses the declared passable_outputs from the tool's display schema,
+    but falls back to all top-level keys if none declared.
+    
+    Args:
+        result: The tool's execution result
+        tool_name: Name of the tool (to look up passable_outputs)
+    
+    Returns:
+        Dict of field_name -> value for passable outputs
+    """
+    if result is None:
+        return {}
+    
+    # Ensure result is a dict
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return {"_raw": result}
+    
+    if not isinstance(result, dict):
+        return {"_raw": str(result)}
+    
+    # Get declared passable outputs for this tool
+    declared_outputs = get_passable_outputs(tool_name)
+    
+    if declared_outputs:
+        # Only extract declared fields
+        extracted = {}
+        for output in declared_outputs:
+            if output.key in result:
+                extracted[output.key] = result[output.key]
+        return extracted
+    else:
+        # Fallback: extract all top-level keys except 'success' and 'message'
+        return {k: v for k, v in result.items() if k not in ('success', 'message')}
+
+
 async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Execute a sequence of approved actions sequentially.
+    Execute a sequence of approved actions sequentially with variable passing.
     
-    Actions are executed in order. If one fails, execution continues to the next
-    (no dependencies between actions - each is independent).
+    Actions are executed in order. If one fails, execution STOPS immediately (fail-fast).
+    Outputs from each step are accumulated and can be referenced by subsequent steps
+    using variable syntax: {{$N.field_name}}
     
     Args:
         actions: List of action dicts, each with:
             - step_id: int
             - tool_name: str
-            - parameters: dict (user-approved/edited)
+            - parameters: dict (may contain {{$N.field}} variable references)
             
     Returns:
         {
-            "status": "success" | "partial" | "error",
+            "status": "success" | "error",
             "results": [
                 {"step_id": 1, "tool_name": "...", "status": "success", "result": {...}},
-                {"step_id": 2, "tool_name": "...", "status": "error", "error": "..."},
                 ...
             ],
             "summary": {
                 "total": int,
                 "succeeded": int,
                 "failed": int
-            }
+            },
+            "failed_at_step": int | None  (only set if status is "error")
         }
     """
     results = []
     succeeded = 0
     failed = 0
+    step_outputs = {}  # Accumulated outputs: {"1": {...}, "2": {...}}
     
     log.info(f"\n{'='*60}")
     log.info(f"🚀 EXECUTING ACTION CHAIN ({len(actions)} actions)")
@@ -1010,22 +1330,38 @@ async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
     for action in actions:
         step_id = action.get("step_id", len(results) + 1)
         tool_name = action.get("tool_name", "")
-        parameters = action.get("parameters", {})
+        raw_parameters = action.get("parameters", {})
         
+        # Resolve variable references from previous steps
+        resolved_parameters = resolve_variables(raw_parameters, step_outputs)
+        
+        # Log what we're doing
         log.info(f"\n📌 Step {step_id}: {tool_name}")
+        if raw_parameters != resolved_parameters:
+            log.info(f"   📎 Resolved variables from previous steps")
+            log.debug(f"   Raw params: {raw_parameters}")
+            log.debug(f"   Resolved params: {resolved_parameters}")
         
         try:
-            exec_result = await execute_action(tool_name, parameters)
+            exec_result = await execute_action(tool_name, resolved_parameters)
             
             if exec_result["status"] == "success":
                 succeeded += 1
+                
+                # Extract and store passable outputs for subsequent steps
+                passable = extract_passable_outputs(exec_result["result"], tool_name)
+                step_outputs[str(step_id)] = passable
+                log.info(f"   ✅ Step {step_id} succeeded")
+                if passable:
+                    log.info(f"   📤 Passable outputs: {list(passable.keys())}")
+                
                 results.append({
                     "step_id": step_id,
                     "tool_name": tool_name,
                     "status": "success",
-                    "result": exec_result["result"]
+                    "result": exec_result["result"],
+                    "passable_outputs": passable
                 })
-                log.info(f"   ✅ Step {step_id} succeeded")
             else:
                 failed += 1
                 results.append({
@@ -1035,7 +1371,24 @@ async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
                     "error": exec_result["error"]
                 })
                 log.error(f"   ❌ Step {step_id} failed: {exec_result['error']}")
-                # Continue to next action (no early exit)
+                
+                # FAIL-FAST: Stop immediately on error
+                log.info(f"\n{'='*60}")
+                log.info(f"⛔ CHAIN ABORTED at step {step_id}: {exec_result['error']}")
+                log.info(f"📊 Completed {succeeded}/{len(actions)} steps before failure")
+                log.info(f"{'='*60}\n")
+                
+                return {
+                    "status": "error",
+                    "results": results,
+                    "summary": {
+                        "total": len(actions),
+                        "succeeded": succeeded,
+                        "failed": 1
+                    },
+                    "failed_at_step": step_id,
+                    "error": exec_result["error"]
+                }
                 
         except Exception as e:
             failed += 1
@@ -1046,27 +1399,37 @@ async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "error": str(e)
             })
             log.error(f"   ❌ Step {step_id} exception: {e}")
-            # Continue to next action
+            
+            # FAIL-FAST: Stop immediately on exception
+            log.info(f"\n{'='*60}")
+            log.info(f"⛔ CHAIN ABORTED at step {step_id}: {e}")
+            log.info(f"📊 Completed {succeeded}/{len(actions)} steps before failure")
+            log.info(f"{'='*60}\n")
+            
+            return {
+                "status": "error",
+                "results": results,
+                "summary": {
+                    "total": len(actions),
+                    "succeeded": succeeded,
+                    "failed": 1
+                },
+                "failed_at_step": step_id,
+                "error": str(e)
+            }
     
-    # Determine overall status
-    if failed == 0:
-        overall_status = "success"
-    elif succeeded == 0:
-        overall_status = "error"
-    else:
-        overall_status = "partial"
-    
+    # All steps succeeded!
     log.info(f"\n{'='*60}")
-    log.info(f"📊 CHAIN COMPLETE: {succeeded}/{len(actions)} succeeded")
+    log.info(f"✅ CHAIN COMPLETE: All {len(actions)} steps succeeded!")
     log.info(f"{'='*60}\n")
     
     return {
-        "status": overall_status,
+        "status": "success",
         "results": results,
         "summary": {
             "total": len(actions),
             "succeeded": succeeded,
-            "failed": failed
+            "failed": 0
         }
     }
 

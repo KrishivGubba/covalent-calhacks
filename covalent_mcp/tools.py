@@ -32,6 +32,7 @@ from covalent_mcp.toolclasses import (
     calendar_module,
     gmail_module,
     drive_module,
+    docs_module,
     filesystem_module,
     perplexity_search_module,
     notion_module,
@@ -42,6 +43,7 @@ TOOL_MODULES: list[MCPToolModule] = [
     calendar_module,
     gmail_module,
     drive_module,
+    docs_module,
     filesystem_module,
     perplexity_search_module,
     notion_module,
@@ -95,6 +97,57 @@ def get_all_display_schemas() -> Dict[str, ToolDisplaySchema]:
     if not _DISPLAY_SCHEMA_REGISTRY:
         _DISPLAY_SCHEMA_REGISTRY = _build_display_schema_registry()
     return _DISPLAY_SCHEMA_REGISTRY
+
+
+# =============================================================================
+# PASSABLE OUTPUTS REGISTRY
+# =============================================================================
+
+def get_passable_outputs(tool_name: str) -> list:
+    """
+    Get the passable outputs for a given tool.
+    
+    Returns a list of PassableOutput objects (or empty list if none declared).
+    """
+    schema = get_display_schema(tool_name)
+    if schema is None:
+        return []
+    return schema.passable_outputs or []
+
+
+def get_all_passable_outputs() -> Dict[str, list]:
+    """
+    Get all passable outputs across all tools.
+    
+    Returns a dict: tool_name -> list of PassableOutput objects.
+    Only includes tools that have passable outputs declared.
+    """
+    all_schemas = get_all_display_schemas()
+    result = {}
+    for tool_name, schema in all_schemas.items():
+        if schema.passable_outputs:
+            result[tool_name] = schema.passable_outputs
+    return result
+
+
+def format_passable_outputs_for_prompt() -> str:
+    """
+    Format all passable outputs as a string for the LLM planning prompt.
+    
+    Returns a formatted string like:
+    - create_document: id (The unique document ID), webViewLink (URL to view the document)
+    - create_event: id (The event ID), htmlLink (URL to view the event)
+    """
+    all_outputs = get_all_passable_outputs()
+    if not all_outputs:
+        return "(No tools have passable outputs declared)"
+    
+    lines = []
+    for tool_name, outputs in sorted(all_outputs.items()):
+        output_strs = [f"{o.key} ({o.description})" for o in outputs]
+        lines.append(f"- {tool_name}: {', '.join(output_strs)}")
+    
+    return "\n".join(lines)
 
 
 # =============================================================================

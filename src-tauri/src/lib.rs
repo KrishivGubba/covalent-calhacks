@@ -662,6 +662,10 @@ async fn execute_action(
     let result = if let Some(actions_array) = actions {
         // Multi-action execution
         println!("🚀 Executing {} action(s) for: {}", actions_array.len(), action_uuid);
+        // Debug: print each action's parameters
+        for (i, action) in actions_array.iter().enumerate() {
+            println!("   📦 Action {}: {}", i + 1, serde_json::to_string(action).unwrap_or_else(|_| "?".to_string()));
+        }
         
         api_client
             .execute_action_chain(action_uuid, actions_array)

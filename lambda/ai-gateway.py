@@ -129,6 +129,39 @@ GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "hem8705/covalent-calhacks")
 GITHUB_API_BASE = "https://api.github.com"
 
+# Verbose CloudWatch traces for Tauri updater proxy (filter: [updater])
+def _updater_log(step: str, **fields: Any) -> None:
+    if not fields:
+        logger.info("[updater] %s", step)
+        return
+    try:
+        payload = json.dumps(fields, default=str)
+    except TypeError:
+        payload = str(fields)
+    logger.info("[updater] %s | %s", step, payload)
+
+
+def _safe_request_summary(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Loggable request metadata (no tokens / bodies)."""
+    h = event.get("headers") or {}
+    if isinstance(h, dict):
+        hk = {k.lower(): v for k, v in h.items()}
+    else:
+        hk = {}
+    rc = event.get("requestContext") or {}
+    http = rc.get("http") or {}
+    return {
+        "httpMethod": event.get("httpMethod") or http.get("method"),
+        "path": event.get("path"),
+        "rawPath": event.get("rawPath"),
+        "stage": rc.get("stage"),
+        "requestId": rc.get("requestId") or rc.get("http", {}).get("requestId"),
+        "hasAuthorizationHeader": bool(hk.get("authorization")),
+        "userAgent": (hk.get("user-agent") or "")[:200],
+        "queryStringParameters": event.get("queryStringParameters"),
+    }
+
+
 # Cache the JWKS client (reused across invocations)
 _jwks_client = None
 
@@ -1077,6 +1110,11 @@ def _get_temp_download_url(asset_api_url: str, pat: str) -> Optional[str]:
     We capture that redirect URL instead of following it.
     """
     parsed = urllib.parse.urlparse(asset_api_url)
+    _updater_log(
+        "temp_url_request_start",
+        host=parsed.hostname,
+        pathPrefix=(parsed.path or "")[:80],
+    )
     conn = http.client.HTTPSConnection(parsed.hostname, context=ssl.create_default_context())
     conn.request("GET", parsed.path, headers={
         "Accept": "application/octet-stream",
@@ -1086,6 +1124,13 @@ def _get_temp_download_url(asset_api_url: str, pat: str) -> Optional[str]:
     })
     resp = conn.getresponse()
     location = resp.getheader("Location") if resp.status in (301, 302, 303, 307) else None
+    loc_host = urllib.parse.urlparse(location).hostname if location else None
+    _updater_log(
+        "temp_url_request_done",
+        httpStatus=resp.status,
+        hasLocation=bool(location),
+        redirectHost=loc_host,
+    )
     conn.close()
     return location
 
@@ -1096,11 +1141,18 @@ def handle_updates_latest() -> Dict[str, Any]:
 
     1. Fetches the latest release metadata from the GitHub API.
     2. Downloads the latest.json asset from that release.
-    3. Rewrites the platform download URLs to temporary public S3 URLs
+    3. Rewrites the platform download URL to temporary public S3 URLs
        so the Tauri updater can download the binary without auth.
     4. Returns the modified latest.json.
     """
+    _updater_log(
+        "handle_start",
+        githubPatConfigured=bool(GITHUB_PAT),
+        githubRepo=GITHUB_REPO,
+        apiBase=GITHUB_API_BASE,
+    )
     if not GITHUB_PAT:
+        _updater_log("abort_no_pat")
         return create_response(500, {"error": "GitHub PAT not configured"})
 
     github_headers = {
@@ -1113,12 +1165,29 @@ def handle_updates_latest() -> Dict[str, Any]:
     try:
         # 1. Fetch latest release metadata
         release_url = f"{GITHUB_API_BASE}/repos/{GITHUB_REPO}/releases/latest"
+        _updater_log("github_fetch_release", url=release_url)
         req = urllib.request.Request(release_url, headers=github_headers)
         with urllib.request.urlopen(req, timeout=10) as response:
-            release = json.loads(response.read().decode("utf-8"))
+            raw_release = response.read().decode("utf-8")
+            code = response.getcode()
+            _updater_log(
+                "github_release_response",
+                httpStatus=code,
+                bodyChars=len(raw_release),
+            )
+            release = json.loads(raw_release)
 
+        tag = release.get("tag_name")
         assets = release.get("assets", [])
+        asset_names = sorted(a.get("name", "") for a in assets)
+        _updater_log(
+            "github_release_parsed",
+            tagName=tag,
+            assetCount=len(assets),
+            assetNames=asset_names,
+        )
         if not assets:
+            _updater_log("abort_no_assets_in_release")
             return create_response(404, {"error": "No assets found in latest release"})
 
         # 2. Find the latest.json asset
@@ -1129,7 +1198,15 @@ def handle_updates_latest() -> Dict[str, Any]:
                 break
 
         if not latest_json_asset:
+            _updater_log("abort_latest_json_missing", assetNames=asset_names)
             return create_response(404, {"error": "latest.json not found in release assets"})
+
+        _updater_log(
+            "latest_json_asset_found",
+            assetId=latest_json_asset.get("id"),
+            size=latest_json_asset.get("size"),
+            apiUrlHost=urllib.parse.urlparse(latest_json_asset.get("url", "")).hostname,
+        )
 
         # 3. Download latest.json content (urllib follows the S3 redirect automatically)
         download_headers = {
@@ -1140,41 +1217,94 @@ def handle_updates_latest() -> Dict[str, Any]:
         }
         req = urllib.request.Request(latest_json_asset["url"], headers=download_headers)
         with urllib.request.urlopen(req, timeout=10) as response:
-            latest_json = json.loads(response.read().decode("utf-8"))
+            raw_latest = response.read().decode("utf-8")
+            _updater_log(
+                "latest_json_downloaded",
+                httpStatus=response.getcode(),
+                bodyChars=len(raw_latest),
+            )
+            try:
+                latest_json = json.loads(raw_latest)
+            except json.JSONDecodeError as je:
+                _updater_log(
+                    "latest_json_parse_failed",
+                    error=str(je),
+                    preview=raw_latest[:500],
+                )
+                raise
+
+        top_keys = list(latest_json.keys()) if isinstance(latest_json, dict) else []
+        platforms = latest_json.get("platforms", {}) if isinstance(latest_json, dict) else {}
+        platform_keys = list(platforms.keys()) if isinstance(platforms, dict) else []
+        _updater_log(
+            "latest_json_parsed",
+            version=latest_json.get("version") if isinstance(latest_json, dict) else None,
+            topLevelKeys=top_keys,
+            platformKeys=platform_keys,
+        )
 
         # 4. Build name -> asset lookup
         asset_by_name = {a["name"]: a for a in assets}
 
         # 5. Rewrite each platform's download URL to a temporary public URL
-        platforms = latest_json.get("platforms", {})
-        for platform_key, platform_data in platforms.items():
-            url = platform_data.get("url", "")
-            if not url:
-                continue
+        if not isinstance(platforms, dict):
+            _updater_log("platforms_not_dict", type=type(platforms).__name__)
+        else:
+            for platform_key, platform_data in platforms.items():
+                if not isinstance(platform_data, dict):
+                    _updater_log("platform_entry_skip_bad_shape", platform=platform_key)
+                    continue
+                url = platform_data.get("url", "")
+                if not url:
+                    _updater_log("platform_entry_skip_empty_url", platform=platform_key)
+                    continue
 
-            filename = url.split("/")[-1]
-            asset = asset_by_name.get(filename)
-            if not asset:
-                logger.warning(f"Asset '{filename}' not found in release for platform {platform_key}")
-                continue
+                filename = url.split("/")[-1]
+                asset = asset_by_name.get(filename)
+                if not asset:
+                    _updater_log(
+                        "platform_asset_missing",
+                        platform=platform_key,
+                        filename=filename,
+                        availableFiles=asset_names,
+                    )
+                    continue
 
-            temp_url = _get_temp_download_url(asset["url"], GITHUB_PAT)
-            if temp_url:
-                platform_data["url"] = temp_url
-                logger.info(f"Rewrote download URL for {platform_key}")
-            else:
-                logger.warning(f"Could not get temp URL for {filename}")
+                temp_url = _get_temp_download_url(asset["url"], GITHUB_PAT)
+                if temp_url:
+                    platform_data["url"] = temp_url
+                    _updater_log("platform_url_rewritten", platform=platform_key, filename=filename)
+                else:
+                    _updater_log("platform_temp_url_failed", platform=platform_key, filename=filename)
 
         # 6. Return the modified latest.json
+        out_body = json.dumps(latest_json)
+        _updater_log(
+            "response_ok",
+            status=200,
+            responseBodyChars=len(out_body),
+            version=latest_json.get("version") if isinstance(latest_json, dict) else None,
+        )
         return create_response(200, latest_json)
 
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
+        _updater_log(
+            "github_http_error",
+            code=e.code,
+            bodyChars=len(error_body),
+            bodyPreview=error_body[:800],
+        )
         logger.error(f"GitHub API error: {e.code} - {error_body}")
         if e.code == 404:
             return create_response(404, {"error": "No releases found"})
         return create_response(502, {"error": "GitHub API error", "details": error_body})
+    except urllib.error.URLError as e:
+        _updater_log("github_url_error", reason=str(e.reason) if getattr(e, "reason", None) else str(e))
+        logger.error(f"Update proxy URL error: {e}")
+        return create_response(502, {"error": "GitHub unreachable", "details": str(e)})
     except Exception as e:
+        _updater_log("unexpected_error", errorType=type(e).__name__, message=str(e))
         logger.error(f"Update proxy error: {e}")
         return create_response(500, {"error": f"Update proxy error: {str(e)}"})
 
@@ -1184,10 +1314,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     Main Lambda handler.
     
     Routes requests based on HTTP method and path.
-    Authentication is required for all endpoints except /health and OPTIONS.
+    Authentication is required for all endpoints except /health, GET /updates/latest, and OPTIONS.
     """
-    logger.info(f"Received event: {json.dumps(event)}")
-    
+    logger.info("Request summary: %s", json.dumps(_safe_request_summary(event)))
+
     # Handle different event formats (API Gateway v1, v2, ALB)
     http_method = event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method", "")
     path = event.get("path") or event.get("rawPath", "")
@@ -1199,6 +1329,34 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # Health check (no auth required)
     if path == "/health" or path.endswith("/health"):
         return handle_health()
+
+    # Tauri updater manifest: no user JWT (dashboard webview often has empty sessionStorage).
+    # GitHub PAT stays server-side; download URLs in JSON are time-limited redirects.
+    updates_match = path == "/updates/latest" or path.endswith("/updates/latest")
+    _updater_log(
+        "route_check",
+        path=path,
+        httpMethod=http_method,
+        updatesPathMatch=updates_match,
+    )
+    if updates_match:
+        if http_method != "GET":
+            _updater_log("reject_wrong_method", method=http_method)
+            return create_response(405, {"error": "Method not allowed. Use GET."})
+        _updater_log("enter_public_updates_latest")
+        resp = handle_updates_latest()
+        try:
+            sc = resp.get("statusCode")
+            body = resp.get("body") or ""
+            _updater_log(
+                "exit_public_updates_latest",
+                statusCode=sc,
+                bodyChars=len(body) if isinstance(body, str) else 0,
+                bodyPreview=(body[:400] + "…") if isinstance(body, str) and len(body) > 400 else body,
+            )
+        except Exception as ex:
+            _updater_log("exit_log_failed", error=str(ex))
+        return resp
     
     # --- All other endpoints require authentication ---
     user_payload, auth_error = authenticate_request(event)
@@ -1209,12 +1367,6 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     logger.info(f"Request authenticated for user: {user_payload.get('sub', 'unknown')}")
     
     user_id = user_payload.get("sub", "anonymous")
-
-    # App update check (returns modified latest.json with temporary download URLs)
-    if path == "/updates/latest" or path.endswith("/updates/latest"):
-        if http_method != "GET":
-            return create_response(405, {"error": "Method not allowed. Use GET."})
-        return handle_updates_latest()
 
     if path == "/invoke" or path.endswith("/invoke"):
         if http_method != "POST":

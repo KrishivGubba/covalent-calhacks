@@ -194,6 +194,17 @@ class GatewayClient:
         print(f"   Payload keys: {payload_keys}")
         
         try:
+            # #region agent log
+            import time as _time_mod
+            _dl_req_start = _time_mod.time()
+            _dl_payload_size = len(json.dumps(json_data)) if json_data else 0
+            _debug_log_path = "/Users/hem/Downloads/covalent-new/.cursor/debug.log"
+            try:
+                with open(_debug_log_path, "a") as _dlf:
+                    _dlf.write(json.dumps({"id":f"log_{int(_dl_req_start*1000)}_http_req","timestamp":int(_dl_req_start*1000),"location":"gateway_client.py:_make_request","message":"HTTP request starting","data":{"method":method,"endpoint":endpoint,"payload_bytes":_dl_payload_size,"timeout":self.timeout},"runId":"run1","hypothesisId":"H1,H4"}) + "\n")
+            except: pass
+            # #endregion
+            
             if method == "GET":
                 response = self._session.get(url, headers=headers, timeout=self.timeout)
             elif method == "POST":
@@ -205,6 +216,15 @@ class GatewayClient:
                 )
             else:
                 raise ValueError(f"Unsupported method: {method}")
+            
+            # #region agent log
+            _dl_req_end = _time_mod.time()
+            _dl_req_duration_ms = int((_dl_req_end - _dl_req_start) * 1000)
+            try:
+                with open(_debug_log_path, "a") as _dlf:
+                    _dlf.write(json.dumps({"id":f"log_{int(_dl_req_end*1000)}_http_resp","timestamp":int(_dl_req_end*1000),"location":"gateway_client.py:_make_request","message":"HTTP response received","data":{"status_code":response.status_code,"duration_ms":_dl_req_duration_ms,"response_len":len(response.text),"response_preview":response.text[:500]},"runId":"run1","hypothesisId":"H1,H2,H3,H4,H5"}) + "\n")
+            except: pass
+            # #endregion
             
             # Try to parse JSON, but capture raw text for error reporting
             raw_text = response.text
@@ -228,8 +248,22 @@ class GatewayClient:
             return data
             
         except requests.exceptions.Timeout:
+            # #region agent log
+            try:
+                with open(_debug_log_path, "a") as _dlf:
+                    _dl_to_ts = int(_time_mod.time() * 1000)
+                    _dlf.write(json.dumps({"id":f"log_{_dl_to_ts}_timeout","timestamp":_dl_to_ts,"location":"gateway_client.py:_make_request","message":"Request timed out on client side","data":{"timeout":self.timeout,"endpoint":endpoint},"runId":"run1","hypothesisId":"H3"}) + "\n")
+            except: pass
+            # #endregion
             raise GatewayError("Request timed out", 504)
         except requests.exceptions.ConnectionError as e:
+            # #region agent log
+            try:
+                with open(_debug_log_path, "a") as _dlf:
+                    _dl_ce_ts = int(_time_mod.time() * 1000)
+                    _dlf.write(json.dumps({"id":f"log_{_dl_ce_ts}_conn_err","timestamp":_dl_ce_ts,"location":"gateway_client.py:_make_request","message":"Connection error","data":{"error":str(e)[:200],"endpoint":endpoint},"runId":"run1","hypothesisId":"H5"}) + "\n")
+            except: pass
+            # #endregion
             raise GatewayError(f"Connection failed: {e}", 503)
     
     def health(self) -> Dict[str, Any]:

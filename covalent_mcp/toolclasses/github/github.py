@@ -12,6 +12,7 @@ from covalent_mcp.toolclasses.base import (
     MCPToolModule,
     ToolDisplaySchema,
     DisplayField,
+    PassableOutput,
 )
 from covalent_mcp.toolclasses.github.github_client import GitHubClient
 from fastmcp import FastMCP
@@ -325,6 +326,11 @@ class GitHubToolModule(MCPToolModule):
                     DisplayField(key="auto_init", label="Initialize with README", widget="toggle"),
                     DisplayField(key="license_template", label="License", widget="text_input", placeholder="e.g. mit, apache-2.0"),
                 ],
+                passable_outputs=[
+                    PassableOutput(key="name", description="The repository name"),
+                    PassableOutput(key="full_name", description="Full name (owner/repo)"),
+                    PassableOutput(key="url", description="URL to the repository"),
+                ],
             ),
             "create_repo_from_template": ToolDisplaySchema(
                 tool_name="create_repo_from_template",
@@ -349,6 +355,10 @@ class GitHubToolModule(MCPToolModule):
                     DisplayField(key="body", label="Description", widget="textarea", placeholder="Describe the issue..."),
                     DisplayField(key="labels", label="Labels", widget="email_list", placeholder="Add labels..."),
                 ],
+                passable_outputs=[
+                    PassableOutput(key="number", description="The issue number"),
+                    PassableOutput(key="url", description="URL to the issue"),
+                ],
             ),
             "create_pull_request": ToolDisplaySchema(
                 tool_name="create_pull_request",
@@ -362,6 +372,10 @@ class GitHubToolModule(MCPToolModule):
                     DisplayField(key="base", label="Into Branch", required=True, widget="text_input", placeholder="main"),
                     DisplayField(key="body", label="Description", widget="textarea"),
                     DisplayField(key="draft", label="Draft PR", widget="toggle"),
+                ],
+                passable_outputs=[
+                    PassableOutput(key="number", description="The PR number"),
+                    PassableOutput(key="url", description="URL to the pull request"),
                 ],
             ),
             "update_repo_description": ToolDisplaySchema(

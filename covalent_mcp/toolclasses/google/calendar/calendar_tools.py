@@ -17,6 +17,7 @@ from covalent_mcp.toolclasses.base import (
     MCPToolModule,
     ToolDisplaySchema,
     DisplayField,
+    PassableOutput,
 )
 from covalent_mcp.toolclasses.google.calendar.calendar_client import CalendarService
 from fastmcp import FastMCP
@@ -157,6 +158,11 @@ class CalendarToolModule(MCPToolModule):
                     ),
                 ],
                 resolve=None,  # all fields come straight from params
+                passable_outputs=[
+                    PassableOutput(key="id", description="The event ID"),
+                    PassableOutput(key="summary", description="The event title"),
+                    PassableOutput(key="htmlLink", description="URL to view the event"),
+                ],
             ),
 
             # ----------------------------------------------------------

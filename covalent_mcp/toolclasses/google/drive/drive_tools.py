@@ -17,6 +17,7 @@ from covalent_mcp.toolclasses.base import (
     MCPToolModule,
     ToolDisplaySchema,
     DisplayField,
+    PassableOutput,
 )
 from covalent_mcp.toolclasses.google.drive.drive_client import DriveService
 from fastmcp import FastMCP
@@ -83,6 +84,11 @@ class DriveToolModule(MCPToolModule):
                     DisplayField(key="name", label="File Name", required=True, widget="text_input", placeholder="notes.txt"),
                     DisplayField(key="content", label="Content", required=True, widget="textarea"),
                 ],
+                passable_outputs=[
+                    PassableOutput(key="id", description="The file ID"),
+                    PassableOutput(key="name", description="The file name"),
+                    PassableOutput(key="webViewLink", description="URL to view the file"),
+                ],
             ),
             "update_text_file": ToolDisplaySchema(
                 tool_name="update_text_file",
@@ -101,6 +107,11 @@ class DriveToolModule(MCPToolModule):
                 description="Create a new folder in Google Drive.",
                 fields=[
                     DisplayField(key="name", label="Folder Name", required=True, widget="text_input"),
+                ],
+                passable_outputs=[
+                    PassableOutput(key="id", description="The folder ID"),
+                    PassableOutput(key="name", description="The folder name"),
+                    PassableOutput(key="webViewLink", description="URL to view the folder"),
                 ],
             ),
             "delete_file": ToolDisplaySchema(

@@ -52,6 +52,7 @@ def _encrypted_conn(path=None, timeout=10.0):
 # Lazy-loaded imports for covalent_mcp.tools (deferred to first use)
 _display_schema_module = None
 _resolve_display_fields_func = None
+_is_inherited_value_func = None
 
 def _get_display_schema(tool_name):
     """Lazy-load get_display_schema from covalent_mcp.tools."""
@@ -68,6 +69,14 @@ def _get_resolve_display_fields():
         from covalent_mcp.toolclasses.base import resolve_display_fields
         _resolve_display_fields_func = resolve_display_fields
     return _resolve_display_fields_func
+
+def _is_inherited_value(value):
+    """Lazy-load _is_inherited_value from covalent_mcp.toolclasses.base."""
+    global _is_inherited_value_func
+    if _is_inherited_value_func is None:
+        from covalent_mcp.toolclasses.base import _is_inherited_value as inherited_check
+        _is_inherited_value_func = inherited_check
+    return _is_inherited_value_func(value)
 
 
 # =============================================================================
@@ -109,14 +118,16 @@ def _resolve_tool_display(proposed_action: dict, loop=None) -> dict:
 
     if schema is None:
         # Fallback: show all params as editable text fields
+        # BUT mark inherited values (from previous steps) as read-only
         fallback_fields = []
         for key, value in parameters.items():
+            is_inherited = _is_inherited_value(value)
             fallback_fields.append({
                 "key": key,
                 "label": key.replace("_", " ").title(),
-                "source": "param",
-                "editable": True,
-                "widget": "text_input",
+                "source": "inherited" if is_inherited else "param",
+                "editable": not is_inherited,  # Inherited values are read-only
+                "widget": "display_text" if is_inherited else "text_input",
                 "required": False,
                 "value": value,
             })
@@ -2182,6 +2193,13 @@ def plan_action_endpoint():
         
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         
+        # Debug: Log what the LLM planned (parameters for each action)
+        _proposed_actions_debug = plan_result.get("proposed_actions") or []
+        log.info(f"📝 Plan result: {len(_proposed_actions_debug)} action(s) proposed")
+        for _i, _action in enumerate(_proposed_actions_debug):
+            _params = _action.get("parameters", {})
+            log.info(f"   📌 Action {_i+1}: {_action.get('tool_name')} - params: {json.dumps(_params, default=str)[:500]}")
+        
         if plan_result["status"] == "error":
             return jsonify({
                 "status": "error",
@@ -2409,6 +2427,9 @@ def execute_action_endpoint():
         if actions and isinstance(actions, list):
             # Multi-action execution
             log.info(f"🚀 Executing action chain with {len(actions)} actions")
+            # Debug: log what parameters each action has
+            for i, action in enumerate(actions):
+                log.info(f"   📦 Action {i+1}: tool={action.get('tool_name')}, params={list(action.get('parameters', {}).keys())}")
             
             # Get action data for logging
             action_data = tree.dao.get_action_by_id(action_uuid)
