@@ -84,7 +84,7 @@
         "resizable": true,
         "visible": false,
         "center": true,
-        "contentProtected": true
+        "contentProtected": false
       }
     ],
     "security": {
