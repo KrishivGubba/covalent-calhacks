@@ -403,7 +403,9 @@ async def github_check(state: str = Query(...)):
     Returns: { "status": "pending" | "ready" | "error", ... }
     """
     if state not in github_auth_pending:
-        return {"status": "error", "error": "invalid_state"}
+        # State was already consumed (success) or never existed
+        # Return "consumed" which frontend should treat as success
+        return {"status": "consumed"}
     
     pending = github_auth_pending[state]
     status = pending.get("status", "pending")
@@ -582,7 +584,8 @@ async def notion_check(state: str = Query(...)):
     Returns: { "status": "pending" | "ready" | "error", ... }
     """
     if state not in notion_auth_pending:
-        return {"status": "error", "error": "invalid_state"}
+        # State was already consumed (success) or never existed
+        return {"status": "consumed"}
     
     pending = notion_auth_pending[state]
     status = pending.get("status", "pending")

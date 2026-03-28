@@ -2,11 +2,12 @@
 Graph management endpoints.
 """
 import json
+from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
-from ..dependencies import tree_dependency
+from ..dependencies import tree_dependency, get_encrypted_conn
 
 router = APIRouter()
 
@@ -14,38 +15,88 @@ router = APIRouter()
 class GraphDataResponse(BaseModel):
     nodes: list
     edges: list
+    stats: dict
 
 
 @router.get("/data")
-async def get_graph_data(tree=Depends(tree_dependency)):
+async def get_graph_data():
     """
-    Get the full graph data for visualization.
-    
-    Returns nodes and edges for the frontend graph view.
+    Return full graph data (nodes, edges, actions, data entries) for UI visualization.
     """
-    tree._ensure_graph_constructed()
-    
-    nodes = []
-    edges = []
-    
-    for node_uuid, node in tree.nodes.items():
-        nodes.append({
-            "id": node_uuid,
-            "label": node.metadata or "Unknown",
-            "metadata": node.metadata,
-            "created": node.created,
-            "last_modified": node.last_modified,
-            "has_children": len(node.children) > 0,
-            "action_count": len(node.actions),
-        })
+    try:
+        conn = get_encrypted_conn()
+        cursor = conn.cursor()
         
-        if node.parent_uuid:
-            edges.append({
-                "from": node.parent_uuid,
-                "to": node_uuid,
+        # Get all nodes
+        cursor.execute("SELECT UUID, Metadata, parent_uuid, children_uuid_arr FROM node_table")
+        raw_nodes = cursor.fetchall()
+        
+        # Get all actions
+        cursor.execute("SELECT UUID, Action_name, Node_UUID FROM action_table")
+        raw_actions = cursor.fetchall()
+        
+        # Get all data entries
+        cursor.execute("SELECT UUID, Node_UUID, key, type, category FROM data_table")
+        raw_data = cursor.fetchall()
+        
+        conn.close()
+        
+        # Build actions-per-node lookup
+        actions_per_node = defaultdict(list)
+        for action_uuid, action_name, node_uuid in raw_actions:
+            actions_per_node[node_uuid].append({"uuid": action_uuid, "name": action_name})
+        
+        # Build data-per-node lookup
+        data_per_node = defaultdict(list)
+        for data_uuid, node_uuid, key, dtype, category in raw_data:
+            data_per_node[node_uuid].append({
+                "uuid": data_uuid,
+                "key": key,
+                "type": dtype,
+                "category": category,
             })
-    
-    return {"nodes": nodes, "edges": edges}
+        
+        # Build depth lookup
+        node_parent = {}
+        for uuid, metadata, parent_uuid, children_arr in raw_nodes:
+            node_parent[uuid] = parent_uuid
+        
+        def get_depth(uuid, depth=0):
+            parent = node_parent.get(uuid)
+            if parent is None:
+                return depth
+            return get_depth(parent, depth + 1)
+        
+        # Build node list and edge list
+        nodes = []
+        edges = []
+        for uuid, metadata, parent_uuid, children_arr in raw_nodes:
+            depth = get_depth(uuid)
+            nodes.append({
+                "id": uuid,
+                "label": metadata or "Untitled",
+                "parent_id": parent_uuid,
+                "depth": depth,
+                "actions": actions_per_node.get(uuid, []),
+                "data": data_per_node.get(uuid, []),
+            })
+            if parent_uuid and parent_uuid in node_parent:
+                edges.append({"from": parent_uuid, "to": uuid})
+        
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "stats": {
+                "total_nodes": len(raw_nodes),
+                "total_actions": len(raw_actions),
+                "total_data": len(raw_data),
+            },
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/reset")
