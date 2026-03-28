@@ -2,7 +2,9 @@
 Authentication endpoints (Auth0 PKCE flow).
 """
 import os
+import sys
 import json
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -22,10 +24,31 @@ FLASK_PORT = int(os.environ.get('VITE_FLASK_PORT', '15001'))
 AUTH0_CLIENT_ID = os.environ.get('VITE_AUTH0_CLIENT_ID', '')
 AUTH0_REDIRECT_URI = f'http://localhost:{FLASK_PORT}/callback'
 
+# HTML templates directory (PyInstaller uses sys._MEIPASS for bundled data)
+if getattr(sys, 'frozen', False):
+    HTML_TEMPLATES_DIR = os.path.join(sys._MEIPASS, 'server', 'htmlstuff')
+else:
+    HTML_TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'htmlstuff')
+
+
+def load_html_template(filename: str, replacements: dict = None) -> str:
+    """Load an HTML template from htmlstuff/ and optionally replace placeholders."""
+    filepath = os.path.join(HTML_TEMPLATES_DIR, filename)
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    if replacements:
+        for key, value in replacements.items():
+            content = content.replace(key, value)
+    return content
+
 
 class AuthStartRequest(BaseModel):
     state: str
     code_verifier: str
+
+
+class LogoutRequest(BaseModel):
+    user_id: Optional[str] = None
 
 
 class SessionResponse(BaseModel):
@@ -52,11 +75,18 @@ async def auth_start(
 
 
 @router.get("/session")
-async def get_session(auth_dao=Depends(auth_dao_dependency)):
+async def get_session(
+    user_id: Optional[str] = Query(None),
+    auth_dao=Depends(auth_dao_dependency),
+):
     """
-    Get the current user session.
+    Get a user session by user_id.
+    Returns session info and whether the token has expired.
     """
-    session = auth_dao.get_current_session()
+    if not user_id:
+        return {"session": None, "expired": False}
+    
+    session = auth_dao.get_session(user_id)
     if session:
         user_info = session.get("user_info")
         if isinstance(user_info, str):
@@ -64,57 +94,106 @@ async def get_session(auth_dao=Depends(auth_dao_dependency)):
                 user_info = json.loads(user_info)
             except json.JSONDecodeError:
                 pass
+            session["user_info"] = user_info
+        
+        # Check if token has expired
+        expired = False
+        expires_at = session.get("expires_at")
+        if expires_at:
+            try:
+                exp_dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                expired = datetime.utcnow() > exp_dt.replace(tzinfo=None)
+            except (ValueError, TypeError):
+                pass
         
         return {
-            "authenticated": True,
-            "user_id": session.get("user_id"),
-            "user_info": user_info,
-            "expired": session.get("expired", False),
+            "session": session,
+            "expired": expired,
         }
     
-    return {"authenticated": False, "user_id": None, "user_info": None}
+    return {"session": None, "expired": False}
 
 
-@router.post("/logout")
-async def logout(auth_dao=Depends(auth_dao_dependency)):
-    """
-    Log out the current user by clearing the session.
-    """
-    auth_dao.clear_current_session()
-    log.info("🔐 User logged out")
-    return {"ok": True}
-
-
-@router.get("/poll/{state}")
-async def auth_poll(
-    state: str,
+@router.post("/session/refresh")
+async def refresh_session(
+    request: Request,
     auth_dao=Depends(auth_dao_dependency),
 ):
     """
-    Poll for auth result after Auth0 callback.
+    Refresh an expired access token using the stored refresh_token.
     """
-    pending = auth_dao.get_pending(state)
-    if not pending:
-        return {"status": "pending"}
+    body = await request.json()
+    user_id = body.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
     
-    if pending.get("error"):
-        return {
-            "status": "error",
-            "error": pending.get("error"),
-            "error_description": pending.get("error_description"),
-        }
+    session = auth_dao.get_session(user_id)
+    if not session or not session.get("refresh_token"):
+        raise HTTPException(status_code=401, detail="No refresh token available")
     
-    if pending.get("access_token"):
-        # Session should already be created by callback
-        session = auth_dao.get_current_session()
-        return {
-            "status": "success",
-            "access_token": pending.get("access_token"),
-            "user_info": session.get("user_info") if session else None,
-        }
-    
-    return {"status": "pending"}
+    try:
+        token_response = http_requests.post(
+            f"https://{AUTH0_DOMAIN}/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": AUTH0_CLIENT_ID,
+                "refresh_token": session["refresh_token"],
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10,
+        )
+        token_data = token_response.json()
+        
+        if not token_response.ok or "error" in token_data:
+            log.error(f"🔐 Token refresh failed: {token_data}")
+            raise HTTPException(status_code=401, detail="Token refresh failed")
+        
+        new_access_token = token_data.get("access_token")
+        expires_in = token_data.get("expires_in", 86400)
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+        
+        auth_dao.update_access_token(user_id, new_access_token, expires_at)
+        log.info(f"🔐 Token refreshed for user={user_id}")
+        
+        return {"access_token": new_access_token, "expires_at": expires_at}
+        
+    except http_requests.RequestException as e:
+        log.error(f"🔐 Token refresh request failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# Note: The actual /callback endpoint is handled at the app level
-# because it may need to return HTML for browser redirect
+@router.post("/logout")
+async def logout(
+    request: Request,
+    auth_dao=Depends(auth_dao_dependency),
+):
+    """
+    Log out a user by deleting their session.
+    """
+    try:
+        body = await request.json()
+        user_id = body.get("user_id")
+    except Exception:
+        user_id = None
+    
+    if user_id:
+        auth_dao.delete_session(user_id)
+        log.info(f"🔐 User {user_id} logged out")
+    else:
+        log.info("🔐 Logout called without user_id")
+    
+    return {"ok": True}
+
+
+@router.get("/check")
+async def auth_check(
+    state: str = Query(...),
+    auth_dao=Depends(auth_dao_dependency),
+):
+    """
+    Polled by frontend after starting Auth0 login.
+    Returns: { "status": "pending" | "ready" | "error", tokens/user if ready, error info if error }.
+    When status is "ready", tokens are returned once and then removed.
+    """
+    result = auth_dao.get_and_consume_pending_auth(state)
+    return result

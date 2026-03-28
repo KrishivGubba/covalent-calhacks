@@ -7,12 +7,15 @@ Optionally mounts the MCP server at /mcp for single-process deployment.
 import os
 import sys
 import time
+import json
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from dotenv import load_dotenv
+import requests as http_requests
 
 # Load .env - in dev mode load from project root; in frozen mode env vars are set by Tauri
 if not getattr(sys, 'frozen', False):
@@ -132,6 +135,148 @@ app.include_router(tab_completion.router, tags=["Tab Completion"])
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(integrations.router, prefix="/integrations", tags=["Integrations"])
 app.include_router(mcp_router.router, tags=["MCP"])
+
+
+# Auth0 callback endpoint (at root level for redirect URI)
+AUTH0_DOMAIN = 'dev-sb3sx3jnljwod4ab.us.auth0.com'
+FLASK_PORT = int(os.environ.get('VITE_FLASK_PORT', '15001'))
+AUTH0_CLIENT_ID = os.environ.get('VITE_AUTH0_CLIENT_ID', '')
+AUTH0_REDIRECT_URI = f'http://localhost:{FLASK_PORT}/callback'
+
+# HTML templates directory (PyInstaller uses sys._MEIPASS for bundled data)
+if getattr(sys, 'frozen', False):
+    HTML_TEMPLATES_DIR = os.path.join(sys._MEIPASS, 'server', 'htmlstuff')
+else:
+    HTML_TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), '..', 'htmlstuff')
+
+
+def load_html_template(filename: str, replacements: dict = None) -> str:
+    """Load an HTML template from htmlstuff/ and optionally replace placeholders."""
+    filepath = os.path.join(HTML_TEMPLATES_DIR, filename)
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    if replacements:
+        for key, value in replacements.items():
+            content = content.replace(key, value)
+    return content
+
+
+@app.api_route("/callback", methods=["GET", "POST"], response_class=HTMLResponse)
+async def auth_callback(
+    request: Request,
+    code: str = Query(None),
+    state: str = Query(None),
+    error: str = Query(None),
+    error_description: str = Query(None),
+):
+    """
+    Auth0 redirect target. Performs server-side token exchange and stores result for frontend to poll.
+    """
+    auth_dao = get_auth_dao()
+    
+    def render_error(message: str) -> HTMLResponse:
+        return HTMLResponse(
+            content=load_html_template('auth_error.html', {'{{ERROR_MESSAGE}}': message}),
+            status_code=200
+        )
+    
+    if not state:
+        return HTMLResponse(
+            content=load_html_template('auth_error.html', {'{{ERROR_MESSAGE}}': 'Missing state parameter'}),
+            status_code=400
+        )
+    
+    # If Auth0 returned an error
+    if error:
+        auth_dao.save_auth_result(state, error=error, error_description=error_description)
+        log.error(f"🔐 Auth callback error: {error} - {error_description}")
+        return render_error(error_description or error)
+    
+    if not code:
+        auth_dao.save_auth_result(state, error="no_code", error_description="No authorization code received")
+        return render_error("No authorization code received")
+    
+    # Retrieve the code_verifier
+    code_verifier = auth_dao.get_code_verifier(state)
+    if not code_verifier:
+        auth_dao.save_auth_result(state, error="no_verifier", error_description="Code verifier not found - session may have expired")
+        return render_error("Session expired. Please try again.")
+    
+    # Exchange code for tokens (server-side, no CORS issues)
+    try:
+        log.info(f"🔐 Exchanging code for tokens (state={state[:8]}...)...")
+        token_response = http_requests.post(
+            f"https://{AUTH0_DOMAIN}/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": AUTH0_CLIENT_ID,
+                "code_verifier": code_verifier,
+                "code": code,
+                "redirect_uri": AUTH0_REDIRECT_URI,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10,
+        )
+        token_data = token_response.json()
+        
+        if not token_response.ok or "error" in token_data:
+            err = token_data.get("error", "token_exchange_failed")
+            err_desc = token_data.get("error_description", "Token exchange failed")
+            auth_dao.save_auth_result(state, error=err, error_description=err_desc)
+            log.error(f"🔐 Token exchange failed: {err} - {err_desc}")
+            return render_error(err_desc)
+        
+        access_token = token_data.get("access_token")
+        id_token = token_data.get("id_token")
+        refresh_token = token_data.get("refresh_token")
+        expires_in = token_data.get("expires_in", 86400)  # Default 24 hours
+        
+        log.info("🔐 Tokens received. Fetching user info...")
+        
+        # Fetch user info
+        user_info = None
+        try:
+            userinfo_response = http_requests.get(
+                f"https://{AUTH0_DOMAIN}/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=5,
+            )
+            if userinfo_response.ok:
+                user_info = userinfo_response.json()
+                log.info(f"🔐 User info: {user_info.get('email', user_info.get('sub', 'unknown'))}")
+        except Exception as e:
+            log.error(f"🔐 Failed to fetch user info: {e}")
+        
+        auth_dao.save_auth_result(
+            state,
+            access_token=access_token,
+            id_token=id_token,
+            refresh_token=refresh_token,
+            user_info=user_info,
+        )
+        
+        # Save persistent session for future logins
+        if user_info and user_info.get("sub"):
+            expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+            auth_dao.save_session(
+                user_id=user_info["sub"],
+                access_token=access_token,
+                refresh_token=refresh_token,
+                id_token=id_token,
+                expires_at=expires_at,
+                user_info=user_info,
+            )
+            log.set_user_id(user_info["sub"])
+            log.info(f"🔐 Saved persistent session for user={user_info['sub']}")
+        
+        log.info(f"🔐 Auth complete for state={state[:8]}...")
+        return HTMLResponse(content=load_html_template('auth_success.html'), status_code=200)
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        auth_dao.save_auth_result(state, error="exception", error_description=str(e))
+        return render_error(f"An error occurred: {e}")
 
 # Optionally mount MCP server at /mcp
 if MOUNT_MCP:
