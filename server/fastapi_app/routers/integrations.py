@@ -205,7 +205,7 @@ async def google_callback(
     try:
         # Exchange code for tokens via Lambda
         resp = http_requests.post(
-            f"{LAMBDA_GATEWAY_URL}/google/exchange",
+            f"{LAMBDA_GATEWAY_URL}/integrations/google/exchange",
             json={"code": code, "redirect_uri": GOOGLE_REDIRECT_URI},
             timeout=30,
         )
@@ -263,27 +263,31 @@ async def google_disconnect(integration_dao=Depends(integration_dao_dependency))
 
 # ==================== GitHub ====================
 
-@router.get("/github/connect")
-async def github_connect():
+class GitHubStartRequest(BaseModel):
+    state: str
+    code_verifier: str
+    auth_token: str
+
+
+@router.post("/github/start")
+async def github_start(body: GitHubStartRequest):
     """
-    Start GitHub OAuth flow.
+    Called by frontend before opening GitHub OAuth.
+    Stores the code_verifier and auth token so backend can do token exchange later via Lambda.
     """
-    if not GITHUB_CLIENT_ID:
-        raise HTTPException(status_code=500, detail="GitHub OAuth not configured")
+    if not body.state or not body.code_verifier:
+        raise HTTPException(status_code=400, detail="state and code_verifier are required")
     
-    state = secrets.token_urlsafe(32)
-    github_auth_pending[state] = {"status": "pending"}
+    if not body.auth_token:
+        raise HTTPException(status_code=400, detail="auth_token is required (user must be logged in)")
     
-    params = {
-        "client_id": GITHUB_CLIENT_ID,
-        "redirect_uri": GITHUB_REDIRECT_URI,
-        "scope": GITHUB_SCOPES,
-        "state": state,
+    github_auth_pending[body.state] = {
+        "code_verifier": body.code_verifier,
+        "auth_token": body.auth_token,
+        "status": "pending",
     }
-    
-    auth_url = f"https://github.com/login/oauth/authorize?{urlencode(params)}"
-    
-    return {"auth_url": auth_url, "state": state}
+    log.info(f"🔷 GitHub auth start: stored code_verifier for state={body.state[:8]}...")
+    return {"ok": True}
 
 
 @router.get("/github/callback")
@@ -291,102 +295,168 @@ async def github_callback(
     code: Optional[str] = Query(None),
     state: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
+    error_description: Optional[str] = Query(None),
     integration_dao=Depends(integration_dao_dependency),
 ):
     """
-    Handle GitHub OAuth callback.
+    GitHub OAuth redirect target. Exchanges code for tokens using PKCE via Lambda.
     """
-    if error:
-        if state and state in github_auth_pending:
-            github_auth_pending[state] = {"status": "error", "error": error}
-        return HTMLResponse(content=f"<html><body><h1>Error</h1><p>{error}</p></body></html>")
+    def render_error(message: str) -> HTMLResponse:
+        return HTMLResponse(content=f"""
+            <html><body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fff;">
+                <div style="text-align: center;">
+                    <h1 style="color: #ef4444;">GitHub Login Failed</h1>
+                    <p style="color: #a1a1aa;">{message}</p>
+                </div>
+            </body></html>
+        """)
     
-    if not code or not state:
-        return HTMLResponse(content="<html><body><h1>Error</h1><p>Missing code or state</p></body></html>")
+    if not state:
+        return render_error("Missing state parameter")
+    
+    if state not in github_auth_pending:
+        return render_error("Invalid or expired state. Please try again.")
+    
+    if error:
+        github_auth_pending[state] = {"status": "error", "error": error, "error_description": error_description}
+        log.error(f"🔷 GitHub callback error: {error} - {error_description}")
+        return render_error(error_description or error)
+    
+    if not code:
+        github_auth_pending[state] = {"status": "error", "error": "no_code", "error_description": "No authorization code received"}
+        return render_error("No authorization code received")
+    
+    pending = github_auth_pending[state]
+    code_verifier = pending.get("code_verifier")
+    auth_token = pending.get("auth_token")
     
     try:
-        # Exchange code for tokens via Lambda
+        log.info(f"🔷 Exchanging GitHub code via Lambda (state={state[:8]}...)...")
         resp = http_requests.post(
-            f"{LAMBDA_GATEWAY_URL}/github/exchange",
-            json={"code": code, "redirect_uri": GITHUB_REDIRECT_URI},
-            timeout=30,
+            f"{LAMBDA_GATEWAY_URL}/integrations/github/exchange",
+            json={
+                "code": code,
+                "code_verifier": code_verifier,
+                "redirect_uri": GITHUB_REDIRECT_URI,
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
         )
         
         if resp.status_code != 200:
-            github_auth_pending[state] = {"status": "error", "error": resp.text}
-            return HTMLResponse(content=f"<html><body><h1>Error</h1><p>{resp.text}</p></body></html>")
+            err_text = resp.text
+            github_auth_pending[state] = {"status": "error", "error": "exchange_failed", "error_description": err_text}
+            log.error(f"🔷 GitHub token exchange failed: {err_text}")
+            return render_error(f"Token exchange failed: {err_text}")
         
         tokens = resp.json()
+        access_token = tokens.get("access_token")
+        
+        # Fetch user info to get username
+        username = None
+        try:
+            user_resp = http_requests.get(
+                "https://api.github.com/user",
+                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github.v3+json"},
+                timeout=10,
+            )
+            if user_resp.ok:
+                username = user_resp.json().get("login")
+        except Exception as e:
+            log.warning(f"🔷 Failed to fetch GitHub username: {e}")
         
         integration_dao.save_token(
             provider="github",
-            access_token=tokens.get("access_token"),
+            access_token=access_token,
             refresh_token=None,
             expires_at=None,
             scopes=GITHUB_SCOPES,
         )
         
-        github_auth_pending[state] = {"status": "success"}
-        log.info("✅ GitHub connected successfully")
+        github_auth_pending[state] = {"status": "ready", "username": username}
+        log.info(f"✅ GitHub connected successfully (username={username})")
         
         return HTMLResponse(content="""
-            <html><body>
-                <h1>Success!</h1>
-                <p>GitHub connected. You can close this window.</p>
-                <script>window.close();</script>
+            <html><body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fff;">
+                <div style="text-align: center;">
+                    <h1 style="color: #C5F467;">GitHub Connected!</h1>
+                    <p style="color: #a1a1aa;">You can close this window and return to Covalent.</p>
+                </div>
             </body></html>
         """)
         
     except Exception as e:
         log.error(f"GitHub OAuth error: {e}")
-        github_auth_pending[state] = {"status": "error", "error": str(e)}
-        return HTMLResponse(content=f"<html><body><h1>Error</h1><p>{str(e)}</p></body></html>")
+        import traceback
+        traceback.print_exc()
+        github_auth_pending[state] = {"status": "error", "error": "exception", "error_description": str(e)}
+        return render_error(f"An error occurred: {e}")
 
 
-@router.get("/github/poll/{state}")
-async def github_poll(state: str):
+@router.get("/github/check")
+async def github_check(state: str = Query(...)):
     """
-    Poll for GitHub OAuth result.
+    Polled by frontend after starting GitHub OAuth.
+    Returns: { "status": "pending" | "ready" | "error", ... }
     """
     if state not in github_auth_pending:
-        return {"status": "not_found"}
-    return github_auth_pending[state]
+        return {"status": "error", "error": "invalid_state"}
+    
+    pending = github_auth_pending[state]
+    status = pending.get("status", "pending")
+    
+    if status == "ready":
+        username = pending.get("username")
+        del github_auth_pending[state]
+        return {"status": "ready", "username": username}
+    elif status == "error":
+        error = pending.get("error")
+        error_desc = pending.get("error_description")
+        del github_auth_pending[state]
+        return {"status": "error", "error": error, "error_description": error_desc}
+    else:
+        return {"status": "pending"}
 
 
-@router.delete("/github/disconnect")
+@router.post("/github/disconnect")
 async def github_disconnect(integration_dao=Depends(integration_dao_dependency)):
     """
     Disconnect GitHub integration.
     """
-    integration_dao.delete_token("github")
-    log.info("🔌 GitHub disconnected")
-    return {"status": "success"}
+    deleted = integration_dao.delete_token("github")
+    log.info(f"🔌 GitHub disconnected (deleted={deleted})")
+    return {"ok": True, "deleted": deleted > 0}
 
 
 # ==================== Notion ====================
 
-@router.get("/notion/connect")
-async def notion_connect():
+class NotionStartRequest(BaseModel):
+    state: str
+    auth_token: str
+
+
+@router.post("/notion/start")
+async def notion_start(body: NotionStartRequest):
     """
-    Start Notion OAuth flow.
+    Called by frontend before opening Notion OAuth.
+    Stores the state and auth token so backend can do token exchange later via Lambda.
+    Note: Notion OAuth does NOT use PKCE, so no code_verifier needed.
     """
-    if not NOTION_CLIENT_ID:
-        raise HTTPException(status_code=500, detail="Notion OAuth not configured")
+    if not body.state:
+        raise HTTPException(status_code=400, detail="state is required")
     
-    state = secrets.token_urlsafe(32)
-    notion_auth_pending[state] = {"status": "pending"}
+    if not body.auth_token:
+        raise HTTPException(status_code=400, detail="auth_token is required (user must be logged in)")
     
-    params = {
-        "client_id": NOTION_CLIENT_ID,
-        "redirect_uri": NOTION_REDIRECT_URI,
-        "response_type": "code",
-        "owner": "user",
-        "state": state,
+    notion_auth_pending[body.state] = {
+        "auth_token": body.auth_token,
+        "status": "pending",
     }
-    
-    auth_url = f"https://api.notion.com/v1/oauth/authorize?{urlencode(params)}"
-    
-    return {"auth_url": auth_url, "state": state}
+    log.info(f"🔷 Notion auth start: stored state={body.state[:8]}...")
+    return {"ok": True}
 
 
 @router.get("/notion/callback")
@@ -394,74 +464,147 @@ async def notion_callback(
     code: Optional[str] = Query(None),
     state: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
+    error_description: Optional[str] = Query(None),
     integration_dao=Depends(integration_dao_dependency),
 ):
     """
-    Handle Notion OAuth callback.
+    Notion OAuth redirect target. Exchanges code for tokens via Lambda.
     """
-    if error:
-        if state and state in notion_auth_pending:
-            notion_auth_pending[state] = {"status": "error", "error": error}
-        return HTMLResponse(content=f"<html><body><h1>Error</h1><p>{error}</p></body></html>")
+    def render_error(message: str) -> HTMLResponse:
+        return HTMLResponse(content=f"""
+            <html><body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fff;">
+                <div style="text-align: center;">
+                    <h1 style="color: #ef4444;">Notion Login Failed</h1>
+                    <p style="color: #a1a1aa;">{message}</p>
+                </div>
+            </body></html>
+        """)
     
-    if not code or not state:
-        return HTMLResponse(content="<html><body><h1>Error</h1><p>Missing code or state</p></body></html>")
+    if not state:
+        return render_error("Missing state parameter")
+    
+    if state not in notion_auth_pending:
+        return render_error("Invalid or expired state. Please try again.")
+    
+    if error:
+        notion_auth_pending[state]["status"] = "error"
+        notion_auth_pending[state]["error"] = error
+        notion_auth_pending[state]["error_description"] = error_description or error
+        log.error(f"🔷 Notion callback error: {error}")
+        return render_error(error_description or error)
+    
+    if not code:
+        notion_auth_pending[state]["status"] = "error"
+        notion_auth_pending[state]["error"] = "no_code"
+        notion_auth_pending[state]["error_description"] = "No authorization code received"
+        return render_error("No authorization code received")
+    
+    auth_token = notion_auth_pending[state].get("auth_token")
+    
+    if not auth_token:
+        notion_auth_pending[state]["status"] = "error"
+        notion_auth_pending[state]["error"] = "no_auth_token"
+        notion_auth_pending[state]["error_description"] = "Auth token not found - user must be logged in"
+        return render_error("Please log in first.")
     
     try:
-        # Exchange code for tokens via Lambda
-        resp = http_requests.post(
-            f"{LAMBDA_GATEWAY_URL}/notion/exchange",
-            json={"code": code, "redirect_uri": NOTION_REDIRECT_URI},
-            timeout=30,
+        log.info(f"🔷 Exchanging Notion code for tokens via Lambda (state={state[:8]}...)...")
+        token_response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/notion/exchange",
+            json={
+                "code": code,
+                "redirect_uri": NOTION_REDIRECT_URI,
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
         )
+        token_data = token_response.json()
         
-        if resp.status_code != 200:
-            notion_auth_pending[state] = {"status": "error", "error": resp.text}
-            return HTMLResponse(content=f"<html><body><h1>Error</h1><p>{resp.text}</p></body></html>")
+        if not token_response.ok or "error" in token_data:
+            err = token_data.get("error", "token_exchange_failed")
+            err_desc = token_data.get("error_description", "Token exchange failed")
+            notion_auth_pending[state]["status"] = "error"
+            notion_auth_pending[state]["error"] = err
+            notion_auth_pending[state]["error_description"] = err_desc
+            log.error(f"🔷 Notion token exchange failed: {err} - {err_desc}")
+            return render_error(err_desc)
         
-        tokens = resp.json()
+        access_token = token_data.get("access_token")
+        refresh_token = token_data.get("refresh_token")
+        workspace_name = token_data.get("workspace_name")
+        workspace_id = token_data.get("workspace_id")
+        bot_id = token_data.get("bot_id")
         
         integration_dao.save_token(
             provider="notion",
-            access_token=tokens.get("access_token"),
-            refresh_token=None,
+            access_token=access_token,
+            refresh_token=refresh_token,
             expires_at=None,
-            scopes="all",
-            provider_metadata=json.dumps({"workspace_id": tokens.get("workspace_id")}),
+            scopes=None,
+            provider_metadata={
+                "workspace_name": workspace_name,
+                "workspace_id": workspace_id,
+                "bot_id": bot_id,
+            },
         )
         
-        notion_auth_pending[state] = {"status": "success"}
-        log.info("✅ Notion connected successfully")
+        notion_auth_pending[state]["status"] = "ready"
+        notion_auth_pending[state]["workspace_name"] = workspace_name
+        
+        log.info(f"🔷 Notion auth complete: workspace={workspace_name}")
         
         return HTMLResponse(content="""
-            <html><body>
-                <h1>Success!</h1>
-                <p>Notion connected. You can close this window.</p>
-                <script>window.close();</script>
+            <html><body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fff;">
+                <div style="text-align: center;">
+                    <h1 style="color: #C5F467;">Notion Connected!</h1>
+                    <p style="color: #a1a1aa;">You can close this window and return to Covalent.</p>
+                </div>
             </body></html>
         """)
         
     except Exception as e:
         log.error(f"Notion OAuth error: {e}")
-        notion_auth_pending[state] = {"status": "error", "error": str(e)}
-        return HTMLResponse(content=f"<html><body><h1>Error</h1><p>{str(e)}</p></body></html>")
+        import traceback
+        traceback.print_exc()
+        notion_auth_pending[state]["status"] = "error"
+        notion_auth_pending[state]["error"] = "exception"
+        notion_auth_pending[state]["error_description"] = str(e)
+        return render_error(f"An error occurred: {e}")
 
 
-@router.get("/notion/poll/{state}")
-async def notion_poll(state: str):
+@router.get("/notion/check")
+async def notion_check(state: str = Query(...)):
     """
-    Poll for Notion OAuth result.
+    Polled by frontend after starting Notion OAuth.
+    Returns: { "status": "pending" | "ready" | "error", ... }
     """
     if state not in notion_auth_pending:
-        return {"status": "not_found"}
-    return notion_auth_pending[state]
+        return {"status": "error", "error": "invalid_state"}
+    
+    pending = notion_auth_pending[state]
+    status = pending.get("status", "pending")
+    
+    if status == "ready":
+        workspace_name = pending.get("workspace_name")
+        del notion_auth_pending[state]
+        return {"status": "ready", "workspace_name": workspace_name}
+    elif status == "error":
+        error = pending.get("error")
+        error_desc = pending.get("error_description")
+        del notion_auth_pending[state]
+        return {"status": "error", "error": error, "error_description": error_desc}
+    else:
+        return {"status": "pending"}
 
 
-@router.delete("/notion/disconnect")
+@router.post("/notion/disconnect")
 async def notion_disconnect(integration_dao=Depends(integration_dao_dependency)):
     """
     Disconnect Notion integration.
     """
-    integration_dao.delete_token("notion")
-    log.info("🔌 Notion disconnected")
-    return {"status": "success"}
+    deleted = integration_dao.delete_token("notion")
+    log.info(f"🔌 Notion disconnected (deleted={deleted})")
+    return {"ok": True, "deleted": deleted > 0}
