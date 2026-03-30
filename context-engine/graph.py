@@ -96,6 +96,56 @@ class Tree:
         # This eliminates N embedding API calls at startup
         log.info("✅ Tree initialized (lazy mode - graph construction deferred)")
 
+        # Base prompt used by traversal/structure/action generation routines.
+        # Keep this on the instance so all prompt builders can rely on it.
+        self.BASE_PROMPT = '''
+        You are a context engine that retrieves relevant information from a knowledge graph.
+        
+        The graph is designed such that the children have access to ALL the information contained in
+        the parent node. The children can also have additional information that is not present in the parent but is specific
+        to the child node.
+        
+        Each node represents a "task" or "project" (or a category of tasks or projects) that a user might be working on
+        The nodes's children represent sub-tasks or related tasks/projects.
+        Each node contains metadata, data and actions. Metadata is a brief description of the data contained in the node.
+
+        internal nodes represent broader categories or projects, while leaf nodes represent specific tasks or pieces of information.
+        
+        SAMPLE GRAPH STRUCTURE (showing proper parent-child relationships):
+        
+        Root Node
+        ├── Recruiting
+        │   ├── Intern
+        │   │   ├── Summer 2026
+        │   │   │   ├── Ritesh (individual applicant)
+        │   │   │   ├── Siddharth (individual applicant)
+        │   │   │   ├── Hemant (individual applicant)
+        │   │   │   └── Krishiv (individual applicant)
+        │   │   └── Fall 2026
+        │   └── New Grad
+        │       ├── 2025
+        │       ├── 2026
+        │       └── Events
+        │           ├── Online Webinar
+        │           ├── Career Fair
+        │           └── Career Conference
+        └── Employee Management
+            ├── Onboarding
+            ├── Issues
+            └── Questions/Requests
+                ├── Answer Questions
+                ├── Approve Timesheets
+                └── Approve Leave Requests
+        
+        KEY PRINCIPLES FROM THIS EXAMPLE:
+        - Nodes higher up in the tree are more general, while nodes lower down are more specific. For example, "Recruiting", "Academics", "Software Development" are all general categories while "Summer 2026", "Ritesh", "Hemant" are all specific items.
+        - When you have a task with subtasks (e.g., "Summer 2026" interns → individual applicants like Ritesh), CREATE CHILD NODES
+        - When you have parallel tasks of the same type (e.g., "Summer 2026" and "Fall 2026"), CREATE SIBLING NODES
+        - When you have a category that contains multiple specific items (e.g., "Events" → "Online Webinar", "Career Fair"), use PARENT-CHILD relationships
+        - Leaf nodes represent the most specific tasks (e.g., "Ritesh", "Schedule Interview", "Send Email")
+        - Internal nodes represent categories or groupings (e.g., "Recruiting", "Employee Management", "Events")
+        '''
+
     def _ensure_graph_constructed(self):
         """Ensure the graph is constructed before any operation that needs it."""
         if not self._graph_constructed:
@@ -173,58 +223,6 @@ class Tree:
             except Exception as e:
                 log.warning(f"Warning: Failed to initialize graph operations model: {e}")
         return self._graph_operations_model
-
-       
-        # This prompt should contain key information about how the graph is structured
-        self.BASE_PROMPT = '''
-        You are a context engine that retrieves relevant information from a knowledge graph.
-        
-        The graph is designed such that the children have access to ALL the information contained in
-        the parent node. The children can also have additional information that is not present in the parent but is specific
-        to the child node.
-        
-        Each node represents a "task" or "project" (or a category of tasks or projects) that a user might be working on
-        The nodes's children represent sub-tasks or related tasks/projects.
-        Each node contains metadata, data and actions. Metadata is a brief description of the data contained in the node.
-
-        internal nodes represent broader categories or projects, while leaf nodes represent specific tasks or pieces of information.
-        
-        SAMPLE GRAPH STRUCTURE (showing proper parent-child relationships):
-        
-        Root Node
-        ├── Recruiting
-        │   ├── Intern
-        │   │   ├── Summer 2026
-        │   │   │   ├── Ritesh (individual applicant)
-        │   │   │   ├── Siddharth (individual applicant)
-        │   │   │   ├── Hemant (individual applicant)
-        │   │   │   └── Krishiv (individual applicant)
-        │   │   └── Fall 2026
-        │   └── New Grad
-        │       ├── 2025
-        │       ├── 2026
-        │       └── Events
-        │           ├── Online Webinar
-        │           ├── Career Fair
-        │           └── Career Conference
-        └── Employee Management
-            ├── Onboarding
-            ├── Issues
-            └── Questions/Requests
-                ├── Answer Questions
-                ├── Approve Timesheets
-                └── Approve Leave Requests
-        
-        KEY PRINCIPLES FROM THIS EXAMPLE:
-        - Nodes higher up in the tree are more general, while nodes lower down are more specific. For example, "Recruiting", "Academics", "Software Development" are all general categories while "Summer 2026", "Ritesh", "Hemant" are all specific items.
-        - When you have a task with subtasks (e.g., "Summer 2026" interns → individual applicants like Ritesh), CREATE CHILD NODES
-        - When you have parallel tasks of the same type (e.g., "Summer 2026" and "Fall 2026"), CREATE SIBLING NODES
-        - When you have a category that contains multiple specific items (e.g., "Events" → "Online Webinar", "Career Fair"), use PARENT-CHILD relationships
-        - Leaf nodes represent the most specific tasks (e.g., "Ritesh", "Schedule Interview", "Send Email")
-        - Internal nodes represent categories or groupings (e.g., "Recruiting", "Employee Management", "Events")
-        '''
-        string = """this query is part of a traversal algorithm. You will be given the current node's metadata
-        and the metadata of its children. You will also be given a user query. Your task is to determine the following:"""
 
     def get_action_context(self, action_uuid, action_override=None):
         """
