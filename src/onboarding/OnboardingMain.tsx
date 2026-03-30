@@ -34,6 +34,12 @@ type PermissionStatuses = {
   notifications: boolean;
 };
 
+type ManualPermissionOverrides = {
+  accessibility: boolean;
+  screen_recording: boolean;
+  notifications: boolean;
+};
+
 type OnboardingState = {
   completed: boolean;
   version: number;
@@ -129,6 +135,12 @@ const OnboardingApp: React.FC = () => {
     screen_recording: false,
     notifications: false,
   });
+  const [manualPermissionOverrides, setManualPermissionOverrides] =
+    useState<ManualPermissionOverrides>({
+      accessibility: false,
+      screen_recording: false,
+      notifications: false,
+    });
   const [permissionsLoading, setPermissionsLoading] = useState(false);
   const [permissionBusy, setPermissionBusy] = useState<string | null>(null);
   const [permissionError, setPermissionError] = useState<string | null>(null);
@@ -152,10 +164,17 @@ const OnboardingApp: React.FC = () => {
     [integrations],
   );
   const signInComplete = Boolean(authStatus?.authenticated);
+  const effectivePermissionStatuses = {
+    accessibility:
+      permissionStatuses.accessibility || manualPermissionOverrides.accessibility,
+    screen_recording:
+      permissionStatuses.screen_recording || manualPermissionOverrides.screen_recording,
+    notifications: permissionStatuses.notifications || manualPermissionOverrides.notifications,
+  };
   const permissionsComplete =
-    permissionStatuses.accessibility &&
-    permissionStatuses.screen_recording &&
-    permissionStatuses.notifications;
+    effectivePermissionStatuses.accessibility &&
+    effectivePermissionStatuses.screen_recording &&
+    effectivePermissionStatuses.notifications;
   const integrationsComplete = areRequiredIntegrationsConnected(integrations);
   const profileComplete = profileSaved;
   const allComplete =
@@ -231,6 +250,11 @@ const OnboardingApp: React.FC = () => {
         screen_recording: status.screen_recording,
         notifications: notificationsGranted,
       });
+      setManualPermissionOverrides((prev) => ({
+        accessibility: status.accessibility ? false : prev.accessibility,
+        screen_recording: status.screen_recording ? false : prev.screen_recording,
+        notifications: notificationsGranted ? false : prev.notifications,
+      }));
       setPermissionError(null);
     } catch (e) {
       setPermissionError(
@@ -352,6 +376,8 @@ const OnboardingApp: React.FC = () => {
       const granted = await invoke<boolean>('request_accessibility_permission');
       if (!granted) {
         await invoke('open_permission_settings', { section: 'accessibility' });
+      } else {
+        setManualPermissionOverrides((prev) => ({ ...prev, accessibility: false }));
       }
     } catch (e) {
       setPermissionError(
@@ -370,6 +396,8 @@ const OnboardingApp: React.FC = () => {
       const granted = await invoke<boolean>('request_screen_recording_permission');
       if (!granted) {
         await invoke('open_permission_settings', { section: 'screen_recording' });
+      } else {
+        setManualPermissionOverrides((prev) => ({ ...prev, screen_recording: false }));
       }
     } catch (e) {
       setPermissionError(
@@ -391,6 +419,9 @@ const OnboardingApp: React.FC = () => {
         granted = result === 'granted';
       }
       await invoke('set_notification_permission_status', { granted });
+      if (granted) {
+        setManualPermissionOverrides((prev) => ({ ...prev, notifications: false }));
+      }
     } catch (e) {
       setPermissionError(
         e instanceof Error ? e.message : 'Failed to request notification permission',
@@ -399,6 +430,11 @@ const OnboardingApp: React.FC = () => {
       setPermissionBusy(null);
       await refreshPermissionStatuses();
     }
+  };
+
+  const markPermissionAsEnabled = (permission: keyof ManualPermissionOverrides) => {
+    setManualPermissionOverrides((prev) => ({ ...prev, [permission]: true }));
+    setPermissionError(null);
   };
 
   const connectIntegration = async (id: RequiredIntegrationId) => {
@@ -538,22 +574,40 @@ const OnboardingApp: React.FC = () => {
               <p>Needed to read active app context and trigger in-app assistance.</p>
             </div>
             <div className="onb-row-actions">
-              <span className={`onb-badge ${permissionStatuses.accessibility ? 'ok' : 'warn'}`}>
-                {permissionStatuses.accessibility ? 'Granted' : 'Missing'}
+              <span
+                className={`onb-badge ${
+                  effectivePermissionStatuses.accessibility ? 'ok' : 'warn'
+                }`}
+              >
+                {effectivePermissionStatuses.accessibility
+                  ? manualPermissionOverrides.accessibility &&
+                    !permissionStatuses.accessibility
+                    ? 'Manual'
+                    : 'Granted'
+                  : 'Missing'}
               </span>
               <button
                 className="onb-button secondary"
                 disabled={
-                  permissionBusy === 'accessibility' || permissionStatuses.accessibility
+                  permissionBusy === 'accessibility' ||
+                  effectivePermissionStatuses.accessibility
                 }
                 onClick={() => void requestAccessibilityPermission()}
               >
-                {permissionStatuses.accessibility
+                {effectivePermissionStatuses.accessibility
                   ? 'Enabled'
                   : permissionBusy === 'accessibility'
                   ? 'Requesting...'
                   : 'Enable'}
               </button>
+              {!effectivePermissionStatuses.accessibility && (
+                <button
+                  className="onb-button tiny ghost"
+                  onClick={() => markPermissionAsEnabled('accessibility')}
+                >
+                  Already enabled
+                </button>
+              )}
             </div>
           </div>
           <div className="onb-row">
@@ -562,22 +616,40 @@ const OnboardingApp: React.FC = () => {
               <p>Needed to capture context snapshots for action suggestions.</p>
             </div>
             <div className="onb-row-actions">
-              <span className={`onb-badge ${permissionStatuses.screen_recording ? 'ok' : 'warn'}`}>
-                {permissionStatuses.screen_recording ? 'Granted' : 'Missing'}
+              <span
+                className={`onb-badge ${
+                  effectivePermissionStatuses.screen_recording ? 'ok' : 'warn'
+                }`}
+              >
+                {effectivePermissionStatuses.screen_recording
+                  ? manualPermissionOverrides.screen_recording &&
+                    !permissionStatuses.screen_recording
+                    ? 'Manual'
+                    : 'Granted'
+                  : 'Missing'}
               </span>
               <button
                 className="onb-button secondary"
                 disabled={
-                  permissionBusy === 'screen_recording' || permissionStatuses.screen_recording
+                  permissionBusy === 'screen_recording' ||
+                  effectivePermissionStatuses.screen_recording
                 }
                 onClick={() => void requestScreenRecordingPermission()}
               >
-                {permissionStatuses.screen_recording
+                {effectivePermissionStatuses.screen_recording
                   ? 'Enabled'
                   : permissionBusy === 'screen_recording'
                   ? 'Requesting...'
                   : 'Enable'}
               </button>
+              {!effectivePermissionStatuses.screen_recording && (
+                <button
+                  className="onb-button tiny ghost"
+                  onClick={() => markPermissionAsEnabled('screen_recording')}
+                >
+                  Already enabled
+                </button>
+              )}
             </div>
           </div>
           <div className="onb-row">
@@ -586,23 +658,48 @@ const OnboardingApp: React.FC = () => {
               <p>Needed to deliver suggestions and action confirmations in real time.</p>
             </div>
             <div className="onb-row-actions">
-              <span className={`onb-badge ${permissionStatuses.notifications ? 'ok' : 'warn'}`}>
-                {permissionStatuses.notifications ? 'Granted' : 'Missing'}
+              <span
+                className={`onb-badge ${
+                  effectivePermissionStatuses.notifications ? 'ok' : 'warn'
+                }`}
+              >
+                {effectivePermissionStatuses.notifications
+                  ? manualPermissionOverrides.notifications &&
+                    !permissionStatuses.notifications
+                    ? 'Manual'
+                    : 'Granted'
+                  : 'Missing'}
               </span>
               <button
                 className="onb-button secondary"
-                disabled={permissionBusy === 'notifications' || permissionStatuses.notifications}
+                disabled={
+                  permissionBusy === 'notifications' ||
+                  effectivePermissionStatuses.notifications
+                }
                 onClick={() => void requestNotificationsPermission()}
               >
-                {permissionStatuses.notifications
+                {effectivePermissionStatuses.notifications
                   ? 'Enabled'
                   : permissionBusy === 'notifications'
                   ? 'Requesting...'
                   : 'Enable'}
               </button>
+              {!effectivePermissionStatuses.notifications && (
+                <button
+                  className="onb-button tiny ghost"
+                  onClick={() => markPermissionAsEnabled('notifications')}
+                >
+                  Already enabled
+                </button>
+              )}
             </div>
           </div>
         </div>
+        <p className="onb-muted onb-help">
+          If a permission is already granted in System Settings but still shows missing, use
+          <strong> Already enabled</strong> to continue and we will keep re-checking in the
+          background.
+        </p>
         {permissionError && <div className="onb-error">{permissionError}</div>}
         <button
           className="onb-button ghost"
