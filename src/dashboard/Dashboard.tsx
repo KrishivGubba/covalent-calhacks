@@ -116,6 +116,7 @@ const styles = {
     flex: 1,
     overflowY: 'auto' as const,
     backgroundColor: '#FAFAF8',
+    paddingTop: '28px',
   },
 };
 

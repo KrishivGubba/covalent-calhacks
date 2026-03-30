@@ -129,7 +129,7 @@ const styles = {
     borderRight: '1px solid #E8E4DC',
     display: 'flex',
     flexDirection: 'column' as const,
-    padding: '20px 12px',
+    padding: '52px 12px 20px',
     fontFamily: 'DM Sans, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
   },
   logo: {
