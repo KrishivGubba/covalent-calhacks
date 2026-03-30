@@ -307,6 +307,14 @@ const OnboardingApp: React.FC = () => {
   const currentStep = STEPS[currentStepIndex];
   const currentStepComplete = getStepComplete(currentStep.id);
 
+  useEffect(() => {
+    if (currentStep.id !== 'permissions') return;
+    const timer = window.setInterval(() => {
+      void refreshPermissionStatuses();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [currentStep.id]);
+
   const gotoStep = (index: number) => {
     if (!canNavigateToStep(index)) return;
     setCurrentStepIndex(index);
@@ -535,10 +543,16 @@ const OnboardingApp: React.FC = () => {
               </span>
               <button
                 className="onb-button secondary"
-                disabled={permissionBusy === 'accessibility'}
+                disabled={
+                  permissionBusy === 'accessibility' || permissionStatuses.accessibility
+                }
                 onClick={() => void requestAccessibilityPermission()}
               >
-                {permissionBusy === 'accessibility' ? 'Requesting...' : 'Enable'}
+                {permissionStatuses.accessibility
+                  ? 'Enabled'
+                  : permissionBusy === 'accessibility'
+                  ? 'Requesting...'
+                  : 'Enable'}
               </button>
             </div>
           </div>
@@ -553,10 +567,16 @@ const OnboardingApp: React.FC = () => {
               </span>
               <button
                 className="onb-button secondary"
-                disabled={permissionBusy === 'screen_recording'}
+                disabled={
+                  permissionBusy === 'screen_recording' || permissionStatuses.screen_recording
+                }
                 onClick={() => void requestScreenRecordingPermission()}
               >
-                {permissionBusy === 'screen_recording' ? 'Requesting...' : 'Enable'}
+                {permissionStatuses.screen_recording
+                  ? 'Enabled'
+                  : permissionBusy === 'screen_recording'
+                  ? 'Requesting...'
+                  : 'Enable'}
               </button>
             </div>
           </div>
@@ -571,10 +591,14 @@ const OnboardingApp: React.FC = () => {
               </span>
               <button
                 className="onb-button secondary"
-                disabled={permissionBusy === 'notifications'}
+                disabled={permissionBusy === 'notifications' || permissionStatuses.notifications}
                 onClick={() => void requestNotificationsPermission()}
               >
-                {permissionBusy === 'notifications' ? 'Requesting...' : 'Enable'}
+                {permissionStatuses.notifications
+                  ? 'Enabled'
+                  : permissionBusy === 'notifications'
+                  ? 'Requesting...'
+                  : 'Enable'}
               </button>
             </div>
           </div>

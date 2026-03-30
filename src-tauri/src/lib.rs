@@ -735,6 +735,135 @@ fn request_screen_recording_permission_macos() -> bool {
     false
 }
 
+#[cfg(target_os = "macos")]
+fn macos_tcc_db_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let path = std::path::Path::new(&home)
+        .join("Library")
+        .join("Application Support")
+        .join("com.apple.TCC")
+        .join("TCC.db");
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn tcc_access_column(conn: &rusqlite::Connection) -> Option<&'static str> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(access)")
+        .ok()?;
+    let rows = stmt
+        .query_map([], |row| {
+            let name: String = row.get(1)?;
+            Ok(name)
+        })
+        .ok()?;
+
+    let mut has_auth_value = false;
+    let mut has_allowed = false;
+    for row in rows {
+        if let Ok(col) = row {
+            if col == "auth_value" {
+                has_auth_value = true;
+            }
+            if col == "allowed" {
+                has_allowed = true;
+            }
+        }
+    }
+
+    if has_auth_value {
+        Some("auth_value")
+    } else if has_allowed {
+        Some("allowed")
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn tcc_client_candidates(app: &tauri::AppHandle) -> Vec<String> {
+    use std::collections::HashSet;
+
+    let mut clients = HashSet::new();
+    clients.insert(app.config().identifier.clone());
+    // Backward compatibility for older dev builds that used this identifier.
+    clients.insert("com.hem.src-tauri".to_string());
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        clients.insert(exe_path.to_string_lossy().to_string());
+        if let Ok(canonical) = std::fs::canonicalize(&exe_path) {
+            clients.insert(canonical.to_string_lossy().to_string());
+        }
+    }
+
+    clients.into_iter().collect()
+}
+
+#[cfg(target_os = "macos")]
+fn check_tcc_permission_for_service(
+    app: &tauri::AppHandle,
+    service: &str,
+) -> Option<bool> {
+    let db_path = macos_tcc_db_path()?;
+    let conn = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .ok()?;
+    let value_column = tcc_access_column(&conn)?;
+
+    let sql = format!(
+        "SELECT {} FROM access WHERE service = ?1 AND client = ?2 ORDER BY last_modified DESC LIMIT 1",
+        value_column
+    );
+
+    for client in tcc_client_candidates(app) {
+        let auth_value: Option<i64> = conn
+            .query_row(&sql, rusqlite::params![service, client], |row| row.get(0))
+            .ok();
+        if let Some(v) = auth_value {
+            // auth_value semantics (modern): 0 denied, 2 allowed.
+            // allowed semantics (legacy): 0 denied, 1 allowed.
+            if value_column == "auth_value" {
+                return Some(v >= 2);
+            }
+            return Some(v >= 1);
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn check_accessibility_permission_with_fallback(app: &tauri::AppHandle) -> bool {
+    if check_accessibility_permission_macos() {
+        return true;
+    }
+    check_tcc_permission_for_service(app, "kTCCServiceAccessibility").unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_accessibility_permission_with_fallback(_app: &tauri::AppHandle) -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn check_screen_recording_permission_with_fallback(app: &tauri::AppHandle) -> bool {
+    if check_screen_recording_permission_macos() {
+        return true;
+    }
+    check_tcc_permission_for_service(app, "kTCCServiceScreenCapture").unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_screen_recording_permission_with_fallback(_app: &tauri::AppHandle) -> bool {
+    false
+}
+
 #[tauri::command]
 fn get_permission_statuses(app: tauri::AppHandle) -> serde_json::Value {
     let settings = load_settings(&app);
@@ -743,20 +872,26 @@ fn get_permission_statuses(app: tauri::AppHandle) -> serde_json::Value {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     serde_json::json!({
-        "accessibility": check_accessibility_permission_macos(),
-        "screen_recording": check_screen_recording_permission_macos(),
+        "accessibility": check_accessibility_permission_with_fallback(&app),
+        "screen_recording": check_screen_recording_permission_with_fallback(&app),
         "notifications": notifications
     })
 }
 
 #[tauri::command]
-fn request_accessibility_permission() -> bool {
-    request_accessibility_permission_macos()
+fn request_accessibility_permission(app: tauri::AppHandle) -> bool {
+    if request_accessibility_permission_macos() {
+        return true;
+    }
+    check_accessibility_permission_with_fallback(&app)
 }
 
 #[tauri::command]
-fn request_screen_recording_permission() -> bool {
-    request_screen_recording_permission_macos()
+fn request_screen_recording_permission(app: tauri::AppHandle) -> bool {
+    if request_screen_recording_permission_macos() {
+        return true;
+    }
+    check_screen_recording_permission_with_fallback(&app)
 }
 
 #[tauri::command]
