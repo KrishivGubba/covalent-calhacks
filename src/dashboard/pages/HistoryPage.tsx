@@ -22,28 +22,23 @@ type TabType = 'all' | 'completed' | 'failed';
 const HistoryPage: React.FC = () => {
   const [actions, setActions] = useState<ActionHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false); // For background refresh indicator
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('all');
   const isMountedRef = useRef(true);
   const retryCountRef = useRef(0);
   const hasLoadedOnceRef = useRef(false);
-  const mountTimeRef = useRef(Date.now()); // Track when component mounted
-  const isLoadingRef = useRef(false); // Prevent concurrent loads
+  const mountTimeRef = useRef(Date.now());
+  const isLoadingRef = useRef(false);
 
   const loadHistory = useCallback(async (isRetry = false, isBackgroundRefresh = false) => {
     if (!isMountedRef.current) return;
-    
-    // Prevent concurrent loads (except retries which are part of the same load sequence)
-    if (!isRetry && isLoadingRef.current) {
-      console.log('📬 HistoryPage: Skipping load - already loading');
-      return;
-    }
-    
+
+    if (!isRetry && isLoadingRef.current) return;
+
     if (!isRetry) {
       isLoadingRef.current = true;
-      // Only show full loading spinner on initial load, not on background refresh
       if (!hasLoadedOnceRef.current) {
         setLoading(true);
       } else if (isBackgroundRefresh) {
@@ -54,42 +49,35 @@ const HistoryPage: React.FC = () => {
       retryCountRef.current = 0;
     }
     setError(null);
-    
+
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
-      
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
       const response = await fetch(`${BACKEND_URL}/action_history?limit=100`, {
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
-      
+
       if (!isMountedRef.current) return;
-      
-      if (!response.ok) {
-        throw new Error(`Failed to fetch: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
+
       const data = await response.json();
       setActions(data.history || []);
       setError(null);
       hasLoadedOnceRef.current = true;
     } catch (err) {
       if (!isMountedRef.current) return;
-      
-      console.error('Failed to load actions history:', err);
-      
-      // Auto-retry up to 3 times with increasing delay
+
       if (retryCountRef.current < 3) {
         retryCountRef.current += 1;
-        const delay = retryCountRef.current * 1000; // 1s, 2s, 3s
+        const delay = retryCountRef.current * 1000;
         setTimeout(() => {
-          if (isMountedRef.current) {
-            loadHistory(true, isBackgroundRefresh);
-          }
+          if (isMountedRef.current) loadHistory(true, isBackgroundRefresh);
         }, delay);
         return;
       }
-      
+
       setError(err instanceof Error ? err.message : 'Failed to load history');
     } finally {
       if (isMountedRef.current && !retryCountRef.current) {
@@ -108,29 +96,20 @@ const HistoryPage: React.FC = () => {
     isMountedRef.current = true;
     mountTimeRef.current = Date.now();
     loadHistory();
-    
+
     return () => {
       isMountedRef.current = false;
       isLoadingRef.current = false;
     };
   }, [loadHistory]);
 
-  // Listen for action-completed events to refresh data when already on this page
   useEffect(() => {
     const unlistenPromise = listen('action-completed', () => {
-      // Ignore events that come within 1 second of mount (mount already triggers a load)
       const timeSinceMount = Date.now() - mountTimeRef.current;
-      if (timeSinceMount < 1000) {
-        console.log('📬 HistoryPage: Ignoring event - too soon after mount');
-        return;
-      }
-      
-      console.log('📬 HistoryPage: Refreshing due to action-completed event');
-      // Small delay to ensure the action has been saved to the database
+      if (timeSinceMount < 1000) return;
+
       setTimeout(() => {
-        if (isMountedRef.current) {
-          loadHistory(false, true); // Background refresh - keeps existing data visible
-        }
+        if (isMountedRef.current) loadHistory(false, true);
       }, 500);
     });
 
@@ -139,7 +118,6 @@ const HistoryPage: React.FC = () => {
     };
   }, [loadHistory]);
 
-  // Convert snake_case to Title Case (e.g., "notion_create_comment" -> "Notion Create Comment")
   const formatActionType = (actionType: string): string => {
     if (!actionType) return 'Unknown Action';
     return actionType
@@ -150,8 +128,7 @@ const HistoryPage: React.FC = () => {
 
   const formatTimestamp = (timestamp: string): string => {
     try {
-      const date = new Date(timestamp);
-      return date.toLocaleString(undefined, {
+      return new Date(timestamp).toLocaleString(undefined, {
         year: 'numeric',
         month: 'numeric',
         day: 'numeric',
@@ -172,53 +149,32 @@ const HistoryPage: React.FC = () => {
 
   const parseJson = (data: string | null): any => {
     if (!data) return null;
-    try {
-      return JSON.parse(data);
-    } catch {
-      return data;
-    }
+    try { return JSON.parse(data); } catch { return data; }
   };
 
-  // Format action data in a clean, readable way
   const formatActionData = (actionData: any): React.ReactNode => {
     if (!actionData) return null;
-    
-    if (typeof actionData === 'string') {
-      return <span style={styles.dataValue}>{actionData}</span>;
-    }
-    
-    if (typeof actionData !== 'object') {
-      return <span style={styles.dataValue}>{String(actionData)}</span>;
-    }
+    if (typeof actionData === 'string') return <span style={styles.dataValue}>{actionData}</span>;
+    if (typeof actionData !== 'object') return <span style={styles.dataValue}>{String(actionData)}</span>;
 
-    // Format object data as clean key-value pairs
     const entries = Object.entries(actionData);
     if (entries.length === 0) return null;
 
     return (
       <div style={styles.dataGrid}>
         {entries.map(([key, value]) => {
-          // Format the key from snake_case to readable
           const formattedKey = key
             .split('_')
             .map(word => word.charAt(0).toUpperCase() + word.slice(1))
             .join(' ');
-          
-          // Format the value
+
           let displayValue: string;
-          if (value === null || value === undefined) {
-            displayValue = '-';
-          } else if (typeof value === 'object') {
-            displayValue = JSON.stringify(value, null, 2);
-          } else {
-            displayValue = String(value);
-          }
-          
-          // Truncate long values
+          if (value === null || value === undefined) displayValue = '-';
+          else if (typeof value === 'object') displayValue = JSON.stringify(value, null, 2);
+          else displayValue = String(value);
+
           const isTruncated = displayValue.length > 200;
-          const truncatedValue = isTruncated 
-            ? displayValue.substring(0, 200) + '...'
-            : displayValue;
+          const truncatedValue = isTruncated ? displayValue.substring(0, 200) + '...' : displayValue;
 
           return (
             <div key={key} style={styles.dataRow}>
@@ -233,7 +189,6 @@ const HistoryPage: React.FC = () => {
     );
   };
 
-  // Format the result as a user-friendly message
   const formatResultMessage = (status: string, result: string | null): string => {
     if (status === 'completed') {
       const resultData = parseJson(result);
@@ -249,41 +204,36 @@ const HistoryPage: React.FC = () => {
     return 'Unknown status.';
   };
 
-  const getStatusColor = (status: string): string => {
+  const getStatusStyle = (status: string): React.CSSProperties => {
     switch (status) {
       case 'completed':
-        return '#22c55e';
+        return { color: '#166534', backgroundColor: 'rgba(34, 197, 94, 0.08)', border: '1px solid rgba(34, 197, 94, 0.22)' };
       case 'failed':
-        return '#ef4444';
+        return { color: '#991b1b', backgroundColor: 'rgba(239, 68, 68, 0.06)', border: '1px solid rgba(239, 68, 68, 0.22)' };
       case 'pending':
-        return '#f59e0b';
+        return { color: '#92400e', backgroundColor: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.22)' };
       default:
-        return '#71717a';
+        return { color: '#9A9A96', backgroundColor: '#F4F1EC', border: '1px solid #E8E4DC' };
     }
   };
 
-  const getStatusBgColor = (status: string): string => {
+  const getResultColor = (status: string): string => {
     switch (status) {
-      case 'completed':
-        return 'rgba(34, 197, 94, 0.1)';
-      case 'failed':
-        return 'rgba(239, 68, 68, 0.1)';
-      case 'pending':
-        return 'rgba(245, 158, 11, 0.1)';
-      default:
-        return 'rgba(113, 113, 122, 0.1)';
+      case 'completed': return '#166534';
+      case 'failed': return '#991b1b';
+      case 'pending': return '#92400e';
+      default: return '#9A9A96';
     }
   };
 
-  // Filter actions based on active tab
-  const filteredActions = activeTab === 'failed' 
-    ? actions.filter(action => action.status === 'failed')
+  const filteredActions = activeTab === 'failed'
+    ? actions.filter(a => a.status === 'failed')
     : activeTab === 'completed'
-    ? actions.filter(action => action.status === 'completed')
+    ? actions.filter(a => a.status === 'completed')
     : actions;
 
-  const completedCount = actions.filter(action => action.status === 'completed').length;
-  const failedCount = actions.filter(action => action.status === 'failed').length;
+  const completedCount = actions.filter(a => a.status === 'completed').length;
+  const failedCount = actions.filter(a => a.status === 'failed').length;
 
   if (loading) {
     return (
@@ -304,7 +254,7 @@ const HistoryPage: React.FC = () => {
         </div>
         <div style={styles.errorState}>
           <p style={styles.errorText}>Failed to load: {error}</p>
-          <p style={styles.errorHint}>Make sure the Flask server is running on port 5001</p>
+          <p style={styles.errorHint}>Make sure the server is running on port {FLASK_PORT}</p>
           <button style={styles.refreshButton} onClick={() => loadHistory()}>
             Retry
           </button>
@@ -330,35 +280,27 @@ const HistoryPage: React.FC = () => {
         </p>
       </div>
 
-      {/* Tab Navigation - Successful, Failed, All Actions */}
       <div style={styles.tabContainer}>
-        <button
-          style={{
-            ...styles.tab,
-            ...(activeTab === 'completed' ? styles.tabActive : {}),
-          }}
-          onClick={() => setActiveTab('completed')}
-        >
-          Successful ({completedCount})
-        </button>
-        <button
-          style={{
-            ...styles.tab,
-            ...(activeTab === 'failed' ? styles.tabActiveFailed : {}),
-          }}
-          onClick={() => setActiveTab('failed')}
-        >
-          Failed ({failedCount})
-        </button>
-        <button
-          style={{
-            ...styles.tab,
-            ...(activeTab === 'all' ? styles.tabActive : {}),
-          }}
-          onClick={() => setActiveTab('all')}
-        >
-          All Actions
-        </button>
+        {([
+          { id: 'completed' as TabType, label: `Successful (${completedCount})` },
+          { id: 'failed' as TabType, label: `Failed (${failedCount})` },
+          { id: 'all' as TabType, label: 'All Actions' },
+        ]).map(({ id, label }) => (
+          <button
+            key={id}
+            style={{
+              ...styles.tab,
+              ...(activeTab === id
+                ? id === 'failed'
+                  ? styles.tabActiveFailed
+                  : styles.tabActive
+                : {}),
+            }}
+            onClick={() => setActiveTab(id)}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
       {filteredActions.length > 0 ? (
@@ -368,22 +310,18 @@ const HistoryPage: React.FC = () => {
             const actionData = parseJson(action.action_data);
 
             return (
-              <div 
-                key={action.id} 
-                style={styles.actionCard}
+              <div
+                key={action.id}
+                style={{
+                  ...styles.actionCard,
+                  ...(isExpanded ? styles.actionCardExpanded : {}),
+                }}
                 onClick={() => setExpandedId(isExpanded ? null : action.id)}
               >
-                {/* Header Row */}
                 <div style={styles.actionHeader}>
                   <div style={styles.actionInfo}>
                     <span style={styles.actionType}>{formatActionType(action.action_type)}</span>
-                    <span 
-                      style={{
-                        ...styles.statusBadge,
-                        color: getStatusColor(action.status),
-                        backgroundColor: getStatusBgColor(action.status),
-                      }}
-                    >
+                    <span style={{ ...styles.statusBadge, ...getStatusStyle(action.status) }}>
                       {action.status}
                     </span>
                   </div>
@@ -393,7 +331,6 @@ const HistoryPage: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Error Message (if failed) */}
                 {action.status === 'failed' && action.error_message && (
                   <div style={styles.errorBox}>
                     <span style={styles.errorLabel}>Error:</span>
@@ -401,10 +338,8 @@ const HistoryPage: React.FC = () => {
                   </div>
                 )}
 
-                {/* Expanded Details */}
                 {isExpanded && (
                   <div style={styles.expandedContent}>
-                    {/* Action Data - Clean format */}
                     {actionData && (
                       <div style={styles.detailSection}>
                         <h4 style={styles.detailTitle}>Action Details</h4>
@@ -414,23 +349,17 @@ const HistoryPage: React.FC = () => {
                       </div>
                     )}
 
-                    {/* Result - as user-friendly message */}
                     <div style={styles.detailSection}>
                       <h4 style={styles.detailTitle}>Result</h4>
-                      <div style={{
-                        ...styles.resultMessage,
-                        color: action.status === 'completed' ? '#22c55e' : 
-                               action.status === 'failed' ? '#fca5a5' : '#f59e0b',
-                      }}>
+                      <div style={{ ...styles.resultMessage, color: getResultColor(action.status) }}>
                         {formatResultMessage(action.status, action.result)}
                       </div>
                     </div>
                   </div>
                 )}
 
-                {/* Expand hint */}
                 <div style={styles.expandHint}>
-                  {isExpanded ? '▲ Click to collapse' : '▼ Click to expand'}
+                  {isExpanded ? '▲ Collapse' : '▼ Expand'}
                 </div>
               </div>
             );
@@ -439,13 +368,12 @@ const HistoryPage: React.FC = () => {
       ) : (
         <div style={styles.emptyState}>
           <h3 style={styles.emptyTitle}>
-            {activeTab === 'failed' ? 'No Failed Actions' : 
-             activeTab === 'completed' ? 'No Successful Actions' :
-             'No Actions Yet'}
+            {activeTab === 'failed' ? 'No Failed Actions' :
+             activeTab === 'completed' ? 'No Successful Actions' : 'No Actions Yet'}
           </h3>
           <p style={styles.emptyText}>
-            {activeTab === 'failed' 
-              ? 'Great news! No actions have failed recently.'
+            {activeTab === 'failed'
+              ? 'Great news — no actions have failed recently.'
               : activeTab === 'completed'
               ? 'No actions have completed successfully yet.'
               : 'No actions have been executed. Start using Covalent to see your action history here.'}
@@ -465,88 +393,95 @@ const HistoryPage: React.FC = () => {
 const styles: { [key: string]: React.CSSProperties } = {
   container: {
     padding: '40px',
-    maxWidth: '1000px',
+    maxWidth: '960px',
   },
   header: {
-    marginBottom: '24px',
+    marginBottom: '20px',
   },
   titleRow: {
     display: 'flex',
     alignItems: 'center',
-    gap: '16px',
+    gap: '14px',
   },
   title: {
-    fontSize: '1.75rem',
-    fontWeight: '600',
-    color: '#ffffff',
-    margin: '0 0 8px 0',
+    fontSize: '1.6rem',
+    fontWeight: '700',
+    color: '#1A1A1A',
+    margin: '0 0 6px 0',
     letterSpacing: '-0.02em',
   },
   refreshingIndicator: {
     display: 'flex',
     alignItems: 'center',
-    gap: '8px',
-    fontSize: '0.8rem',
-    color: '#C5F467',
+    gap: '7px',
+    fontSize: '0.775rem',
+    color: '#C17A5F',
     padding: '4px 12px',
-    backgroundColor: 'rgba(197, 244, 103, 0.1)',
-    borderRadius: '12px',
-    marginBottom: '8px',
+    backgroundColor: 'rgba(193, 122, 95, 0.08)',
+    border: '1px solid rgba(193, 122, 95, 0.25)',
+    borderRadius: '100px',
+    marginBottom: '6px',
   },
   refreshingSpinner: {
-    width: '12px',
-    height: '12px',
-    border: '2px solid rgba(197, 244, 103, 0.3)',
-    borderTopColor: '#C5F467',
+    width: '11px',
+    height: '11px',
+    border: '2px solid rgba(193, 122, 95, 0.3)',
+    borderTopColor: '#C17A5F',
     borderRadius: '50%',
     animation: 'spin 0.8s linear infinite',
   },
   subtitle: {
-    fontSize: '0.95rem',
-    color: '#a1a1aa',
+    fontSize: '0.875rem',
+    color: '#5A5A5A',
     margin: 0,
   },
   tabContainer: {
     display: 'flex',
-    gap: '8px',
-    marginBottom: '24px',
-    borderBottom: '1px solid #27272a',
-    paddingBottom: '12px',
+    gap: '6px',
+    marginBottom: '20px',
+    paddingBottom: '16px',
+    borderBottom: '1px solid #E8E4DC',
   },
   tab: {
-    padding: '10px 20px',
+    padding: '8px 16px',
     backgroundColor: 'transparent',
-    border: '1px solid #27272a',
-    borderRadius: '8px',
-    color: '#a1a1aa',
-    fontSize: '0.85rem',
+    border: '1px solid #E8E4DC',
+    borderRadius: '100px',
+    color: '#5A5A5A',
+    fontSize: '0.825rem',
     fontWeight: '500',
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    transition: 'all 0.15s ease',
+    fontFamily: 'inherit',
   },
   tabActive: {
-    backgroundColor: 'rgba(197, 244, 103, 0.1)',
-    borderColor: '#C5F467',
-    color: '#C5F467',
+    backgroundColor: '#1A1A1A',
+    borderColor: '#1A1A1A',
+    color: '#FFFFFF',
   },
   tabActiveFailed: {
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-    borderColor: '#ef4444',
-    color: '#ef4444',
+    backgroundColor: 'rgba(239, 68, 68, 0.06)',
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+    color: '#991b1b',
   },
   actionsList: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '12px',
-    marginBottom: '24px',
+    gap: '10px',
+    marginBottom: '20px',
   },
   actionCard: {
-    backgroundColor: '#141414',
+    backgroundColor: '#FFFFFF',
     borderRadius: '12px',
     padding: '16px 20px',
-    border: '1px solid #27272a',
+    border: '1px solid #E8E4DC',
     cursor: 'pointer',
-    transition: 'border-color 0.2s ease',
+    transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+  },
+  actionCardExpanded: {
+    borderColor: '#D4CFC6',
+    boxShadow: '0 4px 12px rgba(0,0,0,0.07)',
   },
   actionHeader: {
     display: 'flex',
@@ -557,148 +492,153 @@ const styles: { [key: string]: React.CSSProperties } = {
   actionInfo: {
     display: 'flex',
     alignItems: 'center',
-    gap: '12px',
+    gap: '10px',
   },
   actionType: {
-    fontSize: '1rem',
-    fontWeight: '500',
-    color: '#ffffff',
+    fontSize: '0.9rem',
+    fontWeight: '600',
+    color: '#1A1A1A',
   },
   statusBadge: {
-    fontSize: '0.75rem',
-    fontWeight: '600',
-    padding: '4px 10px',
-    borderRadius: '12px',
+    fontSize: '0.7rem',
+    fontWeight: '700',
+    padding: '3px 9px',
+    borderRadius: '100px',
     textTransform: 'uppercase',
-    letterSpacing: '0.02em',
+    letterSpacing: '0.04em',
   },
   actionMeta: {
     display: 'flex',
     alignItems: 'center',
-    gap: '16px',
+    gap: '14px',
+    flexShrink: 0,
   },
   duration: {
-    fontSize: '0.85rem',
-    fontWeight: '500',
-    color: '#C5F467',
+    fontSize: '0.8rem',
+    fontWeight: '600',
+    color: '#C17A5F',
     fontFamily: 'monospace',
   },
   timestamp: {
-    fontSize: '0.8rem',
-    color: '#71717a',
+    fontSize: '0.775rem',
+    color: '#9A9A96',
   },
   errorBox: {
-    marginTop: '12px',
+    marginTop: '10px',
     padding: '10px 14px',
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    backgroundColor: 'rgba(239, 68, 68, 0.06)',
     borderRadius: '8px',
-    border: '1px solid rgba(239, 68, 68, 0.2)',
+    border: '1px solid rgba(239, 68, 68, 0.18)',
   },
   errorLabel: {
-    fontSize: '0.8rem',
-    fontWeight: '600',
-    color: '#ef4444',
+    fontSize: '0.775rem',
+    fontWeight: '700',
+    color: '#991b1b',
     marginRight: '8px',
   },
   errorMessage: {
-    fontSize: '0.85rem',
-    color: '#fca5a5',
+    fontSize: '0.825rem',
+    color: '#991b1b',
     fontFamily: 'monospace',
   },
   expandedContent: {
-    marginTop: '16px',
-    paddingTop: '16px',
-    borderTop: '1px solid #27272a',
+    marginTop: '14px',
+    paddingTop: '14px',
+    borderTop: '1px solid #E8E4DC',
   },
   detailSection: {
-    marginBottom: '16px',
+    marginBottom: '14px',
   },
   detailTitle: {
-    fontSize: '0.8rem',
-    fontWeight: '600',
-    color: '#a1a1aa',
+    fontSize: '0.72rem',
+    fontWeight: '700',
+    color: '#9A9A96',
     margin: '0 0 8px 0',
     textTransform: 'uppercase',
-    letterSpacing: '0.05em',
+    letterSpacing: '0.06em',
   },
   detailBox: {
-    backgroundColor: '#0a0a0a',
+    backgroundColor: '#F4F1EC',
     borderRadius: '8px',
-    padding: '16px',
-    border: '1px solid #27272a',
+    padding: '14px',
+    border: '1px solid #E8E4DC',
   },
   dataGrid: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '12px',
+    gap: '10px',
   },
   dataRow: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '4px',
+    gap: '3px',
   },
   dataKey: {
-    fontSize: '0.75rem',
-    fontWeight: '600',
-    color: '#71717a',
+    fontSize: '0.7rem',
+    fontWeight: '700',
+    color: '#9A9A96',
     textTransform: 'uppercase',
-    letterSpacing: '0.03em',
+    letterSpacing: '0.04em',
   },
   dataValue: {
-    fontSize: '0.9rem',
-    color: '#e4e4e7',
+    fontSize: '0.875rem',
+    color: '#1A1A1A',
     lineHeight: '1.5',
     wordBreak: 'break-word',
   },
   resultMessage: {
-    fontSize: '0.9rem',
-    lineHeight: '1.5',
+    fontSize: '0.875rem',
+    lineHeight: '1.55',
     padding: '12px 16px',
-    backgroundColor: '#0a0a0a',
+    backgroundColor: '#F4F1EC',
     borderRadius: '8px',
-    border: '1px solid #27272a',
+    border: '1px solid #E8E4DC',
   },
   expandHint: {
-    marginTop: '12px',
-    fontSize: '0.7rem',
-    color: '#52525b',
+    marginTop: '10px',
+    fontSize: '0.68rem',
+    color: '#D4CFC6',
     textAlign: 'center',
   },
   emptyState: {
-    backgroundColor: '#141414',
-    borderRadius: '12px',
-    padding: '64px 32px',
-    border: '1px solid #27272a',
+    backgroundColor: '#FFFFFF',
+    borderRadius: '14px',
+    padding: '56px 32px',
+    border: '1px solid #E8E4DC',
     textAlign: 'center',
-    marginBottom: '24px',
+    marginBottom: '20px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
   },
   emptyTitle: {
-    fontSize: '1.25rem',
-    fontWeight: '600',
-    color: '#ffffff',
-    marginBottom: '12px',
+    fontSize: '1.1rem',
+    fontWeight: '700',
+    color: '#1A1A1A',
+    marginBottom: '10px',
+    marginTop: 0,
+    letterSpacing: '-0.01em',
   },
   emptyText: {
-    fontSize: '0.9rem',
-    color: '#71717a',
+    fontSize: '0.875rem',
+    color: '#9A9A96',
     lineHeight: '1.6',
+    margin: 0,
   },
   errorState: {
-    backgroundColor: '#141414',
-    borderRadius: '12px',
+    backgroundColor: '#FFFFFF',
+    borderRadius: '14px',
     padding: '32px',
-    border: '1px solid rgba(239, 68, 68, 0.3)',
+    border: '1px solid rgba(239, 68, 68, 0.22)',
     textAlign: 'center',
   },
   errorText: {
-    color: '#ef4444',
-    marginBottom: '8px',
-    fontSize: '1rem',
+    color: '#991b1b',
+    marginBottom: '6px',
+    fontSize: '0.9rem',
   },
   errorHint: {
-    color: '#71717a',
+    color: '#9A9A96',
     marginBottom: '16px',
-    fontSize: '0.85rem',
+    fontSize: '0.825rem',
   },
   loadingContainer: {
     display: 'flex',
@@ -706,44 +646,41 @@ const styles: { [key: string]: React.CSSProperties } = {
     alignItems: 'center',
     justifyContent: 'center',
     padding: '64px',
-    gap: '16px',
+    gap: '14px',
   },
   spinner: {
-    width: '32px',
-    height: '32px',
-    border: '3px solid #27272a',
-    borderTopColor: '#C5F467',
+    width: '28px',
+    height: '28px',
+    border: '3px solid #E8E4DC',
+    borderTopColor: '#1A1A1A',
     borderRadius: '50%',
     animation: 'spin 1s linear infinite',
   },
   loadingText: {
-    color: '#a1a1aa',
-    fontSize: '0.95rem',
+    color: '#9A9A96',
+    fontSize: '0.9rem',
   },
   actionButtons: {
     display: 'flex',
-    gap: '12px',
+    gap: '10px',
   },
   refreshButton: {
-    padding: '10px 20px',
-    backgroundColor: '#C5F467',
+    padding: '9px 20px',
+    backgroundColor: '#1A1A1A',
     border: 'none',
-    borderRadius: '8px',
-    color: '#0a0a0a',
-    fontSize: '0.85rem',
+    borderRadius: '100px',
+    color: '#FFFFFF',
+    fontSize: '0.825rem',
     fontWeight: '600',
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    transition: 'all 0.15s ease',
+    fontFamily: 'inherit',
   },
 };
 
-// Add keyframes for spinner animation
+// Add keyframes for spinner
 const styleSheet = document.createElement('style');
-styleSheet.textContent = `
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-`;
+styleSheet.textContent = `@keyframes spin { to { transform: rotate(360deg); } }`;
 if (!document.head.querySelector('style[data-history-page]')) {
   styleSheet.setAttribute('data-history-page', 'true');
   document.head.appendChild(styleSheet);
