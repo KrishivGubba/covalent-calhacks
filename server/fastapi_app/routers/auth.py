@@ -12,7 +12,7 @@ from typing import Optional
 
 import requests as http_requests
 
-from ..dependencies import auth_dao_dependency, get_db_path, get_encrypted_conn
+from ..dependencies import auth_dao_dependency, integration_dao_dependency
 from logger import get_logger
 
 log = get_logger()
@@ -166,6 +166,7 @@ async def refresh_session(
 async def logout(
     request: Request,
     auth_dao=Depends(auth_dao_dependency),
+    integration_dao=Depends(integration_dao_dependency),
 ):
     """
     Log out a user by deleting their session.
@@ -181,6 +182,13 @@ async def logout(
         log.info(f"🔐 User {user_id} logged out")
     else:
         log.info("🔐 Logout called without user_id")
+
+    # Match Flask behavior: clear OAuth integrations on logout
+    for provider in ("google", "github", "notion"):
+        try:
+            integration_dao.delete_token(provider)
+        except Exception as e:
+            log.warning(f"⚠️ Failed to delete integration token for {provider}: {e}")
     
     return {"ok": True}
 
@@ -197,3 +205,64 @@ async def auth_check(
     """
     result = auth_dao.get_and_consume_pending_auth(state)
     return result
+
+
+@router.get("/current")
+async def get_current_session(auth_dao=Depends(auth_dao_dependency)):
+    """
+    Return the active Auth0 session for the logged-in desktop user.
+
+    Single-user desktop app: returns the most recently updated session, or
+    unauthenticated if none exist.
+    """
+    sessions = auth_dao.get_all_sessions()
+    if not sessions:
+        return {
+            "authenticated": False,
+            "access_token": None,
+            "user_id": None,
+            "user_info": None,
+            "expired": False,
+        }
+
+    sessions_sorted = sorted(
+        sessions,
+        key=lambda s: s.get("updated_at") or "",
+        reverse=True,
+    )
+    latest_user_id = sessions_sorted[0].get("user_id")
+    if not latest_user_id:
+        return {
+            "authenticated": False,
+            "access_token": None,
+            "user_id": None,
+            "user_info": None,
+            "expired": False,
+        }
+
+    session = auth_dao.get_session(latest_user_id)
+    if not session:
+        return {
+            "authenticated": False,
+            "access_token": None,
+            "user_id": None,
+            "user_info": None,
+            "expired": False,
+        }
+
+    expired = False
+    expires_at = session.get("expires_at")
+    if expires_at:
+        try:
+            expires = datetime.fromisoformat(expires_at)
+            expired = datetime.utcnow() > expires
+        except ValueError:
+            pass
+
+    return {
+        "authenticated": True,
+        "expired": expired,
+        "access_token": session.get("access_token"),
+        "user_id": session.get("user_id"),
+        "user_info": session.get("user_info"),
+    }

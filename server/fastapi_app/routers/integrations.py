@@ -3,8 +3,7 @@ Integration management endpoints (Google, GitHub, Notion, Filesystem).
 """
 import os
 import json
-import secrets
-from urllib.parse import urlencode
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
@@ -110,20 +109,26 @@ async def filesystem_connect(
     if not os.path.isdir(body.root_path):
         raise HTTPException(status_code=400, detail=f"Path does not exist or is not a directory: {body.root_path}")
     
-    integration_dao.save_filesystem_root(body.root_path)
+    integration_dao.save_token(
+        provider="filesystem",
+        access_token="local",
+        scopes="read_write",
+        provider_metadata={"type": "local_filesystem", "root_path": body.root_path},
+    )
     log.info(f"📁 Filesystem connected: {body.root_path}")
     
-    return {"status": "success", "root_path": body.root_path}
+    return {"ok": True, "root_path": body.root_path}
 
 
+@router.post("/filesystem/disconnect")
 @router.delete("/filesystem/disconnect")
 async def filesystem_disconnect(integration_dao=Depends(integration_dao_dependency)):
     """
     Disconnect filesystem integration.
     """
-    integration_dao.delete_token("filesystem")
+    deleted = integration_dao.delete_token("filesystem")
     log.info("📁 Filesystem disconnected")
-    return {"status": "success"}
+    return {"ok": True, "deleted": deleted > 0}
 
 
 @router.get("/filesystem/root")
@@ -149,39 +154,44 @@ async def filesystem_update_root(
     if not os.path.isdir(body.root_path):
         raise HTTPException(status_code=400, detail=f"Path does not exist or is not a directory: {body.root_path}")
     
-    integration_dao.save_filesystem_root(body.root_path)
+    integration_dao.save_token(
+        provider="filesystem",
+        access_token="local",
+        scopes="read_write",
+        provider_metadata={"type": "local_filesystem", "root_path": body.root_path},
+    )
     log.info(f"📁 Filesystem root updated: {body.root_path}")
     
-    return {"status": "success", "root_path": body.root_path}
+    return {"ok": True, "root_path": body.root_path}
 
 
 # ==================== Google ====================
 
-@router.get("/google/connect")
-async def google_connect():
+class GoogleStartRequest(BaseModel):
+    state: str
+    code_verifier: str
+    auth_token: str
+
+
+@router.post("/google/start")
+async def google_start(body: GoogleStartRequest):
     """
-    Start Google OAuth flow. Returns the authorization URL.
+    Called by frontend before opening Google OAuth.
+    Stores the code_verifier and auth token so backend can exchange via Lambda.
     """
-    if not GOOGLE_CLIENT_ID:
-        raise HTTPException(status_code=500, detail="Google OAuth not configured")
-    
-    state = secrets.token_urlsafe(32)
-    
-    google_auth_pending[state] = {"status": "pending"}
-    
-    params = {
-        "client_id": GOOGLE_CLIENT_ID,
-        "redirect_uri": GOOGLE_REDIRECT_URI,
-        "response_type": "code",
-        "scope": GOOGLE_SCOPES,
-        "state": state,
-        "access_type": "offline",
-        "prompt": "consent",
+    if not body.state or not body.code_verifier:
+        raise HTTPException(status_code=400, detail="state and code_verifier are required")
+    if not body.auth_token:
+        raise HTTPException(status_code=400, detail="auth_token is required (user must be logged in)")
+
+    google_auth_pending[body.state] = {
+        "code_verifier": body.code_verifier,
+        "auth_token": body.auth_token,
+        "status": "pending",
+        "created_at": datetime.utcnow().isoformat(),
     }
-    
-    auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
-    
-    return {"auth_url": auth_url, "state": state}
+    log.info(f"🔷 Google auth start: stored code_verifier for state={body.state[:8]}...")
+    return {"ok": True}
 
 
 @router.get("/google/callback")
@@ -189,76 +199,179 @@ async def google_callback(
     code: Optional[str] = Query(None),
     state: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
+    error_description: Optional[str] = Query(None),
     integration_dao=Depends(integration_dao_dependency),
 ):
     """
-    Handle Google OAuth callback.
+    Google OAuth redirect target. Exchanges code for tokens via Lambda.
     """
-    if error:
-        if state and state in google_auth_pending:
-            google_auth_pending[state] = {"status": "error", "error": error}
-        return HTMLResponse(content=f"<html><body><h1>Error</h1><p>{error}</p></body></html>")
-    
-    if not code or not state:
-        return HTMLResponse(content="<html><body><h1>Error</h1><p>Missing code or state</p></body></html>")
-    
-    try:
-        # Exchange code for tokens via Lambda
-        resp = http_requests.post(
-            f"{LAMBDA_GATEWAY_URL}/integrations/google/exchange",
-            json={"code": code, "redirect_uri": GOOGLE_REDIRECT_URI},
-            timeout=30,
-        )
-        
-        if resp.status_code != 200:
-            google_auth_pending[state] = {"status": "error", "error": resp.text}
-            return HTMLResponse(content=f"<html><body><h1>Error</h1><p>{resp.text}</p></body></html>")
-        
-        tokens = resp.json()
-        
-        integration_dao.save_token(
-            provider="google",
-            access_token=tokens.get("access_token"),
-            refresh_token=tokens.get("refresh_token"),
-            expires_at=tokens.get("expires_at"),
-            scopes=GOOGLE_SCOPES,
-        )
-        
-        google_auth_pending[state] = {"status": "success"}
-        log.info("✅ Google connected successfully")
-        
-        return HTMLResponse(content="""
-            <html><body>
-                <h1>Success!</h1>
-                <p>Google Workspace connected. You can close this window.</p>
-                <script>window.close();</script>
+    def render_error(message: str) -> HTMLResponse:
+        return HTMLResponse(content=f"""
+            <html><body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fff;">
+                <div style="text-align: center;">
+                    <h1 style="color: #ef4444;">Google Login Failed</h1>
+                    <p style="color: #a1a1aa;">{message}</p>
+                </div>
             </body></html>
         """)
-        
+
+    if not state:
+        return render_error("Missing state parameter")
+
+    if state not in google_auth_pending:
+        return render_error("Invalid or expired state. Please try again.")
+
+    if error:
+        google_auth_pending[state] = {
+            "status": "error",
+            "error": error,
+            "error_description": error_description or error,
+        }
+        return render_error(error_description or error)
+
+    if not code:
+        google_auth_pending[state] = {
+            "status": "error",
+            "error": "no_code",
+            "error_description": "No authorization code received",
+        }
+        return render_error("No authorization code received")
+
+    pending = google_auth_pending[state]
+    code_verifier = pending.get("code_verifier")
+    auth_token = pending.get("auth_token")
+
+    if not code_verifier:
+        google_auth_pending[state] = {
+            "status": "error",
+            "error": "no_verifier",
+            "error_description": "Code verifier not found",
+        }
+        return render_error("Session expired. Please try again.")
+
+    if not auth_token:
+        google_auth_pending[state] = {
+            "status": "error",
+            "error": "no_auth_token",
+            "error_description": "Auth token not found - user must be logged in",
+        }
+        return render_error("Please log in first.")
+
+    try:
+        log.info(f"🔷 Exchanging Google code via Lambda (state={state[:8]}...)...")
+        resp = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/google/exchange",
+            json={
+                "code": code,
+                "code_verifier": code_verifier,
+                "redirect_uri": GOOGLE_REDIRECT_URI,
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
+        )
+
+        token_data = resp.json()
+        if not resp.ok or "error" in token_data:
+            err = token_data.get("error", "token_exchange_failed")
+            err_desc = token_data.get("error_description", "Token exchange failed")
+            google_auth_pending[state] = {
+                "status": "error",
+                "error": err,
+                "error_description": err_desc,
+            }
+            log.error(f"🔷 Google token exchange failed: {err} - {err_desc}")
+            return render_error(err_desc)
+
+        access_token = token_data.get("access_token")
+        refresh_token = token_data.get("refresh_token")
+        expires_in = token_data.get("expires_in", 3600)
+        scope = token_data.get("scope", GOOGLE_SCOPES)
+        expires_at = token_data.get("expires_at")
+        if not expires_at:
+            expires_at = (datetime.utcnow()).isoformat()
+
+        user_email = None
+        try:
+            userinfo_response = http_requests.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=5,
+            )
+            if userinfo_response.ok:
+                user_email = userinfo_response.json().get("email")
+        except Exception as e:
+            log.warning(f"🔷 Failed to fetch Google user info: {e}")
+
+        integration_dao.save_token(
+            provider="google",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+            scopes=scope,
+            provider_metadata={"email": user_email} if user_email else None,
+        )
+
+        google_auth_pending[state] = {"status": "ready", "email": user_email}
+        log.info(f"✅ Google connected successfully (email={user_email})")
+
+        return HTMLResponse(content="""
+            <html><body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fff;">
+                <div style="text-align: center;">
+                    <h1 style="color: #C5F467;">Google Connected!</h1>
+                    <p style="color: #a1a1aa;">You can close this window and return to Covalent.</p>
+                </div>
+            </body></html>
+        """)
+
     except Exception as e:
         log.error(f"Google OAuth error: {e}")
-        google_auth_pending[state] = {"status": "error", "error": str(e)}
-        return HTMLResponse(content=f"<html><body><h1>Error</h1><p>{str(e)}</p></body></html>")
+        google_auth_pending[state] = {
+            "status": "error",
+            "error": "exception",
+            "error_description": str(e),
+        }
+        return render_error(f"An error occurred: {e}")
 
 
-@router.get("/google/poll/{state}")
-async def google_poll(state: str):
+@router.get("/google/check")
+async def google_check(state: str = Query(...)):
     """
-    Poll for Google OAuth result.
+    Polled by frontend after starting Google OAuth.
+    Returns: { "status": "pending" | "ready" | "error", ... }
     """
+    if not state:
+        raise HTTPException(status_code=400, detail="missing state")
+
     if state not in google_auth_pending:
-        return {"status": "not_found"}
-    return google_auth_pending[state]
+        raise HTTPException(status_code=400, detail="invalid_state")
+
+    pending = google_auth_pending[state]
+    status = pending.get("status", "pending")
+
+    if status == "ready":
+        email = pending.get("email")
+        del google_auth_pending[state]
+        return {"status": "ready", "email": email}
+    if status == "error":
+        error = pending.get("error")
+        error_desc = pending.get("error_description")
+        del google_auth_pending[state]
+        return {"status": "error", "error": error, "error_description": error_desc}
+    return {"status": "pending"}
 
 
+@router.post("/google/disconnect")
 @router.delete("/google/disconnect")
 async def google_disconnect(integration_dao=Depends(integration_dao_dependency)):
     """
     Disconnect Google integration.
     """
-    integration_dao.delete_token("google")
+    deleted = integration_dao.delete_token("google")
     log.info("🔌 Google disconnected")
-    return {"status": "success"}
+    return {"ok": True, "deleted": deleted > 0}
 
 
 # ==================== GitHub ====================

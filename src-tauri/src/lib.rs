@@ -50,6 +50,8 @@ pub struct ContextState {
     // Whether the user is currently authenticated — context collection MUST NOT
     // run when this is false to avoid collecting data without user consent.
     pub is_authenticated: Arc<AtomicBool>,
+    // Whether first-run onboarding has been completed.
+    pub is_onboarding_complete: Arc<AtomicBool>,
 }
 
 // Store for suggested actions
@@ -106,6 +108,7 @@ impl ContextState {
             user_paused: Arc::new(AtomicBool::new(false)), // Not manually paused by default
             excluded_apps: Arc::new(RwLock::new(Vec::new())),
             is_authenticated: Arc::new(AtomicBool::new(false)), // NOT authenticated until login
+            is_onboarding_complete: Arc::new(AtomicBool::new(false)), // First run requires onboarding
         }
     }
 
@@ -179,6 +182,19 @@ impl ContextState {
             println!("🔓 User authenticated — context collection now permitted");
         } else if !authenticated && prev {
             println!("🔒 User logged out — context collection suspended");
+        }
+    }
+
+    pub fn is_onboarding_complete(&self) -> bool {
+        self.is_onboarding_complete.load(Ordering::Relaxed)
+    }
+
+    pub fn set_onboarding_complete(&self, completed: bool) {
+        let prev = self.is_onboarding_complete.swap(completed, Ordering::Relaxed);
+        if completed && !prev {
+            println!("✅ Onboarding completed");
+        } else if !completed && prev {
+            println!("🧭 Onboarding marked incomplete");
         }
     }
 }
@@ -576,6 +592,203 @@ fn save_setting(app: &tauri::AppHandle, key: &str, value: serde_json::Value) {
     }
 }
 
+fn read_onboarding_state(settings: &serde_json::Value) -> (bool, i64, Option<String>) {
+    let onboarding = settings.get("onboarding");
+    let completed = onboarding
+        .and_then(|v| v.get("completed"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let version = onboarding
+        .and_then(|v| v.get("version"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1);
+    let completed_at = onboarding
+        .and_then(|v| v.get("completed_at"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    (completed, version, completed_at)
+}
+
+#[tauri::command]
+fn get_onboarding_state(app: tauri::AppHandle) -> serde_json::Value {
+    let settings = load_settings(&app);
+    let (completed, version, completed_at) = read_onboarding_state(&settings);
+    serde_json::json!({
+        "completed": completed,
+        "version": version,
+        "completed_at": completed_at
+    })
+}
+
+#[tauri::command]
+fn set_onboarding_completed(
+    app: tauri::AppHandle,
+    state: tauri::State<ContextState>,
+    completed: bool,
+) -> serde_json::Value {
+    let completed_at = if completed {
+        Some(chrono::Utc::now().to_rfc3339())
+    } else {
+        None
+    };
+    save_setting(
+        &app,
+        "onboarding",
+        serde_json::json!({
+            "version": 1,
+            "completed": completed,
+            "completed_at": completed_at
+        }),
+    );
+    state.set_onboarding_complete(completed);
+    if completed {
+        if let Some(window) = app.get_webview_window("onboarding") {
+            let _ = window.hide();
+        }
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+        }
+    } else {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.hide();
+        }
+        if let Some(window) = app.get_webview_window("dashboard") {
+            let _ = window.hide();
+        }
+        if let Some(window) = app.get_webview_window("onboarding") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+    serde_json::json!({
+        "completed": completed,
+        "version": 1,
+        "completed_at": completed_at
+    })
+}
+
+#[tauri::command]
+fn notify_onboarding_change(completed: bool, state: tauri::State<ContextState>) {
+    state.set_onboarding_complete(completed);
+}
+
+#[cfg(target_os = "macos")]
+fn check_accessibility_permission_macos() -> bool {
+    unsafe { accessibility_sys::AXIsProcessTrusted() }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_accessibility_permission_macos() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn request_accessibility_permission_macos() -> bool {
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::string::CFString;
+
+    unsafe {
+        let prompt_key = CFString::wrap_under_get_rule(accessibility_sys::kAXTrustedCheckOptionPrompt);
+        let options: CFDictionary<CFString, CFBoolean> =
+            CFDictionary::from_CFType_pairs(&[(prompt_key, CFBoolean::true_value())]);
+        accessibility_sys::AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn request_accessibility_permission_macos() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn check_screen_recording_permission_macos() -> bool {
+    core_graphics::access::ScreenCaptureAccess::default().preflight()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_screen_recording_permission_macos() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn request_screen_recording_permission_macos() -> bool {
+    core_graphics::access::ScreenCaptureAccess::default().request()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn request_screen_recording_permission_macos() -> bool {
+    false
+}
+
+#[tauri::command]
+fn get_permission_statuses(app: tauri::AppHandle) -> serde_json::Value {
+    let settings = load_settings(&app);
+    let notifications = settings
+        .get("notification_permission_granted")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    serde_json::json!({
+        "accessibility": check_accessibility_permission_macos(),
+        "screen_recording": check_screen_recording_permission_macos(),
+        "notifications": notifications
+    })
+}
+
+#[tauri::command]
+fn request_accessibility_permission() -> bool {
+    request_accessibility_permission_macos()
+}
+
+#[tauri::command]
+fn request_screen_recording_permission() -> bool {
+    request_screen_recording_permission_macos()
+}
+
+#[tauri::command]
+fn open_permission_settings(section: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let url = match section.as_str() {
+            "accessibility" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+            }
+            "screen_recording" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            }
+            _ => {
+                return Err(format!("Unknown permission section: {}", section));
+            }
+        };
+
+        let status = std::process::Command::new("open")
+            .arg(url)
+            .status()
+            .map_err(|e| format!("Failed to open System Settings: {}", e))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Failed to open System Settings".to_string())
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = section;
+        Err("Permission settings are only supported on macOS".to_string())
+    }
+}
+
+#[tauri::command]
+fn set_notification_permission_status(app: tauri::AppHandle, granted: bool) {
+    save_setting(
+        &app,
+        "notification_permission_granted",
+        serde_json::Value::Bool(granted),
+    );
+}
+
 // Tab completion control commands
 #[tauri::command]
 fn get_tab_completion_status(trigger: tauri::State<std::sync::Arc<tab_completion::CompletionTrigger>>) -> bool {
@@ -886,6 +1099,16 @@ async fn get_auth_status() -> Result<serde_json::Value, String> {
 // Open dashboard and navigate to history page
 #[tauri::command]
 fn open_dashboard_history(app: tauri::AppHandle) -> Result<(), String> {
+    let settings = load_settings(&app);
+    let (completed, _, _) = read_onboarding_state(&settings);
+    if !completed {
+        if let Some(window) = app.get_webview_window("onboarding") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        return Err("Onboarding is not complete yet".to_string());
+    }
+
     println!("🎛️  Opening dashboard to history page");
     if let Some(window) = app.get_webview_window("dashboard") {
         window.show().map_err(|e| e.to_string())?;
@@ -901,6 +1124,16 @@ fn open_dashboard_history(app: tauri::AppHandle) -> Result<(), String> {
 // Open main window (FloatingAssistant)
 #[tauri::command]
 fn open_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    let settings = load_settings(&app);
+    let (completed, _, _) = read_onboarding_state(&settings);
+    if !completed {
+        if let Some(window) = app.get_webview_window("onboarding") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        return Err("Onboarding is not complete yet".to_string());
+    }
+
     println!("🪟 Opening main window");
     if let Some(window) = app.get_webview_window("main") {
         window.show().map_err(|e| e.to_string())?;
@@ -915,7 +1148,7 @@ fn open_main_window(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn is_covalent_focused(app: tauri::AppHandle) -> Result<bool, String> {
     // Check all Covalent windows to see if any are focused
-    let window_labels = vec!["main", "dashboard", "ghost-text", "completion-popup"];
+    let window_labels = vec!["main", "dashboard", "onboarding", "ghost-text", "completion-popup"];
     
     for label in window_labels {
         if let Some(window) = app.get_webview_window(label) {
@@ -1074,8 +1307,8 @@ pub fn run() {
             // Create and manage context state
             let context_state = ContextState::new();
 
-            // Load excluded apps from settings (or seed defaults on first run)
-            {
+            // Load persisted settings (excluded apps + onboarding state)
+            let onboarding_completed = {
                 let handle = app.handle().clone();
                 let settings = load_settings(&handle);
                 let excluded = if let Some(arr) = settings.get("excluded_apps").and_then(|v| v.as_array()) {
@@ -1103,7 +1336,14 @@ pub fn run() {
                 };
                 context_state.set_excluded_apps_list(excluded.clone());
                 println!("🔒 Excluded apps loaded: {:?}", excluded);
-            }
+                let (completed, version, completed_at) = read_onboarding_state(&settings);
+                context_state.set_onboarding_complete(completed);
+                println!(
+                    "🧭 Onboarding state loaded: completed={}, version={}, completed_at={:?}",
+                    completed, version, completed_at
+                );
+                completed
+            };
 
             app.manage(context_state.clone());
             
@@ -1388,6 +1628,29 @@ pub fn run() {
                     eprintln!("   Tab completion will not be available");
                 }
             }
+
+            // Startup window gating based on first-run onboarding completion.
+            if onboarding_completed {
+                if let Some(window) = app.get_webview_window("onboarding") {
+                    let _ = window.hide();
+                }
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                }
+            } else {
+                // Keep data collection locked until onboarding is done.
+                context_state.disable();
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+                if let Some(window) = app.get_webview_window("dashboard") {
+                    let _ = window.hide();
+                }
+                if let Some(window) = app.get_webview_window("onboarding") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
             
             // Create menu items
             let open_dashboard = MenuItem::with_id(app, "open_dashboard", "Dashboard", true, Some("cmd+;"))?;
@@ -1427,6 +1690,16 @@ pub fn run() {
             app.on_menu_event(move |app, event| {
                 match event.id().as_ref() {
                     "open_dashboard" => {
+                        let settings = load_settings(app.handle());
+                        let (completed, _, _) = read_onboarding_state(&settings);
+                        if !completed {
+                            println!("🧭 Onboarding incomplete — opening onboarding window");
+                            if let Some(window) = app.get_webview_window("onboarding") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                            return;
+                        }
                         println!("🎛️  Opening dashboard");
                         if let Some(window) = app.get_webview_window("dashboard") {
                             let _ = window.show();
@@ -1463,6 +1736,14 @@ pub fn run() {
             disable_context_collection,
             get_context_collection_status,
             enable_context_collection_if_not_user_paused,
+            get_onboarding_state,
+            set_onboarding_completed,
+            notify_onboarding_change,
+            get_permission_statuses,
+            request_accessibility_permission,
+            request_screen_recording_permission,
+            open_permission_settings,
+            set_notification_permission_status,
             get_tab_completion_status,
             set_tab_completion_enabled,
             toggle_tab_completion,

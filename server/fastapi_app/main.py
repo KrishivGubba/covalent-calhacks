@@ -35,7 +35,17 @@ from .dependencies import get_db_path, get_encrypted_conn, get_tree, get_auth_da
 from init_db import create_schema, ensure_parent_dir
 
 # Import routers
-from .routers import health, graph, screen, actions, tab_completion, auth, integrations, mcp as mcp_router
+from .routers import (
+    health,
+    graph,
+    screen,
+    actions,
+    tab_completion,
+    auth,
+    integrations,
+    onboarding,
+    mcp as mcp_router,
+)
 
 # Check if MCP should be mounted (controlled by env var, default: enabled)
 MOUNT_MCP = os.environ.get('MOUNT_MCP_SERVER', 'true').lower() in ('true', '1', 'yes')
@@ -134,6 +144,7 @@ app.include_router(actions.router, tags=["Actions"])
 app.include_router(tab_completion.router, tags=["Tab Completion"])
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(integrations.router, prefix="/integrations", tags=["Integrations"])
+app.include_router(onboarding.router, tags=["Onboarding"])
 app.include_router(mcp_router.router, tags=["MCP"])
 
 

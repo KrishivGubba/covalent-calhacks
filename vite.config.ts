@@ -15,6 +15,7 @@ export default defineConfig(async () => ({
       input: {
         main: resolve(__dirname, 'index.html'),
         dashboard: resolve(__dirname, 'dashboard.html'),
+        onboarding: resolve(__dirname, 'onboarding.html'),
         'ghost-text': resolve(__dirname, 'ghost-text.html'),
         'completion-popup': resolve(__dirname, 'completion-popup.html'),
       },
