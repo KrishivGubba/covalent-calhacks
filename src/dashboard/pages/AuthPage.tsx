@@ -90,7 +90,7 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
             <div
               style={{
                 ...styles.statusDot,
-                backgroundColor: authStatus?.authenticated ? '#10B981' : '#6B7280',
+                backgroundColor: authStatus?.authenticated ? '#22c55e' : '#D4CFC6',
               }}
             />
             <span style={styles.statusText}>
@@ -100,7 +100,7 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
 
           {authStatus?.user && (
             <div style={styles.userInfo}>
-              <span style={styles.userLabel}>Account:</span>
+              <span style={styles.userLabel}>Account</span>
               <span style={styles.userName}>{authStatus.user}</span>
             </div>
           )}
@@ -120,7 +120,11 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
 
         <div style={styles.actions}>
           {!authStatus?.authenticated ? (
-            <button style={styles.primaryButton} onClick={handleLogin} disabled={polling}>
+            <button
+              style={{ ...styles.primaryButton, opacity: polling ? 0.6 : 1, cursor: polling ? 'not-allowed' : 'pointer' }}
+              onClick={handleLogin}
+              disabled={polling}
+            >
               {polling ? 'Signing in...' : 'Connect Account'}
             </button>
           ) : (
@@ -136,119 +140,133 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
   );
 };
 
-const styles = {
+const styles: { [key: string]: React.CSSProperties } = {
   container: {
     padding: '40px',
-    maxWidth: '800px',
+    maxWidth: '700px',
   },
   header: {
-    marginBottom: '32px',
+    marginBottom: '28px',
   },
   title: {
-    fontSize: '1.75rem',
-    fontWeight: '600',
-    color: '#ffffff',
-    margin: '0 0 8px 0',
+    fontSize: '1.6rem',
+    fontWeight: '700',
+    color: '#1A1A1A',
+    margin: '0 0 6px 0',
     letterSpacing: '-0.02em',
   },
   subtitle: {
-    fontSize: '0.95rem',
-    color: '#a1a1aa',
+    fontSize: '0.9rem',
+    color: '#5A5A5A',
     margin: 0,
   },
   card: {
-    backgroundColor: '#141414',
-    borderRadius: '12px',
-    padding: '28px',
-    border: '1px solid #27272a',
-    marginBottom: '24px',
+    backgroundColor: '#FFFFFF',
+    borderRadius: '14px',
+    padding: '24px',
+    border: '1px solid #E8E4DC',
+    marginBottom: '20px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
   },
   statusSection: {
-    marginBottom: '28px',
+    marginBottom: '24px',
   },
   statusHeader: {
     display: 'flex',
     alignItems: 'center',
-    gap: '12px',
-    marginBottom: '16px',
+    gap: '10px',
+    marginBottom: '14px',
   },
   statusDot: {
-    width: '10px',
-    height: '10px',
+    width: '9px',
+    height: '9px',
     borderRadius: '50%',
+    flexShrink: 0,
   },
   statusText: {
-    fontSize: '1.05rem',
-    fontWeight: '500',
-    color: '#ffffff',
+    fontSize: '1rem',
+    fontWeight: '600',
+    color: '#1A1A1A',
   },
   userInfo: {
     display: 'flex',
-    gap: '8px',
+    gap: '10px',
+    alignItems: 'center',
     marginBottom: '12px',
+    padding: '10px 14px',
+    backgroundColor: '#FAFAF8',
+    borderRadius: '10px',
+    border: '1px solid #E8E4DC',
   },
   userLabel: {
-    color: '#a1a1aa',
-    fontSize: '0.9rem',
+    color: '#9A9A96',
+    fontSize: '0.825rem',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
   },
   userName: {
-    color: '#ffffff',
+    color: '#1A1A1A',
     fontWeight: '500',
-    fontSize: '0.9rem',
+    fontSize: '0.875rem',
   },
   messageBox: {
-    backgroundColor: 'rgba(197, 244, 103, 0.08)',
-    border: '1px solid rgba(197, 244, 103, 0.2)',
-    borderRadius: '8px',
+    backgroundColor: 'rgba(193, 122, 95, 0.08)',
+    border: '1px solid rgba(193, 122, 95, 0.25)',
+    borderRadius: '10px',
     padding: '12px 16px',
-    color: '#a1a1aa',
+    color: '#5A5A5A',
     fontSize: '0.85rem',
+    lineHeight: '1.55',
   },
   errorBox: {
-    backgroundColor: 'rgba(239, 68, 68, 0.08)',
-    border: '1px solid rgba(239, 68, 68, 0.3)',
-    borderRadius: '8px',
+    backgroundColor: 'rgba(239, 68, 68, 0.06)',
+    border: '1px solid rgba(239, 68, 68, 0.22)',
+    borderRadius: '10px',
     padding: '12px 16px',
-    color: '#ef4444',
+    color: '#991b1b',
     fontSize: '0.85rem',
     marginBottom: '12px',
   },
   actions: {
     display: 'flex',
-    gap: '12px',
+    gap: '10px',
   },
   primaryButton: {
-    padding: '12px 24px',
-    backgroundColor: '#C5F467',
+    padding: '11px 24px',
+    backgroundColor: '#1A1A1A',
     border: 'none',
-    borderRadius: '8px',
-    color: '#0a0a0a',
-    fontSize: '0.9rem',
+    borderRadius: '100px',
+    color: '#FFFFFF',
+    fontSize: '0.875rem',
     fontWeight: '600',
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    transition: 'all 0.15s ease',
+    fontFamily: 'inherit',
   },
   secondaryButton: {
-    padding: '12px 24px',
+    padding: '11px 24px',
     backgroundColor: 'transparent',
-    border: '1px solid #27272a',
-    borderRadius: '8px',
-    color: '#ffffff',
-    fontSize: '0.9rem',
+    border: '1px solid #E8E4DC',
+    borderRadius: '100px',
+    color: '#5A5A5A',
+    fontSize: '0.875rem',
     fontWeight: '500',
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    transition: 'all 0.15s ease',
+    fontFamily: 'inherit',
   },
   loadingText: {
-    color: '#a1a1aa',
-    fontSize: '0.95rem',
+    color: '#9A9A96',
+    fontSize: '0.9rem',
   },
   versionText: {
-    position: 'fixed' as const,
+    position: 'fixed',
     bottom: '16px',
     right: '24px',
-    color: '#52525b',
-    fontSize: '0.75rem',
+    color: '#D4CFC6',
+    fontSize: '0.72rem',
+    fontWeight: '500',
   },
 };
 
