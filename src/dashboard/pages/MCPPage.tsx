@@ -81,19 +81,13 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
       multiple: false,
       title: 'Choose a folder for Covalent to access',
     });
-    if (!selected) {
-      return;
-    }
+    if (!selected) return;
 
     const rootPath = typeof selected === 'string' ? selected : selected[0];
-    if (!rootPath) {
-      return;
-    }
+    if (!rootPath) return;
 
     const result = await connectFilesystem(rootPath);
-    if (!result.ok) {
-      throw new Error(result.error);
-    }
+    if (!result.ok) throw new Error(result.error);
   };
 
   const handleConnect = async (id: string) => {
@@ -104,13 +98,10 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
         await handleConnectFilesystem();
       } else if (id === 'google' || id === 'github' || id === 'notion') {
         const result = await connectOAuthIntegration(id);
-        if (!result.ok) {
-          throw new Error(result.error);
-        }
+        if (!result.ok) throw new Error(result.error);
       } else {
         throw new Error(`${id} integration is not supported yet`);
       }
-
       await loadIntegrations();
     } catch (e) {
       setError(e instanceof Error ? e.message : `Failed to connect ${id}`);
@@ -124,9 +115,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
     setConnectingId(id);
     try {
       const ok = await disconnectIntegration(id);
-      if (!ok) {
-        throw new Error(`Failed to disconnect ${id}`);
-      }
+      if (!ok) throw new Error(`Failed to disconnect ${id}`);
       await loadIntegrations();
     } catch (e) {
       setError(e instanceof Error ? e.message : `Failed to disconnect ${id}`);
@@ -178,7 +167,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
                   <div
                     style={{
                       ...styles.statusDot,
-                      backgroundColor: integration.connected ? '#10B981' : '#6B7280',
+                      backgroundColor: integration.connected ? '#22c55e' : '#D4CFC6',
                     }}
                   />
                   {integration.connected ? 'Connected' : 'Not Connected'}
@@ -226,11 +215,6 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
                   }}
                   onClick={() => void handleDisconnect(integration.id)}
                   disabled={!isAuthenticated && integration.id !== 'filesystem'}
-                  title={
-                    !isAuthenticated && integration.id !== 'filesystem'
-                      ? 'Please log in first'
-                      : undefined
-                  }
                 >
                   {connectingId === integration.id ? 'Disconnecting...' : 'Disconnect'}
                 </button>
@@ -245,41 +229,43 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   );
 };
 
-const styles = {
+const styles: { [key: string]: React.CSSProperties } = {
   container: {
     padding: '40px',
-    maxWidth: '1000px',
+    maxWidth: '960px',
   },
   header: {
-    marginBottom: '32px',
+    marginBottom: '28px',
   },
   title: {
-    fontSize: '1.75rem',
-    fontWeight: '600',
-    color: '#ffffff',
-    margin: '0 0 8px 0',
+    fontSize: '1.6rem',
+    fontWeight: '700',
+    color: '#1A1A1A',
+    margin: '0 0 6px 0',
     letterSpacing: '-0.02em',
   },
   subtitle: {
-    fontSize: '0.95rem',
-    color: '#a1a1aa',
+    fontSize: '0.9rem',
+    color: '#5A5A5A',
     margin: 0,
   },
   grid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-    gap: '16px',
-    marginBottom: '32px',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(270px, 1fr))',
+    gap: '14px',
+    marginBottom: '28px',
   },
   card: {
-    backgroundColor: '#141414',
-    borderRadius: '12px',
+    backgroundColor: '#FFFFFF',
+    borderRadius: '14px',
     padding: '20px',
-    border: '1px solid #27272a',
+    border: '1px solid #E8E4DC',
     display: 'flex',
-    flexDirection: 'column' as const,
+    flexDirection: 'column',
     justifyContent: 'space-between',
-    minHeight: '160px',
+    minHeight: '150px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+    transition: 'box-shadow 0.15s ease, border-color 0.15s ease',
   },
   cardHeader: {
     marginBottom: '16px',
@@ -288,47 +274,48 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: '12px',
+    marginBottom: '10px',
   },
   cardTitle: {
-    fontSize: '1.05rem',
-    fontWeight: '600',
-    color: '#ffffff',
+    fontSize: '0.95rem',
+    fontWeight: '700',
+    color: '#1A1A1A',
     margin: 0,
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
+    letterSpacing: '-0.01em',
   },
   icon: {
-    fontSize: '1.2rem',
+    fontSize: '1.1rem',
   },
   statusBadge: {
     display: 'flex',
     alignItems: 'center',
-    gap: '6px',
-    padding: '4px 10px',
-    borderRadius: '12px',
+    gap: '5px',
+    padding: '3px 10px',
+    borderRadius: '100px',
     fontSize: '0.7rem',
-    fontWeight: '500',
+    fontWeight: '600',
   },
   statusBadgeConnected: {
-    backgroundColor: 'rgba(197, 244, 103, 0.1)',
-    color: '#C5F467',
-    border: '1px solid rgba(197, 244, 103, 0.3)',
+    backgroundColor: 'rgba(34, 197, 94, 0.08)',
+    color: '#166534',
+    border: '1px solid rgba(34, 197, 94, 0.22)',
   },
   statusBadgeDisconnected: {
-    backgroundColor: '#1a1a1a',
-    color: '#71717a',
-    border: '1px solid #27272a',
+    backgroundColor: '#F4F1EC',
+    color: '#9A9A96',
+    border: '1px solid #E8E4DC',
   },
   statusDot: {
-    width: '6px',
-    height: '6px',
+    width: '5px',
+    height: '5px',
     borderRadius: '50%',
   },
   cardDescription: {
-    fontSize: '0.85rem',
-    color: '#a1a1aa',
+    fontSize: '0.825rem',
+    color: '#5A5A5A',
     margin: 0,
     lineHeight: '1.5',
   },
@@ -338,72 +325,74 @@ const styles = {
   },
   connectButton: {
     flex: 1,
-    padding: '10px 18px',
-    backgroundColor: '#C5F467',
+    padding: '9px 18px',
+    backgroundColor: '#1A1A1A',
     border: 'none',
-    borderRadius: '8px',
-    color: '#0a0a0a',
-    fontSize: '0.85rem',
+    borderRadius: '100px',
+    color: '#FFFFFF',
+    fontSize: '0.825rem',
     fontWeight: '600',
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    transition: 'all 0.15s ease',
+    fontFamily: 'inherit',
   },
   disconnectButton: {
     flex: 1,
-    padding: '10px 18px',
+    padding: '9px 18px',
     backgroundColor: 'transparent',
-    border: '1px solid #27272a',
-    borderRadius: '8px',
-    color: '#a1a1aa',
-    fontSize: '0.85rem',
+    border: '1px solid #E8E4DC',
+    borderRadius: '100px',
+    color: '#5A5A5A',
+    fontSize: '0.825rem',
     fontWeight: '500',
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    transition: 'all 0.15s ease',
+    fontFamily: 'inherit',
   },
   buttonDisabled: {
-    opacity: 0.5,
+    opacity: 0.45,
     cursor: 'not-allowed',
   },
   includedBadge: {
     flex: 1,
-    padding: '10px 18px',
-    backgroundColor: 'rgba(197, 244, 103, 0.1)',
-    border: '1px solid rgba(197, 244, 103, 0.3)',
-    borderRadius: '8px',
-    color: '#C5F467',
-    fontSize: '0.85rem',
-    fontWeight: '500',
-    textAlign: 'center' as const,
+    padding: '9px 18px',
+    backgroundColor: 'rgba(193, 122, 95, 0.08)',
+    border: '1px solid rgba(193, 122, 95, 0.25)',
+    borderRadius: '100px',
+    color: '#C17A5F',
+    fontSize: '0.825rem',
+    fontWeight: '600',
+    textAlign: 'center',
   },
   loadingText: {
-    color: '#a1a1aa',
-    fontSize: '0.95rem',
+    color: '#9A9A96',
+    fontSize: '0.9rem',
   },
   constructionNote: {
-    backgroundColor: 'rgba(197, 244, 103, 0.08)',
-    border: '1px solid rgba(197, 244, 103, 0.2)',
-    borderRadius: '8px',
+    backgroundColor: '#F4F1EC',
+    border: '1px solid #E8E4DC',
+    borderRadius: '10px',
     padding: '12px 16px',
-    color: '#a1a1aa',
-    fontSize: '0.85rem',
-    textAlign: 'center' as const,
+    color: '#9A9A96',
+    fontSize: '0.825rem',
+    textAlign: 'center',
   },
   loginPrompt: {
-    backgroundColor: 'rgba(251, 191, 36, 0.1)',
-    border: '1px solid rgba(251, 191, 36, 0.3)',
-    borderRadius: '8px',
+    backgroundColor: 'rgba(193, 122, 95, 0.08)',
+    border: '1px solid rgba(193, 122, 95, 0.25)',
+    borderRadius: '10px',
     padding: '12px 16px',
-    color: '#fbbf24',
-    fontSize: '0.9rem',
-    marginBottom: '24px',
-    textAlign: 'center' as const,
+    color: '#C17A5F',
+    fontSize: '0.875rem',
+    marginBottom: '20px',
+    textAlign: 'center',
   },
   errorBox: {
-    backgroundColor: 'rgba(239, 68, 68, 0.08)',
-    border: '1px solid rgba(239, 68, 68, 0.3)',
-    borderRadius: '8px',
+    backgroundColor: 'rgba(239, 68, 68, 0.06)',
+    border: '1px solid rgba(239, 68, 68, 0.22)',
+    borderRadius: '10px',
     padding: '12px 16px',
-    color: '#ef4444',
+    color: '#991b1b',
     fontSize: '0.85rem',
     marginBottom: '16px',
   },
