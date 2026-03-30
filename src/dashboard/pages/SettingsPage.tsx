@@ -50,7 +50,6 @@ const SettingsPage: React.FC = () => {
     setSaving(true);
     try {
       await invoke('set_excluded_apps', { apps });
-      console.log('✅ Saved excluded apps');
     } catch (error) {
       console.error('Failed to save excluded apps:', error);
     } finally {
@@ -119,7 +118,9 @@ const SettingsPage: React.FC = () => {
             <div>
               <div style={styles.toggleLabel}>Tab Autocomplete</div>
               <div style={styles.toggleDescription}>
-                {tabCompletionEnabled ? 'Active — predictions will appear as you type' : 'Inactive — no predictions will be generated'}
+                {tabCompletionEnabled
+                  ? 'Active — predictions will appear as you type'
+                  : 'Inactive — no predictions will be generated'}
               </div>
             </div>
             <button
@@ -127,7 +128,7 @@ const SettingsPage: React.FC = () => {
               disabled={tabCompletionLoading}
               style={{
                 ...styles.toggleTrack,
-                backgroundColor: tabCompletionEnabled ? '#C5F467' : '#27272a',
+                backgroundColor: tabCompletionEnabled ? '#1A1A1A' : '#D4CFC6',
                 opacity: tabCompletionLoading ? 0.6 : 1,
                 cursor: tabCompletionLoading ? 'not-allowed' : 'pointer',
               }}
@@ -136,7 +137,7 @@ const SettingsPage: React.FC = () => {
               <div
                 style={{
                   ...styles.toggleThumb,
-                  transform: tabCompletionEnabled ? 'translateX(22px)' : 'translateX(2px)',
+                  transform: tabCompletionEnabled ? 'translateX(20px)' : 'translateX(2px)',
                 }}
               />
             </button>
@@ -153,7 +154,7 @@ const SettingsPage: React.FC = () => {
 
         <div style={styles.card}>
           <h3 style={styles.cardTitle}>Excluded Applications</h3>
-          
+
           <div style={styles.inputGroup}>
             <input
               type="text"
@@ -166,7 +167,11 @@ const SettingsPage: React.FC = () => {
             <button
               onClick={handleAddApp}
               disabled={!newApp.trim()}
-              style={styles.addButton}
+              style={{
+                ...styles.addButton,
+                opacity: !newApp.trim() ? 0.45 : 1,
+                cursor: !newApp.trim() ? 'not-allowed' : 'pointer',
+              }}
             >
               Add
             </button>
@@ -180,6 +185,14 @@ const SettingsPage: React.FC = () => {
                   <button
                     onClick={() => handleRemoveApp(app)}
                     style={styles.removeButton}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = '#EDE9E2';
+                      e.currentTarget.style.color = '#1A1A1A';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = 'transparent';
+                      e.currentTarget.style.color = '#9A9A96';
+                    }}
                   >
                     ✕
                   </button>
@@ -193,28 +206,43 @@ const SettingsPage: React.FC = () => {
           )}
 
           {saving && (
-            <div style={styles.savingIndicator}>
-              Saving...
-            </div>
+            <div style={styles.savingIndicator}>Saving...</div>
           )}
         </div>
 
         <div style={styles.quickAddSection}>
           <h3 style={styles.quickAddTitle}>Quick Add Common Apps</h3>
           <div style={styles.quickAddGrid}>
-            {commonApps.map((app) => (
-              <button
-                key={app}
-                onClick={() => handleQuickAdd(app)}
-                disabled={excludedApps.includes(app)}
-                style={{
-                  ...styles.quickAddButton,
-                  ...(excludedApps.includes(app) ? styles.quickAddButtonDisabled : {}),
-                }}
-              >
-                {app}
-              </button>
-            ))}
+            {commonApps.map((app) => {
+              const added = excludedApps.includes(app);
+              return (
+                <button
+                  key={app}
+                  onClick={() => handleQuickAdd(app)}
+                  disabled={added}
+                  style={{
+                    ...styles.quickAddButton,
+                    ...(added ? styles.quickAddButtonDisabled : {}),
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!added) {
+                      e.currentTarget.style.backgroundColor = '#EDE9E2';
+                      e.currentTarget.style.borderColor = '#D4CFC6';
+                      e.currentTarget.style.color = '#1A1A1A';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!added) {
+                      e.currentTarget.style.backgroundColor = '#FAFAF8';
+                      e.currentTarget.style.borderColor = '#E8E4DC';
+                      e.currentTarget.style.color = '#5A5A5A';
+                    }
+                  }}
+                >
+                  {app}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -222,158 +250,174 @@ const SettingsPage: React.FC = () => {
   );
 };
 
-const styles = {
+const styles: { [key: string]: React.CSSProperties } = {
   container: {
     padding: '40px',
-    maxWidth: '900px',
+    maxWidth: '860px',
   },
   header: {
     marginBottom: '32px',
   },
   title: {
-    fontSize: '1.75rem',
-    fontWeight: '600',
-    color: '#ffffff',
-    margin: '0 0 8px 0',
+    fontSize: '1.6rem',
+    fontWeight: '700',
+    color: '#1A1A1A',
+    margin: '0 0 6px 0',
     letterSpacing: '-0.02em',
   },
   subtitle: {
-    fontSize: '0.95rem',
-    color: '#a1a1aa',
+    fontSize: '0.9rem',
+    color: '#5A5A5A',
     margin: 0,
+    lineHeight: '1.5',
   },
   section: {
-    marginBottom: '32px',
+    marginBottom: '36px',
   },
   sectionTitle: {
-    fontSize: '1.15rem',
-    fontWeight: '600',
-    color: '#ffffff',
-    marginBottom: '8px',
+    fontSize: '1rem',
+    fontWeight: '700',
+    color: '#1A1A1A',
+    marginBottom: '6px',
     letterSpacing: '-0.01em',
   },
   sectionDescription: {
-    fontSize: '0.9rem',
-    color: '#a1a1aa',
-    marginBottom: '24px',
+    fontSize: '0.875rem',
+    color: '#5A5A5A',
+    marginBottom: '16px',
     lineHeight: '1.6',
   },
   card: {
-    backgroundColor: '#141414',
-    borderRadius: '12px',
-    padding: '24px',
-    border: '1px solid #27272a',
-    marginBottom: '24px',
+    backgroundColor: '#FFFFFF',
+    borderRadius: '14px',
+    padding: '22px',
+    border: '1px solid #E8E4DC',
+    marginBottom: '16px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
   },
   cardTitle: {
-    fontSize: '1rem',
-    fontWeight: '500',
-    color: '#ffffff',
-    marginBottom: '20px',
+    fontSize: '0.9rem',
+    fontWeight: '600',
+    color: '#1A1A1A',
+    marginBottom: '16px',
+    marginTop: 0,
   },
   inputGroup: {
     display: 'flex',
-    gap: '12px',
-    marginBottom: '24px',
+    gap: '10px',
+    marginBottom: '20px',
   },
   input: {
     flex: 1,
     padding: '10px 14px',
-    backgroundColor: '#111111',
-    border: '1px solid #27272a',
-    borderRadius: '8px',
-    color: '#ffffff',
-    fontSize: '0.9rem',
+    backgroundColor: '#F4F1EC',
+    border: '1px solid #E8E4DC',
+    borderRadius: '100px',
+    color: '#1A1A1A',
+    fontSize: '0.875rem',
     outline: 'none',
+    fontFamily: 'inherit',
+    transition: 'border-color 0.15s ease',
   },
   addButton: {
     padding: '10px 20px',
-    backgroundColor: '#C5F467',
+    backgroundColor: '#1A1A1A',
     border: 'none',
-    borderRadius: '8px',
-    color: '#0a0a0a',
-    fontSize: '0.9rem',
+    borderRadius: '100px',
+    color: '#FFFFFF',
+    fontSize: '0.875rem',
     fontWeight: '600',
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    transition: 'all 0.15s ease',
+    fontFamily: 'inherit',
   },
   appList: {
     display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '8px',
+    flexDirection: 'column',
+    gap: '6px',
   },
   appItem: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '12px 16px',
-    backgroundColor: '#1a1a1a',
-    borderRadius: '8px',
-    border: '1px solid #27272a',
+    padding: '10px 14px',
+    backgroundColor: '#FAFAF8',
+    borderRadius: '10px',
+    border: '1px solid #E8E4DC',
   },
   appName: {
-    color: '#ffffff',
-    fontSize: '0.9rem',
+    color: '#1A1A1A',
+    fontSize: '0.875rem',
+    fontWeight: '500',
   },
   removeButton: {
-    padding: '6px 12px',
+    padding: '4px 10px',
     backgroundColor: 'transparent',
-    border: '1px solid #27272a',
-    borderRadius: '6px',
-    color: '#a1a1aa',
-    fontSize: '0.8rem',
+    border: '1px solid #E8E4DC',
+    borderRadius: '100px',
+    color: '#9A9A96',
+    fontSize: '0.75rem',
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
-    fontWeight: '500',
+    transition: 'all 0.15s ease',
+    fontWeight: '600',
+    fontFamily: 'inherit',
   },
   emptyState: {
-    padding: '32px',
-    textAlign: 'center' as const,
+    padding: '28px',
+    textAlign: 'center',
   },
   emptyText: {
-    color: '#71717a',
+    color: '#9A9A96',
     fontSize: '0.85rem',
+    margin: 0,
   },
   savingIndicator: {
-    marginTop: '16px',
+    marginTop: '12px',
     padding: '8px 16px',
-    backgroundColor: 'rgba(197, 244, 103, 0.1)',
-    borderRadius: '8px',
-    color: '#a1a1aa',
+    backgroundColor: '#F4F1EC',
+    borderRadius: '100px',
+    color: '#9A9A96',
     fontSize: '0.8rem',
-    textAlign: 'center' as const,
+    textAlign: 'center',
+    display: 'inline-block',
   },
   quickAddSection: {
-    marginTop: '28px',
+    marginTop: '24px',
   },
   quickAddTitle: {
-    fontSize: '0.95rem',
-    fontWeight: '500',
-    color: '#ffffff',
-    marginBottom: '16px',
-  },
+    fontSize: '0.875rem',
+    fontWeight: '600',
+    color: '#5A5A5A',
+    marginBottom: '12px',
+    marginTop: 0,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.06em',
+    fontSize_: '0.75rem',
+  } as React.CSSProperties,
   quickAddGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
-    gap: '10px',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))',
+    gap: '8px',
   },
   quickAddButton: {
-    padding: '10px 14px',
-    backgroundColor: '#1a1a1a',
-    border: '1px solid #27272a',
-    borderRadius: '8px',
-    color: '#a1a1aa',
-    fontSize: '0.85rem',
+    padding: '9px 14px',
+    backgroundColor: '#FAFAF8',
+    border: '1px solid #E8E4DC',
+    borderRadius: '100px',
+    color: '#5A5A5A',
+    fontSize: '0.825rem',
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    transition: 'all 0.15s ease',
+    fontFamily: 'inherit',
+    fontWeight: '500',
   },
   quickAddButtonDisabled: {
-    opacity: 0.3,
+    opacity: 0.35,
     cursor: 'not-allowed',
   },
   loadingText: {
-    color: '#a1a1aa',
-    fontSize: '0.95rem',
+    color: '#9A9A96',
+    fontSize: '0.9rem',
   },
   toggleRow: {
     display: 'flex',
@@ -382,34 +426,34 @@ const styles = {
     gap: '16px',
   },
   toggleLabel: {
-    fontSize: '0.95rem',
-    fontWeight: '500' as const,
-    color: '#ffffff',
-    marginBottom: '4px',
+    fontSize: '0.9rem',
+    fontWeight: '600',
+    color: '#1A1A1A',
+    marginBottom: '3px',
   },
   toggleDescription: {
-    fontSize: '0.85rem',
-    color: '#71717a',
+    fontSize: '0.825rem',
+    color: '#9A9A96',
     lineHeight: '1.5',
   },
   toggleTrack: {
     flexShrink: 0,
-    width: '48px',
-    height: '28px',
-    borderRadius: '14px',
+    width: '44px',
+    height: '26px',
+    borderRadius: '13px',
     border: 'none',
     padding: 0,
-    position: 'relative' as const,
+    position: 'relative',
     transition: 'background-color 0.2s ease',
   },
   toggleThumb: {
-    position: 'absolute' as const,
+    position: 'absolute',
     top: '3px',
-    width: '22px',
-    height: '22px',
+    width: '20px',
+    height: '20px',
     borderRadius: '50%',
-    backgroundColor: '#ffffff',
-    boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+    backgroundColor: '#FFFFFF',
+    boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
     transition: 'transform 0.2s ease',
   },
 };

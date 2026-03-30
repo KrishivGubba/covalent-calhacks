@@ -8,7 +8,7 @@ import {
 } from '@tauri-apps/plugin-notification';
 
 interface UpdateButtonProps {
-  checkInterval?: number; // in milliseconds, default 30 minutes
+  checkInterval?: number;
 }
 
 const UpdateButton: React.FC<UpdateButtonProps> = ({
@@ -97,7 +97,6 @@ const UpdateButton: React.FC<UpdateButtonProps> = ({
         }
       });
 
-      // Relaunch the app after installation
       await relaunch();
     } catch (e) {
       console.error('Failed to download/install update:', e);
@@ -106,12 +105,9 @@ const UpdateButton: React.FC<UpdateButtonProps> = ({
     }
   };
 
-  // Check for updates on mount and periodically
   useEffect(() => {
-    // Initial check (silent)
     checkForUpdates(true);
 
-    // Set up periodic checks
     const interval = setInterval(() => {
       checkForUpdates(true);
     }, checkInterval);
@@ -119,7 +115,6 @@ const UpdateButton: React.FC<UpdateButtonProps> = ({
     return () => clearInterval(interval);
   }, [checkInterval]);
 
-  // Don't render if no update available and not checking
   if (!updateAvailable && !isChecking && !error) {
     return null;
   }
@@ -157,15 +152,8 @@ const UpdateButton: React.FC<UpdateButtonProps> = ({
 
       {isDownloading && (
         <div style={{ ...styles.button, ...styles.downloadingButton }}>
-          <div
-            style={{
-              ...styles.progressBar,
-              width: `${downloadProgress}%`
-            }}
-          />
-          <span style={styles.progressText}>
-            {downloadProgress}%
-          </span>
+          <div style={{ ...styles.progressBar, width: `${downloadProgress}%` }} />
+          <span style={styles.progressText}>{downloadProgress}%</span>
         </div>
       )}
     </div>
@@ -183,42 +171,44 @@ const styles: { [key: string]: React.CSSProperties } = {
     display: 'flex',
     alignItems: 'center',
     gap: 6,
-    padding: '8px 14px',
-    backgroundColor: '#8B5CF6', // Purple
-    color: 'white',
+    padding: '8px 16px',
+    backgroundColor: '#1A1A1A',
+    color: '#FFFFFF',
     border: 'none',
-    borderRadius: 8,
-    fontSize: 13,
+    borderRadius: 100,
+    fontSize: 12,
     fontWeight: 600,
     fontFamily: 'DM Sans, -apple-system, BlinkMacSystemFont, sans-serif',
     cursor: 'pointer',
-    boxShadow: '0 2px 8px rgba(139, 92, 246, 0.4)',
+    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.12)',
     transition: 'all 0.2s ease',
     position: 'relative',
     overflow: 'hidden',
   },
   errorButton: {
-    backgroundColor: '#EF4444',
-    boxShadow: '0 2px 8px rgba(239, 68, 68, 0.4)',
+    backgroundColor: '#ef4444',
+    boxShadow: '0 4px 12px rgba(239, 68, 68, 0.25)',
   },
   checkingButton: {
-    backgroundColor: '#6B7280',
+    backgroundColor: '#9A9A96',
     cursor: 'default',
-    boxShadow: '0 2px 8px rgba(107, 114, 128, 0.4)',
+    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)',
   },
   downloadingButton: {
-    backgroundColor: '#1F2937',
+    backgroundColor: '#F4F1EC',
+    border: '1px solid #E8E4DC',
+    color: '#1A1A1A',
     cursor: 'default',
     minWidth: 100,
-    boxShadow: '0 2px 8px rgba(31, 41, 55, 0.4)',
+    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.06)',
   },
   icon: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 'bold',
   },
   spinner: {
-    width: 14,
-    height: 14,
+    width: 13,
+    height: 13,
     border: '2px solid rgba(255,255,255,0.3)',
     borderTopColor: 'white',
     borderRadius: '50%',
@@ -229,24 +219,20 @@ const styles: { [key: string]: React.CSSProperties } = {
     left: 0,
     top: 0,
     bottom: 0,
-    backgroundColor: '#8B5CF6',
+    backgroundColor: 'rgba(193, 122, 95, 0.25)',
     transition: 'width 0.3s ease',
     zIndex: 0,
   },
   progressText: {
     position: 'relative',
     zIndex: 1,
+    color: '#1A1A1A',
   },
 };
 
-// Add keyframes for spinner animation
+// Spinner keyframes
 const styleSheet = document.createElement('style');
-styleSheet.textContent = `
-  @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-  }
-`;
+styleSheet.textContent = `@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`;
 document.head.appendChild(styleSheet);
 
 export default UpdateButton;
