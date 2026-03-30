@@ -1401,8 +1401,24 @@ pub fn run() {
                 &[&open_dashboard, &quit],
             )?;
             
+            // Create Edit submenu with standard clipboard operations
+            let edit_submenu = Submenu::with_items(
+                app,
+                "Edit",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(app, Some("Undo"))?,
+                    &PredefinedMenuItem::redo(app, Some("Redo"))?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::cut(app, Some("Cut"))?,
+                    &PredefinedMenuItem::copy(app, Some("Copy"))?,
+                    &PredefinedMenuItem::paste(app, Some("Paste"))?,
+                    &PredefinedMenuItem::select_all(app, Some("Select All"))?,
+                ],
+            )?;
+            
             // Create menu bar
-            let menu = Menu::with_items(app, &[&profile_submenu])?;
+            let menu = Menu::with_items(app, &[&profile_submenu, &edit_submenu])?;
             
             // Set menu
             app.set_menu(menu)?;
