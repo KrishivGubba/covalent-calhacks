@@ -642,6 +642,11 @@ fn set_onboarding_completed(
     );
     state.set_onboarding_complete(completed);
     if completed {
+        state.enable_if_not_user_paused();
+    } else {
+        state.disable();
+    }
+    if completed {
         if let Some(window) = app.get_webview_window("onboarding") {
             let _ = window.hide();
         }
@@ -660,16 +665,24 @@ fn set_onboarding_completed(
             let _ = window.set_focus();
         }
     }
-    serde_json::json!({
+    let payload = serde_json::json!({
         "completed": completed,
         "version": 1,
         "completed_at": completed_at
-    })
+    });
+    let _ = app.emit("onboarding-changed", payload.clone());
+    payload
 }
 
 #[tauri::command]
-fn notify_onboarding_change(completed: bool, state: tauri::State<ContextState>) {
+fn notify_onboarding_change(completed: bool, app: tauri::AppHandle, state: tauri::State<ContextState>) {
     state.set_onboarding_complete(completed);
+    if completed {
+        state.enable_if_not_user_paused();
+    } else {
+        state.disable();
+    }
+    let _ = app.emit("onboarding-changed", serde_json::json!({ "completed": completed }));
 }
 
 #[cfg(target_os = "macos")]
@@ -1690,7 +1703,7 @@ pub fn run() {
             app.on_menu_event(move |app, event| {
                 match event.id().as_ref() {
                     "open_dashboard" => {
-                        let settings = load_settings(app.handle());
+                        let settings = load_settings(app);
                         let (completed, _, _) = read_onboarding_state(&settings);
                         if !completed {
                             println!("🧭 Onboarding incomplete — opening onboarding window");

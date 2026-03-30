@@ -12,6 +12,13 @@ export interface IntegrationStatus {
 }
 
 type OAuthProvider = 'google' | 'github' | 'notion';
+export type RequiredIntegrationId = 'filesystem' | 'google' | 'github' | 'notion';
+export const REQUIRED_INTEGRATION_IDS: RequiredIntegrationId[] = [
+  'filesystem',
+  'google',
+  'github',
+  'notion',
+];
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const GITHUB_CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID || '';
@@ -124,7 +131,7 @@ async function pollOAuth(provider: OAuthProvider, state: string): Promise<{ ok: 
     const response = await fetch(`${BACKEND_URL}/integrations/${provider}/check?state=${encodeURIComponent(state)}`);
     const result = await response.json();
 
-    if (result.status === 'ready') {
+    if (result.status === 'ready' || result.status === 'consumed') {
       return { ok: true };
     }
     if (result.status === 'error') {
@@ -189,4 +196,20 @@ export async function disconnectIntegration(provider: string): Promise<boolean> 
   } catch {
     return false;
   }
+}
+
+export function getRequiredIntegrations(
+  integrations: IntegrationStatus[],
+): Record<RequiredIntegrationId, IntegrationStatus | null> {
+  return {
+    filesystem: integrations.find((i) => i.id === 'filesystem') ?? null,
+    google: integrations.find((i) => i.id === 'google') ?? null,
+    github: integrations.find((i) => i.id === 'github') ?? null,
+    notion: integrations.find((i) => i.id === 'notion') ?? null,
+  };
+}
+
+export function areRequiredIntegrationsConnected(integrations: IntegrationStatus[]): boolean {
+  const required = getRequiredIntegrations(integrations);
+  return REQUIRED_INTEGRATION_IDS.every((id) => required[id]?.connected === true);
 }

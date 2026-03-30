@@ -9,9 +9,7 @@ import MCPPage from './pages/MCPPage';
 import MemoryPage from './pages/MemoryPage';
 import HistoryPage from './pages/HistoryPage';
 import type { ActionResultPayload } from '../utils/actionNotifications';
-
-// Must match the key used in AuthPage.tsx
-const USER_ID_KEY = 'covalent_user_id';
+import { loadAuthStatus } from '../shared/authService';
 
 const Dashboard: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<PageType>('settings');
@@ -34,12 +32,30 @@ const Dashboard: React.FC = () => {
 
   // Check auth status on mount and notify backend
   useEffect(() => {
-    const userId = localStorage.getItem(USER_ID_KEY);
-    const authed = !!userId;
-    setIsAuthenticated(authed);
-    invoke('notify_auth_change', { authenticated: authed }).catch((err) =>
-      console.error('Failed to notify initial auth state:', err)
-    );
+    let cancelled = false;
+
+    const syncAuth = async () => {
+      try {
+        const status = await loadAuthStatus();
+        if (cancelled) return;
+        setIsAuthenticated(status.authenticated);
+        invoke('notify_auth_change', { authenticated: status.authenticated }).catch((err) =>
+          console.error('Failed to notify initial auth state:', err)
+        );
+      } catch {
+        if (cancelled) return;
+        setIsAuthenticated(false);
+        invoke('notify_auth_change', { authenticated: false }).catch((err) =>
+          console.error('Failed to notify initial auth state:', err)
+        );
+      }
+    };
+
+    void syncAuth();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Listen for action completion events and auto-navigate to history

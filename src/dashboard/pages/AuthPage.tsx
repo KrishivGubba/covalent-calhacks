@@ -1,80 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import React, { useEffect, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
-
-interface AuthStatus {
-  authenticated: boolean;
-  user: string | null;
-  message: string;
-}
-
-// Auth0 PKCE config (for opening login in browser)
-const AUTH0_DOMAIN = 'dev-sb3sx3jnljwod4ab.us.auth0.com';
-const AUTH0_AUDIENCE = 'https://dev-sb3sx3jnljwod4ab.us.auth0.com/api/v2/';
-const FLASK_PORT = import.meta.env.VITE_FLASK_PORT ?? '15001';
-const REDIRECT_URI = `http://localhost:${FLASK_PORT}/callback`;
-const SCOPE = 'openid profile email offline_access';
-const AUTH0_CLIENT_ID = import.meta.env.VITE_AUTH0_CLIENT_ID ?? '';
-
-const AUTH_CHECK_URL = `http://localhost:${FLASK_PORT}/auth/check`;
-const SERVER_BASE = `http://localhost:${FLASK_PORT}`;
-const POLL_INTERVAL_MS = 1500;
-const POLL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-
-// localStorage key for persistent user_id
-const USER_ID_KEY = 'covalent_user_id';
-
-function randomString(length: number): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
-  const array = new Uint8Array(length);
-  crypto.getRandomValues(array);
-  return Array.from(array, (b) => chars[b % chars.length]).join('');
-}
-
-function base64UrlEncode(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-async function sha256(plain: string): Promise<ArrayBuffer> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(plain);
-  return await crypto.subtle.digest('SHA-256', data);
-}
-
-async function buildAuth0AuthorizeUrl(): Promise<string> {
-  const state = randomString(32);
-  const codeVerifier = randomString(64);
-  const codeChallenge = base64UrlEncode(await sha256(codeVerifier));
-
-  sessionStorage.setItem('auth0_state', state);
-  sessionStorage.setItem('auth0_code_verifier', codeVerifier);
-
-  const params = new URLSearchParams({
-    response_type: 'code',
-    client_id: AUTH0_CLIENT_ID,
-    redirect_uri: REDIRECT_URI,
-    scope: SCOPE,
-    audience: AUTH0_AUDIENCE,
-    state,
-    code_challenge: codeChallenge,
-    code_challenge_method: 'S256',
-  });
-
-  return `https://${AUTH0_DOMAIN}/authorize?${params.toString()}`;
-}
-
-type AuthCheckResponse = {
-  status: 'pending' | 'ready' | 'error';
-  access_token?: string;
-  id_token?: string;
-  refresh_token?: string;
-  user_info?: { email?: string; name?: string; sub?: string; [key: string]: unknown };
-  error?: string;
-  error_description?: string;
-};
+import {
+  loadAuthStatus,
+  logoutAuth,
+  startAuthLogin,
+  type AuthStatus,
+} from '../../shared/authService';
 
 interface AuthPageProps {
   onAuthChange: (authenticated: boolean) => void;
@@ -88,111 +19,22 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
   const [appVersion, setAppVersion] = useState<string>('');
 
   useEffect(() => {
-    console.log('[AuthPage] FLASK_PORT:', FLASK_PORT);
-    console.log('[AuthPage] SERVER_BASE:', SERVER_BASE);
-    console.log('[AuthPage] AUTH_CHECK_URL:', AUTH_CHECK_URL);
-    loadAuthStatus();
-    
+    void hydrate();
     getVersion().then(setAppVersion).catch(() => setAppVersion(''));
   }, []);
 
-  const loadAuthStatus = async () => {
+  const hydrate = async () => {
+    setLoading(true);
     try {
-      // First check localStorage for persistent user_id
-      const userId = localStorage.getItem(USER_ID_KEY);
-      
-      if (userId) {
-        console.log('[AuthPage] Found saved user_id, checking backend session...');
-        
-        // Check backend for persistent session
-        const sessionRes = await fetch(`${SERVER_BASE}/auth/session?user_id=${encodeURIComponent(userId)}`);
-        const sessionData = await sessionRes.json();
-        
-        if (sessionData.session) {
-          const session = sessionData.session;
-          
-          // Check if token is expired
-          if (sessionData.expired) {
-            console.log('[AuthPage] Session expired, attempting refresh...');
-            
-            // Try to refresh the token
-            const refreshRes = await fetch(`${SERVER_BASE}/auth/session/refresh`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ user_id: userId }),
-            });
-            
-            if (refreshRes.ok) {
-              const refreshData = await refreshRes.json();
-              console.log('[AuthPage] Token refreshed successfully');
-              
-              // Update sessionStorage with new token
-              sessionStorage.setItem('auth0_access_token', refreshData.access_token);
-              if (session.user_info) {
-                sessionStorage.setItem('auth0_user', JSON.stringify(session.user_info));
-              }
-              
-              const user = session.user_info;
-              setAuthStatus({
-                authenticated: true,
-                user: user?.email || user?.name || 'Authenticated',
-                message: 'Session restored',
-              });
-              onAuthChange(true);
-              return;
-            } else {
-              // Refresh failed - clear everything and require re-login
-              console.log('[AuthPage] Token refresh failed, clearing session');
-              localStorage.removeItem(USER_ID_KEY);
-              sessionStorage.clear();
-              setAuthStatus({ authenticated: false, user: null, message: 'Session expired. Please log in again.' });
-              onAuthChange(false);
-              return;
-            }
-          }
-          
-          // Session is valid and not expired
-          console.log('[AuthPage] Valid session found');
-          sessionStorage.setItem('auth0_access_token', session.access_token);
-          if (session.id_token) sessionStorage.setItem('auth0_id_token', session.id_token);
-          if (session.refresh_token) sessionStorage.setItem('auth0_refresh_token', session.refresh_token);
-          if (session.user_info) sessionStorage.setItem('auth0_user', JSON.stringify(session.user_info));
-          
-          const user = session.user_info;
-          setAuthStatus({
-            authenticated: true,
-            user: user?.email || user?.name || 'Authenticated',
-            message: 'Connected via Auth0',
-          });
-          onAuthChange(true);
-          return;
-        } else {
-          // No session found in backend - clear stale localStorage
-          console.log('[AuthPage] No backend session found, clearing localStorage');
-          localStorage.removeItem(USER_ID_KEY);
-          onAuthChange(false);
-        }
-      }
-      
-      // Fallback: check sessionStorage (for current session tokens)
-      const token = sessionStorage.getItem('auth0_access_token');
-      const userJson = sessionStorage.getItem('auth0_user');
-      if (token) {
-        const user = userJson ? JSON.parse(userJson) : null;
-        setAuthStatus({
-          authenticated: true,
-          user: user?.email || user?.name || 'Authenticated',
-          message: 'Connected via Auth0',
-        });
-        onAuthChange(true);
-      } else {
-        // No auth found
-        setAuthStatus({ authenticated: false, user: null, message: 'Not connected' });
-        onAuthChange(false);
-      }
-    } catch (error) {
-      console.error('Failed to load auth status:', error);
-      setAuthStatus({ authenticated: false, user: null, message: 'Failed to load auth status' });
+      const status = await loadAuthStatus();
+      setAuthStatus(status);
+      onAuthChange(status.authenticated);
+    } catch {
+      setAuthStatus({
+        authenticated: false,
+        user: null,
+        message: 'Failed to load auth status',
+      });
       onAuthChange(false);
     } finally {
       setLoading(false);
@@ -200,137 +42,31 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
   };
 
   const handleLogin = async () => {
-    console.log('brothher in christ');
-    console.log('[AuthPage] AUTH0_CLIENT_ID:', AUTH0_CLIENT_ID ? `${AUTH0_CLIENT_ID.substring(0, 8)}...` : 'MISSING');
-    console.log('[AuthPage] SERVER_BASE:', SERVER_BASE);
-    console.log('[AuthPage] Debug:');
-    console.log('  VITE_FLASK_PORT:', import.meta.env.VITE_FLASK_PORT);
-    console.log('  AUTH0_CLIENT_ID:', AUTH0_CLIENT_ID);
-    console.log('  SERVER_BASE:', SERVER_BASE);
-    console.log('  AUTH_CHECK_URL:', AUTH_CHECK_URL);
-    console.log('  POLL_TIMEOUT_MS:', POLL_TIMEOUT_MS);
-    if (!AUTH0_CLIENT_ID) {
-      alert('Auth0 is not configured. Set VITE_AUTH0_CLIENT_ID in .env.');
+    setAuthError(null);
+    setPolling(true);
+
+    const result = await startAuthLogin();
+    setPolling(false);
+
+    if (!result.ok) {
+      setAuthError(result.error);
       return;
     }
-    setAuthError(null);
-    try {
-      console.log('[AuthPage] Building Auth0 URL...');
-      const url = await buildAuth0AuthorizeUrl();
-      console.log('[AuthPage] Auth0 URL built:', url?.substring(0, 80) + '...');
-      const state = sessionStorage.getItem('auth0_state');
-      const codeVerifier = sessionStorage.getItem('auth0_code_verifier');
-      console.log('[AuthPage] state:', state ? 'present' : 'MISSING');
-      console.log('[AuthPage] codeVerifier:', codeVerifier ? 'present' : 'MISSING');
-      if (!state || !codeVerifier) {
-        setAuthError('Failed to generate auth session. Please try again.');
-        return;
-      }
 
-      console.log('[AuthPage] Sending /auth/start to', `${SERVER_BASE}/auth/start`);
-      const startRes = await fetch(`${SERVER_BASE}/auth/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state, code_verifier: codeVerifier }),
-      });
-      console.log('[AuthPage] /auth/start response status:', startRes.status);
-      if (!startRes.ok) {
-        const errData = await startRes.json().catch(() => ({}));
-        console.error('[AuthPage] /auth/start error:', errData);
-        setAuthError(errData.error || 'Failed to start auth session');
-        return;
-      }
-
-      console.log('[AuthPage] Opening Auth0 URL in browser...');
-      await openUrl(url);
-      console.log('[AuthPage] Auth0 URL opened, starting poll...');
-      setPolling(true);
-
-      const started = Date.now();
-      const poll = async (): Promise<void> => {
-        if (Date.now() - started > POLL_TIMEOUT_MS) {
-          setPolling(false);
-          setAuthError('Login timed out. Please try again.');
-          return;
-        }
-        try {
-          const r = await fetch(`${AUTH_CHECK_URL}?state=${encodeURIComponent(state)}`);
-          const data: AuthCheckResponse = await r.json();
-
-          if (data.status === 'ready' && data.access_token) {
-            setPolling(false);
-            // Store tokens received from backend
-            sessionStorage.setItem('auth0_access_token', data.access_token);
-            if (data.id_token) sessionStorage.setItem('auth0_id_token', data.id_token);
-            if (data.refresh_token) sessionStorage.setItem('auth0_refresh_token', data.refresh_token);
-            if (data.user_info) sessionStorage.setItem('auth0_user', JSON.stringify(data.user_info));
-            sessionStorage.removeItem('auth0_state');
-            sessionStorage.removeItem('auth0_code_verifier');
-
-            // Save user_id to localStorage for persistent sessions
-            const user = data.user_info;
-            if (user?.sub) {
-              localStorage.setItem(USER_ID_KEY, user.sub);
-              console.log('[AuthPage] Saved user_id to localStorage:', user.sub);
-            }
-
-            setAuthStatus({
-              authenticated: true,
-              user: user?.email || user?.name || user?.sub || 'Authenticated',
-              message: 'Successfully authenticated',
-            });
-            onAuthChange(true);
-            return;
-          }
-          if (data.status === 'error') {
-            setPolling(false);
-            setAuthError(data.error_description || data.error || 'Login failed');
-            sessionStorage.removeItem('auth0_state');
-            sessionStorage.removeItem('auth0_code_verifier');
-            return;
-          }
-        } catch (e) {
-          console.error('Auth poll error:', e);
-        }
-        setTimeout(poll, POLL_INTERVAL_MS);
-      };
-      setTimeout(poll, POLL_INTERVAL_MS);
-    } catch (error) {
-      console.error('[AuthPage] handleLogin error:', error);
-      alert(`Could not open login page: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    setAuthStatus(result.status);
+    onAuthChange(true);
   };
 
   const handleLogout = async () => {
-    // Call backend to delete the persistent session
-    const userId = localStorage.getItem(USER_ID_KEY);
-    if (userId) {
-      try {
-        await fetch(`${SERVER_BASE}/auth/logout`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: userId }),
-        });
-        console.log('[AuthPage] Backend session deleted');
-      } catch (error) {
-        console.error('[AuthPage] Failed to delete backend session:', error);
-      }
-    }
-
-    // Clear localStorage (persistent user_id)
-    localStorage.removeItem(USER_ID_KEY);
-
-    // Clear sessionStorage (current session tokens)
-    sessionStorage.removeItem('auth0_access_token');
-    sessionStorage.removeItem('auth0_id_token');
-    sessionStorage.removeItem('auth0_refresh_token');
-    sessionStorage.removeItem('auth0_user');
-    sessionStorage.removeItem('auth0_state');
-    sessionStorage.removeItem('auth0_code_verifier');
-
-    setAuthStatus({ authenticated: false, user: null, message: 'Logged out' });
-    onAuthChange(false);
+    await logoutAuth();
+    const status: AuthStatus = {
+      authenticated: false,
+      user: null,
+      message: 'Logged out',
+    };
+    setAuthStatus(status);
     setAuthError(null);
+    onAuthChange(false);
   };
 
   if (loading) {
@@ -351,10 +87,12 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
       <div style={styles.card}>
         <div style={styles.statusSection}>
           <div style={styles.statusHeader}>
-            <div style={{
-              ...styles.statusDot,
-              backgroundColor: authStatus?.authenticated ? '#10B981' : '#6B7280'
-            }}></div>
+            <div
+              style={{
+                ...styles.statusDot,
+                backgroundColor: authStatus?.authenticated ? '#10B981' : '#6B7280',
+              }}
+            />
             <span style={styles.statusText}>
               {authStatus?.authenticated ? 'Connected' : 'Not Connected'}
             </span>
@@ -367,12 +105,12 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
             </div>
           )}
 
-          {authError && (
-            <div style={styles.errorBox}>{authError}</div>
-          )}
+          {authError && <div style={styles.errorBox}>{authError}</div>}
 
           {polling && (
-            <div style={styles.messageBox}>Waiting for you to sign in… You can close this after logging in in the browser.</div>
+            <div style={styles.messageBox}>
+              Waiting for you to sign in. You can close this after logging in from the browser.
+            </div>
           )}
 
           {authStatus?.message && !authError && !polling && (
@@ -383,7 +121,7 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
         <div style={styles.actions}>
           {!authStatus?.authenticated ? (
             <button style={styles.primaryButton} onClick={handleLogin} disabled={polling}>
-              {polling ? 'Signing in…' : 'Connect Account'}
+              {polling ? 'Signing in...' : 'Connect Account'}
             </button>
           ) : (
             <button style={styles.secondaryButton} onClick={handleLogout}>
@@ -393,9 +131,7 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
         </div>
       </div>
 
-      {appVersion && (
-        <div style={styles.versionText}>v{appVersion}</div>
-      )}
+      {appVersion && <div style={styles.versionText}>v{appVersion}</div>}
     </div>
   );
 };
