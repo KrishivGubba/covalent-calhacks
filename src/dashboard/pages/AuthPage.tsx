@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { getVersion } from '@tauri-apps/api/app';
 
 interface AuthStatus {
   authenticated: boolean;
@@ -84,12 +85,15 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
   const [loading, setLoading] = useState(true);
   const [polling, setPolling] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string>('');
 
   useEffect(() => {
     console.log('[AuthPage] FLASK_PORT:', FLASK_PORT);
     console.log('[AuthPage] SERVER_BASE:', SERVER_BASE);
     console.log('[AuthPage] AUTH_CHECK_URL:', AUTH_CHECK_URL);
     loadAuthStatus();
+    
+    getVersion().then(setAppVersion).catch(() => setAppVersion(''));
   }, []);
 
   const loadAuthStatus = async () => {
@@ -388,6 +392,10 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
           )}
         </div>
       </div>
+
+      {appVersion && (
+        <div style={styles.versionText}>v{appVersion}</div>
+      )}
     </div>
   );
 };
@@ -498,6 +506,13 @@ const styles = {
   loadingText: {
     color: '#a1a1aa',
     fontSize: '0.95rem',
+  },
+  versionText: {
+    position: 'fixed' as const,
+    bottom: '16px',
+    right: '24px',
+    color: '#52525b',
+    fontSize: '0.75rem',
   },
 };
 
