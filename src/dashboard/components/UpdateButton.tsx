@@ -165,8 +165,9 @@ const styles: { [key: string]: React.CSSProperties } = {
     position: 'fixed',
     top: 16,
     right: 16,
-    zIndex: 1000,
-  },
+    zIndex: 9999,
+    WebkitAppRegion: 'no-drag',
+  } as React.CSSProperties,
   button: {
     display: 'flex',
     alignItems: 'center',
