@@ -90,7 +90,7 @@
         "label": "onboarding",
         "title": "Welcome to Covalent",
         "url": "onboarding.html",
-        "width": 1140,
+        "width": 1170,
         "height": 760,
         "decorations": true,
         "transparent": false,

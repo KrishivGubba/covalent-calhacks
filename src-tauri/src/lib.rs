@@ -1874,6 +1874,23 @@ pub fn run() {
                     }
                 }
             }
+            if window.label() == "onboarding" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    if app_quitting_for_window.load(Ordering::SeqCst) {
+                        println!("🧭 App quitting — allowing onboarding to close");
+                    } else {
+                        let settings = load_settings(&window.app_handle());
+                        let (completed, _, _) = read_onboarding_state(&settings);
+                        if completed {
+                            println!("🧭 Onboarding already complete — allowing close");
+                        } else {
+                            println!("🧭 Hiding onboarding window instead of closing");
+                            let _ = window.hide();
+                            api.prevent_close();
+                        }
+                    }
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             greet, 
@@ -1935,6 +1952,19 @@ pub fn run() {
                 println!("🧹 Running final pkill cleanup...");
                 let _ = Command::new("pkill").args(["-f", "flask-server"]).output();
                 println!("🧹 Cleanup complete");
+            }
+            tauri::RunEvent::Reopen { .. } => {
+                let settings = load_settings(&app_handle);
+                let (completed, _, _) = read_onboarding_state(&settings);
+                if completed {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                } else if let Some(window) = app_handle.get_webview_window("onboarding") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
             }
             _ => {}
         }
