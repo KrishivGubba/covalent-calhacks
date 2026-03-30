@@ -1000,37 +1000,41 @@ const OnboardingApp: React.FC = () => {
         </section>
 
         <aside className="onb-hero">
-          <div className="onb-hero-gradient" />
           <div className="onb-hero-content">
+            <span className="onb-hero-eyebrow">Setup progress</span>
             <h1>
-              Fast setup,
-              <br />
+              Fast setup,<br />
               full context.
             </h1>
             <p>
-              We are streamlining authentication, permissions, integrations, and profile capture so
-              Covalent starts strong from your first session.
+              Covalent starts strong once authentication, permissions, integrations, and your
+              work profile are all in place.
             </p>
 
-            <div className="onb-floating-cards">
-              <div className="onb-float-card">
-                <strong>Auth</strong>
-                <span>{signInComplete ? 'Connected' : 'Pending'}</span>
-              </div>
-              <div className="onb-float-card">
-                <strong>Permissions</strong>
-                <span>{permissionsComplete ? 'Ready' : '3 required'}</span>
-              </div>
-              <div className="onb-float-card">
-                <strong>Integrations</strong>
-                <span>
-                  {REQUIRED_INTEGRATION_IDS.filter((id) => requiredIntegrations[id]?.connected).length}
-                  /4 connected
+            <div className="onb-setup-summary">
+              <div className="onb-summary-item">
+                <strong>Account</strong>
+                <span className={`onb-summary-item-status ${signInComplete ? 'ok' : 'pending'}`}>
+                  {signInComplete ? 'Connected' : 'Pending'}
                 </span>
               </div>
-              <div className="onb-float-card">
-                <strong>Profile</strong>
-                <span>{profileComplete ? 'Saved' : 'Pending'}</span>
+              <div className="onb-summary-item">
+                <strong>Permissions</strong>
+                <span className={`onb-summary-item-status ${permissionsComplete ? 'ok' : 'pending'}`}>
+                  {permissionsComplete ? 'All granted' : '3 required'}
+                </span>
+              </div>
+              <div className="onb-summary-item">
+                <strong>Integrations</strong>
+                <span className={`onb-summary-item-status ${integrationsComplete ? 'ok' : 'pending'}`}>
+                  {REQUIRED_INTEGRATION_IDS.filter((id) => requiredIntegrations[id]?.connected).length}/4 connected
+                </span>
+              </div>
+              <div className="onb-summary-item">
+                <strong>Work profile</strong>
+                <span className={`onb-summary-item-status ${profileComplete ? 'ok' : 'pending'}`}>
+                  {profileComplete ? 'Saved' : 'Pending'}
+                </span>
               </div>
             </div>
           </div>
