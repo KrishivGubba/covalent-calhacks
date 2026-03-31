@@ -2876,6 +2876,38 @@ def tab_context():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/tab_feedback", methods=["POST"])
+def tab_feedback():
+    """
+    Record decline feedback for tab-completion learning.
+    This endpoint is intentionally best-effort for frontend stability.
+    """
+    try:
+        body = request.get_json() or {}
+        app_name = body.get("app_name", "Unknown")
+        activity_id = body.get("activity_id", "")
+        signal = body.get("signal", "negative")
+
+        feedback_payload = {
+            "declined_prediction": body.get("declined_prediction", ""),
+            "typed_text": body.get("typed_text", ""),
+            "chars_after": body.get("chars_after", ""),
+            "time_to_decline_ms": body.get("time_to_decline_ms", 0),
+            "signal": signal,
+        }
+        summary = f"Tab completion feedback for {app_name} | Signal: {signal}"
+
+        try:
+            tree.learn(summary, json.dumps(feedback_payload), key=f"tab_feedback_{activity_id}")
+        except Exception as learn_err:
+            log.warning(f"Failed to persist tab feedback: {learn_err}")
+
+        return jsonify({"message": "Feedback acknowledged", "acknowledged": True}), 200
+    except Exception as e:
+        log.error(f"Error in /tab_feedback endpoint: {e}")
+        return jsonify({"message": "Feedback received with warnings", "acknowledged": False}), 200
+
+
 def generate_tab_prediction(text_buffer, context_data):
     """
     Generate tab completion prediction based on text buffer and graph context.

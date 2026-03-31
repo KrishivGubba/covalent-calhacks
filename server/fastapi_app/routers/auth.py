@@ -5,7 +5,7 @@ import os
 import sys
 import json
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, Request, Query
 from fastapi.responses import JSONResponse
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -68,7 +68,10 @@ async def auth_start(
     Stores the code_verifier so the backend can do the token exchange later.
     """
     if not body.state or not body.code_verifier:
-        raise HTTPException(status_code=400, detail="state and code_verifier are required")
+        return JSONResponse(
+            status_code=400,
+            content={"error": "state and code_verifier are required"},
+        )
     
     auth_dao.save_code_verifier(body.state, body.code_verifier)
     log.info(f"🔐 Auth start: stored code_verifier for state={body.state[:8]}...")
@@ -126,7 +129,7 @@ async def refresh_session(
     body = await request.json()
     user_id = body.get("user_id")
     if not user_id:
-        raise HTTPException(status_code=400, detail="user_id is required")
+        return JSONResponse(status_code=400, content={"error": "user_id is required"})
     
     session = auth_dao.get_session(user_id)
     if not session:
@@ -207,7 +210,7 @@ async def logout(
 
 @router.get("/check")
 async def auth_check(
-    state: str = Query(...),
+    state: Optional[str] = Query(None),
     auth_dao=Depends(auth_dao_dependency),
 ):
     """
@@ -215,7 +218,15 @@ async def auth_check(
     Returns: { "status": "pending" | "ready" | "error", tokens/user if ready, error info if error }.
     When status is "ready", tokens are returned once and then removed.
     """
+    if not state:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "error": "missing state"},
+        )
+
     result = auth_dao.get_and_consume_pending_auth(state)
+    if not result:
+        return {"status": "pending"}
     return result
 
 

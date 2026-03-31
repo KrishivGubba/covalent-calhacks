@@ -6,6 +6,7 @@ Database is encrypted using SQLCipher. Encryption key is stored in macOS Keychai
 '''
 import os
 import sys
+import threading
 from pathlib import Path
 
 _project_root = Path(__file__).resolve().parent.parent
@@ -57,7 +58,8 @@ class GraphDAO:
         # Use DELETE mode (default) to avoid creating -shm and -wal files
         # This prevents unencrypted temporary files from being created
         self.conn.execute('PRAGMA journal_mode=DELETE')
-        self.cursor = self.conn.cursor()
+        # Serialize DB access across threads using this shared connection.
+        self._lock = threading.RLock()
 
     def get_all_nodes(self):
         '''Retrieve all nodes from the database with their associated actions and embeddings.'''
@@ -84,9 +86,26 @@ class GraphDAO:
         '''
         if params is None:
             params = ()
-        self.cursor.execute(query, params)
-        self.conn.commit()
-        return self.cursor.fetchall()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(query, params)
+            self.conn.commit()
+            return cursor.fetchall()
+
+    def execute_write(self, query, params=None):
+        '''
+        Execute a write query and return metadata.
+
+        Returns:
+            tuple: (lastrowid, rowcount)
+        '''
+        if params is None:
+            params = ()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(query, params)
+            self.conn.commit()
+            return cursor.lastrowid, cursor.rowcount
 
     def add_node(self, metadata, data):
         '''Insert a node into the database.'''
@@ -336,9 +355,7 @@ class GraphDAO:
             AND last_selected IS NOT NULL
             AND last_selected < ?
         """
-        self.cursor.execute(query, (node_uuid, threshold_date))
-        deleted_count = self.cursor.rowcount
-        self.conn.commit()
+        _, deleted_count = self.execute_write(query, (node_uuid, threshold_date))
         return deleted_count
 
     def get_data_for_node_by_category(self, node_uuid):
@@ -425,9 +442,7 @@ class GraphDAO:
             DELETE FROM data_table
             WHERE Node_UUID = ? AND category = ?
         """
-        self.cursor.execute(query, (node_uuid, category))
-        deleted_count = self.cursor.rowcount
-        self.conn.commit()
+        _, deleted_count = self.execute_write(query, (node_uuid, category))
         return deleted_count
 
     def increment_node_counter(self, node_uuid):
@@ -940,11 +955,11 @@ class GraphDAO:
             (action_uuid, action_type, action_data, node_uuid, status, result, error_message, duration_ms)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
-        self.execute_query(
+        lastrowid, _ = self.execute_write(
             query,
             (action_uuid, action_type, action_data, node_uuid, status, result, error_message, duration_ms)
         )
-        return self.cursor.lastrowid
+        return lastrowid
 
     def get_action_history(self, limit=50, offset=0, status=None, action_type=None):
         """
@@ -1003,7 +1018,8 @@ class GraphDAO:
 
     def close(self):
         '''Close the database connection.'''
-        self.conn.close()
+        with self._lock:
+            self.conn.close()
 
 
 class TestGraphDAO:

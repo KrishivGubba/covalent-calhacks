@@ -4,7 +4,7 @@ Integration management endpoints (Google, GitHub, Notion, Filesystem).
 import os
 import json
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -121,10 +121,13 @@ async def filesystem_connect(
     Connect filesystem integration by setting the root path.
     """
     if not body.root_path:
-        raise HTTPException(status_code=400, detail="root_path is required")
+        return JSONResponse(status_code=400, content={"ok": False, "error": "root_path is required"})
     
     if not os.path.isdir(body.root_path):
-        raise HTTPException(status_code=400, detail=f"Path does not exist or is not a directory: {body.root_path}")
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "Path does not exist or is not a directory"},
+        )
     
     integration_dao.save_token(
         provider="filesystem",
@@ -166,10 +169,13 @@ async def filesystem_update_root(
     Update the filesystem root path.
     """
     if not body.root_path:
-        raise HTTPException(status_code=400, detail="root_path is required")
+        return JSONResponse(status_code=400, content={"ok": False, "error": "root_path is required"})
     
     if not os.path.isdir(body.root_path):
-        raise HTTPException(status_code=400, detail=f"Path does not exist or is not a directory: {body.root_path}")
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "Path does not exist or is not a directory"},
+        )
     
     integration_dao.save_token(
         provider="filesystem",
@@ -197,9 +203,12 @@ async def google_start(body: GoogleStartRequest):
     Stores the code_verifier and auth token so backend can exchange via Lambda.
     """
     if not body.state or not body.code_verifier:
-        raise HTTPException(status_code=400, detail="state and code_verifier are required")
+        return JSONResponse(status_code=400, content={"error": "state and code_verifier are required"})
     if not body.auth_token:
-        raise HTTPException(status_code=400, detail="auth_token is required (user must be logged in)")
+        return JSONResponse(
+            status_code=400,
+            content={"error": "auth_token is required (user must be logged in)"},
+        )
 
     google_auth_pending[body.state] = {
         "code_verifier": body.code_verifier,
@@ -222,7 +231,7 @@ async def google_callback(
     """
     Google OAuth redirect target. Exchanges code for tokens via Lambda.
     """
-    def render_error(message: str) -> HTMLResponse:
+    def render_error(message: str, status_code: int = 200) -> HTMLResponse:
         return HTMLResponse(content=f"""
             <html><body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fff;">
                 <div style="text-align: center;">
@@ -230,13 +239,13 @@ async def google_callback(
                     <p style="color: #a1a1aa;">{message}</p>
                 </div>
             </body></html>
-        """)
+        """, status_code=status_code)
 
     if not state:
-        return render_error("Missing state parameter")
+        return render_error("Missing state parameter", status_code=400)
 
     if state not in google_auth_pending:
-        return render_error("Invalid or expired state. Please try again.")
+        return render_error("Invalid or expired state. Please try again.", status_code=400)
 
     if error:
         google_auth_pending[state] = {
@@ -352,16 +361,16 @@ async def google_callback(
 
 
 @router.get("/google/check")
-async def google_check(state: str = Query(...)):
+async def google_check(state: Optional[str] = Query(None)):
     """
     Polled by frontend after starting Google OAuth.
     Returns: { "status": "pending" | "ready" | "error", ... }
     """
     if not state:
-        raise HTTPException(status_code=400, detail="missing state")
+        return JSONResponse(status_code=400, content={"status": "error", "error": "missing state"})
 
     if state not in google_auth_pending:
-        raise HTTPException(status_code=400, detail="invalid_state")
+        return JSONResponse(status_code=400, content={"status": "error", "error": "invalid_state"})
 
     pending = google_auth_pending[state]
     status = pending.get("status", "pending")
@@ -404,10 +413,13 @@ async def github_start(body: GitHubStartRequest):
     Stores the code_verifier and auth token so backend can do token exchange later via Lambda.
     """
     if not body.state or not body.code_verifier:
-        raise HTTPException(status_code=400, detail="state and code_verifier are required")
+        return JSONResponse(status_code=400, content={"error": "state and code_verifier are required"})
     
     if not body.auth_token:
-        raise HTTPException(status_code=400, detail="auth_token is required (user must be logged in)")
+        return JSONResponse(
+            status_code=400,
+            content={"error": "auth_token is required (user must be logged in)"},
+        )
     
     github_auth_pending[body.state] = {
         "code_verifier": body.code_verifier,
@@ -429,7 +441,7 @@ async def github_callback(
     """
     GitHub OAuth redirect target. Exchanges code for tokens using PKCE via Lambda.
     """
-    def render_error(message: str) -> HTMLResponse:
+    def render_error(message: str, status_code: int = 200) -> HTMLResponse:
         return HTMLResponse(content=f"""
             <html><body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fff;">
                 <div style="text-align: center;">
@@ -437,13 +449,13 @@ async def github_callback(
                     <p style="color: #a1a1aa;">{message}</p>
                 </div>
             </body></html>
-        """)
+        """, status_code=status_code)
     
     if not state:
-        return render_error("Missing state parameter")
+        return render_error("Missing state parameter", status_code=400)
     
     if state not in github_auth_pending:
-        return render_error("Invalid or expired state. Please try again.")
+        return render_error("Invalid or expired state. Please try again.", status_code=400)
     
     if error:
         github_auth_pending[state] = {"status": "error", "error": error, "error_description": error_description}
@@ -525,15 +537,15 @@ async def github_callback(
 
 
 @router.get("/github/check")
-async def github_check(state: str = Query(...)):
+async def github_check(state: Optional[str] = Query(None)):
     """
     Polled by frontend after starting GitHub OAuth.
     Returns: { "status": "pending" | "ready" | "error", ... }
     """
     if not state:
-        raise HTTPException(status_code=400, detail="missing state")
+        return JSONResponse(status_code=400, content={"status": "error", "error": "missing state"})
     if state not in github_auth_pending:
-        raise HTTPException(status_code=400, detail="invalid_state")
+        return JSONResponse(status_code=400, content={"status": "error", "error": "invalid_state"})
     
     pending = github_auth_pending[state]
     status = pending.get("status", "pending")
@@ -576,10 +588,13 @@ async def notion_start(body: NotionStartRequest):
     Note: Notion OAuth does NOT use PKCE, so no code_verifier needed.
     """
     if not body.state:
-        raise HTTPException(status_code=400, detail="state is required")
+        return JSONResponse(status_code=400, content={"error": "state is required"})
     
     if not body.auth_token:
-        raise HTTPException(status_code=400, detail="auth_token is required (user must be logged in)")
+        return JSONResponse(
+            status_code=400,
+            content={"error": "auth_token is required (user must be logged in)"},
+        )
     
     notion_auth_pending[body.state] = {
         "auth_token": body.auth_token,
@@ -600,7 +615,7 @@ async def notion_callback(
     """
     Notion OAuth redirect target. Exchanges code for tokens via Lambda.
     """
-    def render_error(message: str) -> HTMLResponse:
+    def render_error(message: str, status_code: int = 200) -> HTMLResponse:
         return HTMLResponse(content=f"""
             <html><body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fff;">
                 <div style="text-align: center;">
@@ -608,13 +623,13 @@ async def notion_callback(
                     <p style="color: #a1a1aa;">{message}</p>
                 </div>
             </body></html>
-        """)
+        """, status_code=status_code)
     
     if not state:
-        return render_error("Missing state parameter")
+        return render_error("Missing state parameter", status_code=400)
     
     if state not in notion_auth_pending:
-        return render_error("Invalid or expired state. Please try again.")
+        return render_error("Invalid or expired state. Please try again.", status_code=400)
     
     if error:
         notion_auth_pending[state]["status"] = "error"
@@ -706,15 +721,15 @@ async def notion_callback(
 
 
 @router.get("/notion/check")
-async def notion_check(state: str = Query(...)):
+async def notion_check(state: Optional[str] = Query(None)):
     """
     Polled by frontend after starting Notion OAuth.
     Returns: { "status": "pending" | "ready" | "error", ... }
     """
     if not state:
-        raise HTTPException(status_code=400, detail="missing state")
+        return JSONResponse(status_code=400, content={"status": "error", "error": "missing state"})
     if state not in notion_auth_pending:
-        raise HTTPException(status_code=400, detail="invalid_state")
+        return JSONResponse(status_code=400, content={"status": "error", "error": "invalid_state"})
     
     pending = notion_auth_pending[state]
     status = pending.get("status", "pending")
