@@ -17,7 +17,7 @@ echo "=== Building FastAPI server ==="
 # - avoid broad --collect-submodules sweeps unless required by a regression
 pyinstaller server/run_fastapi.py \
   --noconfirm \
-  --name flask-server \
+  --name covalent-server \
   --distpath "$DIST_DIR" \
   --paths=context-engine \
   --paths=server \
@@ -102,4 +102,4 @@ pyinstaller server/run_fastapi.py \
 
 echo ""
 echo "=== Build complete ==="
-echo "FastAPI server (with MCP mounted at /mcp): $DIST_DIR/flask-server/flask-server"
+echo "FastAPI server (with MCP mounted at /mcp): $DIST_DIR/covalent-server/covalent-server"

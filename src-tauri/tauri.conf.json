@@ -8,7 +8,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build && rm -rf src-tauri/servers && mkdir -p src-tauri/servers && cp -R dist-servers/flask-server src-tauri/servers/ && cp .env src-tauri/.env && cp model_config.yml src-tauri/model_config.yml",
+    "beforeBuildCommand": "npm run build && rm -rf src-tauri/servers && mkdir -p src-tauri/servers && cp -R dist-servers/covalent-server src-tauri/servers/ && cp .env src-tauri/.env && cp model_config.yml src-tauri/model_config.yml",
     "frontendDist": "../dist"
   },
   "app": {
@@ -117,7 +117,7 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "servers/flask-server",
+      "servers",
       ".env",
       "model_config.yml"
     ],

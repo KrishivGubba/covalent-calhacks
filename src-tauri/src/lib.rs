@@ -293,12 +293,22 @@ impl PythonServer {
     }
 
     fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>) -> Result<(), String> {
-        // Server binary is still named "flask-server" for backwards compatibility
-        // but runs FastAPI with MCP mounted at /mcp
-        let binary = resolve_server_binary(&app_dir, "flask-server", is_dev);
+        // Preferred server binary name.
+        let preferred_binary = resolve_server_binary(&app_dir, "covalent-server", is_dev);
+        // Backward-compatible fallback for older local bundles.
+        let legacy_binary = resolve_server_binary(&app_dir, "flask-server", is_dev);
+        let binary = if preferred_binary.exists() {
+            preferred_binary
+        } else {
+            legacy_binary
+        };
 
         if !binary.exists() {
-            return Err(format!("Python server binary not found at {:?}", binary));
+            return Err(format!(
+                "Python server binary not found. Expected {:?} (or legacy {:?})",
+                resolve_server_binary(&app_dir, "covalent-server", is_dev),
+                resolve_server_binary(&app_dir, "flask-server", is_dev)
+            ));
         }
 
         let server_port: u16 = std::env::var("VITE_FLASK_PORT")
@@ -310,7 +320,7 @@ impl PythonServer {
         ensure_executable(&binary);
 
         let work_dir = binary.parent().unwrap().to_path_buf();
-        println!("Starting Python server binary: {:?}", binary);
+        println!("Starting API server binary: {:?}", binary);
 
         let mut cmd = Command::new(&binary);
         cmd.current_dir(&work_dir)
@@ -331,7 +341,7 @@ impl PythonServer {
                 Ok(file) => {
                     let file_clone = file.try_clone()
                         .expect("Failed to clone log file handle");
-                    println!("Redirecting Flask stdout/stderr → {:?}", log_path);
+                    println!("Redirecting server stdout/stderr → {:?}", log_path);
                     cmd.stdout(file).stderr(file_clone);
                 }
                 Err(e) => {
@@ -1950,6 +1960,7 @@ pub fn run() {
             }
             tauri::RunEvent::Exit => {
                 println!("🧹 Running final pkill cleanup...");
+                let _ = Command::new("pkill").args(["-f", "covalent-server"]).output();
                 let _ = Command::new("pkill").args(["-f", "flask-server"]).output();
                 println!("🧹 Cleanup complete");
             }

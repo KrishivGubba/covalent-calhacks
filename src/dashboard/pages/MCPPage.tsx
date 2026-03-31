@@ -18,21 +18,18 @@ const FALLBACK_INTEGRATIONS: IntegrationStatus[] = [
     name: 'Filesystem',
     connected: false,
     description: 'Choose a folder to access local files and directories',
-    icon: '📁',
   },
   {
     id: 'github',
     name: 'GitHub',
     connected: false,
     description: 'Access repositories, issues, and pull requests',
-    icon: '🐙',
   },
   {
     id: 'perplexity',
     name: 'Perplexity Search',
     connected: true,
     description: 'AI-powered web search',
-    icon: '🔍',
     included: true,
   },
   {
@@ -40,14 +37,12 @@ const FALLBACK_INTEGRATIONS: IntegrationStatus[] = [
     name: 'Notion',
     connected: false,
     description: 'Access Notion workspaces and pages',
-    icon: '📝',
   },
   {
     id: 'google',
     name: 'Google Workspace',
     connected: false,
     description: 'Calendar, Drive, Mail',
-    icon: '🔷',
   },
 ];
 
@@ -153,23 +148,14 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
             <div style={styles.cardHeader}>
               <div style={styles.cardTitleRow}>
                 <h3 style={styles.cardTitle}>
-                  {integration.icon && <span style={styles.icon}>{integration.icon}</span>}
                   {integration.name}
                 </h3>
                 <div
                   style={{
-                    ...styles.statusBadge,
-                    ...(integration.connected
-                      ? styles.statusBadgeConnected
-                      : styles.statusBadgeDisconnected),
+                    ...styles.statusText,
+                    color: integration.connected ? '#166534' : '#B42318',
                   }}
                 >
-                  <div
-                    style={{
-                      ...styles.statusDot,
-                      backgroundColor: integration.connected ? '#22c55e' : '#D4CFC6',
-                    }}
-                  />
                   {integration.connected ? 'Connected' : 'Not Connected'}
                 </div>
               </div>
@@ -281,37 +267,12 @@ const styles: { [key: string]: React.CSSProperties } = {
     fontWeight: '700',
     color: '#1A1A1A',
     margin: 0,
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
     letterSpacing: '-0.01em',
   },
-  icon: {
-    fontSize: '1.1rem',
-  },
-  statusBadge: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '5px',
-    padding: '3px 10px',
-    borderRadius: '100px',
-    fontSize: '0.7rem',
-    fontWeight: '600',
-  },
-  statusBadgeConnected: {
-    backgroundColor: 'rgba(34, 197, 94, 0.08)',
-    color: '#166534',
-    border: '1px solid rgba(34, 197, 94, 0.22)',
-  },
-  statusBadgeDisconnected: {
-    backgroundColor: '#F4F1EC',
-    color: '#9A9A96',
-    border: '1px solid #E8E4DC',
-  },
-  statusDot: {
-    width: '5px',
-    height: '5px',
-    borderRadius: '50%',
+  statusText: {
+    fontSize: '0.74rem',
+    fontWeight: '700',
+    letterSpacing: '0.01em',
   },
   cardDescription: {
     fontSize: '0.825rem',
