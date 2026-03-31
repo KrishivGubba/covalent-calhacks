@@ -95,7 +95,7 @@ const Dashboard: React.FC = () => {
   return (
     <div style={styles.dashboard}>
       {/* Transparent drag region across the full top — macOS traffic lights render above this */}
-      <div className="tauri-drag-region" style={styles.dragRegion} />
+      <div className="tauri-drag-region" data-tauri-drag-region style={styles.dragRegion} />
       <UpdateButton checkInterval={30 * 60 * 1000} />
       <Sidebar currentPage={currentPage} onPageChange={handlePageChange} />
       <main style={styles.main}>
@@ -125,7 +125,7 @@ const styles = {
     top: 0,
     left: 0,
     right: 0,
-    height: '32px',
+    height: '68px',
     zIndex: 9998,
   },
 };
