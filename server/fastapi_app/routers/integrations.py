@@ -3,9 +3,9 @@ Integration management endpoints (Google, GitHub, Notion, Filesystem).
 """
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 
@@ -42,6 +42,17 @@ github_auth_pending = {}
 notion_auth_pending = {}
 
 
+def _get_filesystem_description(integration_dao) -> str:
+    """Build a filesystem description with configured root path (Flask parity)."""
+    root = integration_dao.get_filesystem_root()
+    if root:
+        display_path = root
+        if len(display_path) > 50:
+            display_path = "..." + display_path[-47:]
+        return f"Access local files and directories ({display_path})"
+    return "Access local files and directories"
+
+
 class FilesystemConnectRequest(BaseModel):
     root_path: str
 
@@ -61,32 +72,38 @@ async def get_integrations_status(integration_dao=Depends(integration_dao_depend
         {
             "id": "filesystem",
             "name": "Filesystem",
+            "description": _get_filesystem_description(integration_dao),
+            "icon": "📁",
             "connected": statuses.get("filesystem", False),
-            "description": "Access local files and directories",
         },
         {
             "id": "github",
             "name": "GitHub",
-            "connected": statuses.get("github", False),
             "description": "Access repositories, issues, and pull requests",
+            "icon": "🐙",
+            "connected": statuses.get("github", False),
         },
         {
             "id": "perplexity",
             "name": "Perplexity Search",
             "connected": True,
-            "description": "AI-powered web search — included by default",
+            "description": "AI-powered web search",
+            "icon": "🔍",
+            "included": True,
         },
         {
             "id": "notion",
             "name": "Notion",
-            "connected": statuses.get("notion", False),
             "description": "Access Notion workspaces and pages",
+            "icon": "📝",
+            "connected": statuses.get("notion", False),
         },
         {
             "id": "google",
             "name": "Google Workspace",
+            "description": "Calendar, Drive, Mail",
+            "icon": "🔷",
             "connected": statuses.get("google", False),
-            "description": "Calendar, Drive, and Gmail integration",
         },
     ]
     
@@ -137,7 +154,7 @@ async def filesystem_get_root(integration_dao=Depends(integration_dao_dependency
     Get the current filesystem root path.
     """
     root_path = integration_dao.get_filesystem_root()
-    return {"root_path": root_path}
+    return {"connected": root_path is not None, "root_path": root_path}
 
 
 @router.put("/filesystem/root")
@@ -289,9 +306,7 @@ async def google_callback(
         refresh_token = token_data.get("refresh_token")
         expires_in = token_data.get("expires_in", 3600)
         scope = token_data.get("scope", GOOGLE_SCOPES)
-        expires_at = token_data.get("expires_at")
-        if not expires_at:
-            expires_at = (datetime.utcnow()).isoformat()
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
 
         user_email = None
         try:
@@ -515,10 +530,10 @@ async def github_check(state: str = Query(...)):
     Polled by frontend after starting GitHub OAuth.
     Returns: { "status": "pending" | "ready" | "error", ... }
     """
+    if not state:
+        raise HTTPException(status_code=400, detail="missing state")
     if state not in github_auth_pending:
-        # State was already consumed (success) or never existed
-        # Return "consumed" which frontend should treat as success
-        return {"status": "consumed"}
+        raise HTTPException(status_code=400, detail="invalid_state")
     
     pending = github_auth_pending[state]
     status = pending.get("status", "pending")
@@ -696,9 +711,10 @@ async def notion_check(state: str = Query(...)):
     Polled by frontend after starting Notion OAuth.
     Returns: { "status": "pending" | "ready" | "error", ... }
     """
+    if not state:
+        raise HTTPException(status_code=400, detail="missing state")
     if state not in notion_auth_pending:
-        # State was already consumed (success) or never existed
-        return {"status": "consumed"}
+        raise HTTPException(status_code=400, detail="invalid_state")
     
     pending = notion_auth_pending[state]
     status = pending.get("status", "pending")
@@ -724,3 +740,146 @@ async def notion_disconnect(integration_dao=Depends(integration_dao_dependency))
     deleted = integration_dao.delete_token("notion")
     log.info(f"🔌 Notion disconnected (deleted={deleted})")
     return {"ok": True, "deleted": deleted > 0}
+
+
+class TokenRefreshRequest(BaseModel):
+    auth_token: Optional[str] = None
+
+
+@router.post("/google/refresh")
+async def google_refresh_token(
+    body: TokenRefreshRequest,
+    integration_dao=Depends(integration_dao_dependency),
+    auth_dao=Depends(auth_dao_dependency),
+):
+    """
+    Refresh Google access token using the refresh token via Lambda.
+    Body: { "auth_token": "..." } - Auth0 token to authenticate with Lambda.
+    """
+    auth_token = body.auth_token
+    if not auth_token:
+        sessions = auth_dao.get_all_sessions()
+        if sessions:
+            session = auth_dao.get_session(sessions[0]["user_id"])
+            if session:
+                auth_token = session.get("access_token")
+
+    if not auth_token:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "auth_token is required and no active session found"},
+        )
+
+    token_data = integration_dao.get_token("google")
+    if not token_data:
+        return JSONResponse(status_code=404, content={"error": "Google not connected"})
+
+    refresh_token = token_data.get("refresh_token")
+    if not refresh_token:
+        return JSONResponse(status_code=400, content={"error": "No refresh token available"})
+
+    try:
+        token_response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/google/refresh",
+            json={"refresh_token": refresh_token},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
+        )
+        new_token_data = token_response.json()
+
+        if not token_response.ok or "error" in new_token_data:
+            err = new_token_data.get("error", "refresh_failed")
+            err_desc = new_token_data.get("error_description", "Token refresh failed")
+            return JSONResponse(
+                status_code=400,
+                content={"error": err, "error_description": err_desc},
+            )
+
+        new_access_token = new_token_data.get("access_token")
+        expires_in = new_token_data.get("expires_in", 3600)
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+
+        integration_dao.update_access_token("google", new_access_token, expires_at)
+        return {"access_token": new_access_token, "expires_at": expires_at}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "exception", "error_description": str(e)},
+        )
+
+
+@router.post("/notion/refresh")
+async def notion_refresh_token(
+    body: TokenRefreshRequest,
+    integration_dao=Depends(integration_dao_dependency),
+    auth_dao=Depends(auth_dao_dependency),
+):
+    """
+    Refresh Notion access token using the refresh token via Lambda.
+    Body: { "auth_token": "..." } - Auth0 token to authenticate with Lambda.
+    """
+    auth_token = body.auth_token
+    if not auth_token:
+        sessions = auth_dao.get_all_sessions()
+        if sessions:
+            session = auth_dao.get_session(sessions[0]["user_id"])
+            if session:
+                auth_token = session.get("access_token")
+
+    if not auth_token:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "auth_token is required and no active session found"},
+        )
+
+    token_data = integration_dao.get_token("notion")
+    if not token_data:
+        return JSONResponse(status_code=404, content={"error": "Notion not connected"})
+
+    refresh_token = token_data.get("refresh_token")
+    if not refresh_token:
+        return JSONResponse(status_code=400, content={"error": "No refresh token available"})
+
+    try:
+        token_response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/notion/refresh",
+            json={"refresh_token": refresh_token},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
+        )
+        new_token_data = token_response.json()
+
+        if not token_response.ok or "error" in new_token_data:
+            err = new_token_data.get("error", "refresh_failed")
+            err_desc = new_token_data.get("error_description", "Token refresh failed")
+            return JSONResponse(
+                status_code=400,
+                content={"error": err, "error_description": err_desc},
+            )
+
+        new_access_token = new_token_data.get("access_token")
+        new_refresh_token = new_token_data.get("refresh_token")
+        expires_in = new_token_data.get("expires_in", 3600)
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+
+        integration_dao.update_access_token("notion", new_access_token, expires_at)
+        if new_refresh_token and new_refresh_token != refresh_token:
+            integration_dao.save_token(
+                provider="notion",
+                access_token=new_access_token,
+                refresh_token=new_refresh_token,
+                expires_at=expires_at,
+            )
+
+        return {"access_token": new_access_token, "expires_at": expires_at}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "exception", "error_description": str(e)},
+        )

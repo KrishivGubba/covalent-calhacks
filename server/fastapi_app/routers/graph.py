@@ -4,10 +4,11 @@ Graph management endpoints.
 import json
 from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 
-from ..dependencies import tree_dependency, get_encrypted_conn
+from ..dependencies import tree_dependency, get_encrypted_conn, get_db_path
 
 router = APIRouter()
 
@@ -106,32 +107,30 @@ async def reset_graph(tree=Depends(tree_dependency)):
     
     WARNING: This is destructive and cannot be undone.
     """
-    tree._ensure_graph_constructed()
-    
-    if not tree.root:
-        return {"status": "error", "message": "No graph to reset"}
-    
-    root_uuid = tree.root.node_uuid
-    deleted_count = 0
-    
-    for node_uuid in list(tree.nodes.keys()):
-        if node_uuid != root_uuid:
-            try:
-                tree.dao.delete_node(node_uuid, cascade=True)
-                if node_uuid in tree.nodes:
-                    del tree.nodes[node_uuid]
-                deleted_count += 1
-            except Exception:
-                pass
-    
-    tree.root.children = []
-    tree.root.children_uuid_arr = []
-    
-    return {
-        "status": "success",
-        "message": f"Reset graph. Deleted {deleted_count} nodes.",
-        "remaining_nodes": 1,
-    }
+    from graph import Tree
+
+    try:
+        try:
+            tree.dao.close()
+        except Exception:
+            pass
+
+        conn = get_encrypted_conn()
+        cursor = conn.cursor()
+        for table in ["data_table", "action_table", "node_counters", "node_table"]:
+            cursor.execute(f"DELETE FROM {table}")
+        conn.commit()
+        conn.close()
+
+        # Reinitialize the cached singleton object in place.
+        tree.__init__(get_db_path())
+        return {"message": "Graph reset successfully"}
+    except Exception as e:
+        try:
+            tree.__init__(get_db_path())
+        except Exception:
+            pass
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @router.post("/cleanup")
@@ -143,12 +142,17 @@ async def cleanup_graph(
     Trigger cleanup of stale actions in nodes that have high insertion counts.
     """
     from graph import Tree
-    
-    tree._ensure_graph_constructed()
-    cleaned_nodes = Tree.cleanup_nodes_batch(tree.dao, threshold)
-    
-    return {
-        "status": "success",
-        "nodes_cleaned": len(cleaned_nodes),
-        "node_uuids": cleaned_nodes,
-    }
+    import time
+
+    try:
+        start_time = time.time()
+        tree._ensure_graph_constructed()
+        cleaned_nodes = Tree.cleanup_nodes_batch(tree.dao, threshold)
+        elapsed = time.time() - start_time
+        return {
+            "nodes_cleaned": len(cleaned_nodes),
+            "node_uuids": cleaned_nodes,
+            "elapsed_seconds": round(elapsed, 2),
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})

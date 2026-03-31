@@ -6,6 +6,7 @@ import sys
 import json
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi.responses import JSONResponse
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -84,7 +85,7 @@ async def get_session(
     Returns session info and whether the token has expired.
     """
     if not user_id:
-        return {"session": None, "expired": False}
+        return JSONResponse(status_code=400, content={"error": "user_id is required"})
     
     session = auth_dao.get_session(user_id)
     if session:
@@ -111,7 +112,7 @@ async def get_session(
             "expired": expired,
         }
     
-    return {"session": None, "expired": False}
+    return {"session": None}
 
 
 @router.post("/session/refresh")
@@ -128,8 +129,10 @@ async def refresh_session(
         raise HTTPException(status_code=400, detail="user_id is required")
     
     session = auth_dao.get_session(user_id)
-    if not session or not session.get("refresh_token"):
-        raise HTTPException(status_code=401, detail="No refresh token available")
+    if not session:
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+    if not session.get("refresh_token"):
+        return JSONResponse(status_code=400, content={"error": "No refresh token available"})
     
     try:
         token_response = http_requests.post(
@@ -145,8 +148,13 @@ async def refresh_session(
         token_data = token_response.json()
         
         if not token_response.ok or "error" in token_data:
+            err = token_data.get("error", "refresh_failed")
+            err_desc = token_data.get("error_description", "Token refresh failed")
             log.error(f"🔐 Token refresh failed: {token_data}")
-            raise HTTPException(status_code=401, detail="Token refresh failed")
+            return JSONResponse(
+                status_code=400,
+                content={"error": err, "error_description": err_desc},
+            )
         
         new_access_token = token_data.get("access_token")
         expires_in = token_data.get("expires_in", 86400)
@@ -159,7 +167,10 @@ async def refresh_session(
         
     except http_requests.RequestException as e:
         log.error(f"🔐 Token refresh request failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": "exception", "error_description": str(e)},
+        )
 
 
 @router.post("/logout")
@@ -171,26 +182,27 @@ async def logout(
     """
     Log out a user by deleting their session.
     """
-    try:
-        body = await request.json()
-        user_id = body.get("user_id")
-    except Exception:
-        user_id = None
-    
-    if user_id:
-        auth_dao.delete_session(user_id)
-        log.info(f"🔐 User {user_id} logged out")
-    else:
-        log.info("🔐 Logout called without user_id")
+    body = await request.json()
+    user_id = body.get("user_id")
+    if not user_id:
+        return JSONResponse(status_code=400, content={"error": "user_id is required"})
 
-    # Match Flask behavior: clear OAuth integrations on logout
-    for provider in ("google", "github", "notion"):
-        try:
-            integration_dao.delete_token(provider)
-        except Exception as e:
-            log.warning(f"⚠️ Failed to delete integration token for {provider}: {e}")
-    
-    return {"ok": True}
+    session_deleted = auth_dao.delete_session(user_id)
+    google_deleted = integration_dao.delete_token("google")
+    github_deleted = integration_dao.delete_token("github")
+    notion_deleted = integration_dao.delete_token("notion")
+    tokens_deleted = google_deleted + github_deleted + notion_deleted
+
+    log.info(
+        f"🔐 Logged out user={user_id} "
+        f"(session={session_deleted}, google={google_deleted}, github={github_deleted}, notion={notion_deleted})"
+    )
+
+    return {
+        "ok": True,
+        "deleted": session_deleted > 0,
+        "integrations_deleted": tokens_deleted,
+    }
 
 
 @router.get("/check")
