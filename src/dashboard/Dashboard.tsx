@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import Sidebar, { PageType } from './components/Sidebar';
 import UpdateButton from './components/UpdateButton';
 import AuthPage from './pages/AuthPage';
@@ -11,28 +10,6 @@ import MemoryPage from './pages/MemoryPage';
 import HistoryPage from './pages/HistoryPage';
 import type { ActionResultPayload } from '../utils/actionNotifications';
 import { loadAuthStatus } from '../shared/authService';
-
-const DragStrip: React.FC = () => {
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 0) {
-      getCurrentWindow().startDragging();
-    }
-  };
-  return (
-    <div
-      onMouseDown={handleMouseDown}
-      style={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        right: 0,
-        height: '28px',
-        cursor: 'default',
-        WebkitAppRegion: 'no-drag',
-      } as React.CSSProperties}
-    />
-  );
-};
 
 const Dashboard: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<PageType>('settings');
@@ -120,8 +97,6 @@ const Dashboard: React.FC = () => {
       <UpdateButton checkInterval={30 * 60 * 1000} />
       <Sidebar currentPage={currentPage} onPageChange={handlePageChange} />
       <main style={styles.main}>
-        {/* Drag strip sits in the paddingTop gap — no fixed/overflow issues */}
-        <DragStrip />
         {renderPage()}
       </main>
     </div>
@@ -141,8 +116,6 @@ const styles = {
     flex: 1,
     overflowY: 'auto' as const,
     backgroundColor: '#FAFAF8',
-    paddingTop: '28px',
-    position: 'relative' as const,
   },
 };
 

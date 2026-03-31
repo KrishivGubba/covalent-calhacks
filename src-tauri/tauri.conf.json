@@ -75,7 +75,7 @@
       },
       {
         "label": "dashboard",
-        "title": "",
+        "title": "Covalent",
         "url": "dashboard.html",
         "width": 1000,
         "height": 700,
@@ -85,7 +85,7 @@
         "visible": false,
         "center": true,
         "contentProtected": false,
-        "titleBarStyle": "Overlay"
+        "theme": "Light"
       },
       {
         "label": "onboarding",
