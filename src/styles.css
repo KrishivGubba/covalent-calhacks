@@ -99,12 +99,6 @@ body {
   background: rgba(0, 0, 0, 0.20);
 }
 
-/* Tauri drag region for overlay title bar */
-.tauri-drag-region {
-  -webkit-app-region: drag;
-  app-region: drag;
-}
-
 /* Smooth transitions for all interactive elements */
 button {
   font-family: inherit;

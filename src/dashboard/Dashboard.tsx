@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import Sidebar, { PageType } from './components/Sidebar';
 import UpdateButton from './components/UpdateButton';
 import AuthPage from './pages/AuthPage';
@@ -92,10 +93,16 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  const handleDragMouseDown = (e: React.MouseEvent) => {
+    if (e.button === 0) {
+      void getCurrentWindow().startDragging();
+    }
+  };
+
   return (
     <div style={styles.dashboard}>
-      {/* Transparent drag region across the full top — macOS traffic lights render above this */}
-      <div className="tauri-drag-region" data-tauri-drag-region style={styles.dragRegion} />
+      {/* Drag region: calls Tauri's startDragging() on mousedown — reliable across all macOS/CSS stacking contexts */}
+      <div style={styles.dragRegion} onMouseDown={handleDragMouseDown} />
       <UpdateButton checkInterval={30 * 60 * 1000} />
       <Sidebar currentPage={currentPage} onPageChange={handlePageChange} />
       <main style={styles.main}>
