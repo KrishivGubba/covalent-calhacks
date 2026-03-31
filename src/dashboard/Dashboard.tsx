@@ -12,6 +12,28 @@ import HistoryPage from './pages/HistoryPage';
 import type { ActionResultPayload } from '../utils/actionNotifications';
 import { loadAuthStatus } from '../shared/authService';
 
+const DragStrip: React.FC = () => {
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button === 0) {
+      getCurrentWindow().startDragging();
+    }
+  };
+  return (
+    <div
+      onMouseDown={handleMouseDown}
+      style={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        height: '28px',
+        cursor: 'default',
+        WebkitAppRegion: 'no-drag',
+      } as React.CSSProperties}
+    />
+  );
+};
+
 const Dashboard: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<PageType>('settings');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -93,19 +115,13 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const handleDragMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 0) {
-      void getCurrentWindow().startDragging();
-    }
-  };
-
   return (
     <div style={styles.dashboard}>
-      {/* Drag region: calls Tauri's startDragging() on mousedown — reliable across all macOS/CSS stacking contexts */}
-      <div style={styles.dragRegion} onMouseDown={handleDragMouseDown} />
       <UpdateButton checkInterval={30 * 60 * 1000} />
       <Sidebar currentPage={currentPage} onPageChange={handlePageChange} />
       <main style={styles.main}>
+        {/* Drag strip sits in the paddingTop gap — no fixed/overflow issues */}
+        <DragStrip />
         {renderPage()}
       </main>
     </div>
@@ -126,14 +142,7 @@ const styles = {
     overflowY: 'auto' as const,
     backgroundColor: '#FAFAF8',
     paddingTop: '28px',
-  },
-  dragRegion: {
-    position: 'fixed' as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    height: '68px',
-    zIndex: 9998,
+    position: 'relative' as const,
   },
 };
 

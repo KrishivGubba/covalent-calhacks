@@ -1,4 +1,5 @@
 import React from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 export type PageType = 'settings' | 'mcp' | 'memory' | 'history' | 'auth';
 
@@ -60,8 +61,23 @@ const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange }) => {
     ...(currentPage === id ? styles.menuItemActive : {}),
   });
 
+  const handleDragMouseDown = (e: React.MouseEvent) => {
+    if (e.button === 0) getCurrentWindow().startDragging();
+  };
+
   return (
     <div style={styles.sidebar}>
+      <div
+        onMouseDown={handleDragMouseDown}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: '28px',
+          cursor: 'default',
+        }}
+      />
       <div style={styles.logo}>
         <img src="/icon.png" alt="Covalent" style={styles.logoImage} />
         <h2 style={styles.logoText}>Covalent</h2>
@@ -131,6 +147,7 @@ const styles = {
     flexDirection: 'column' as const,
     padding: '52px 12px 20px',
     fontFamily: 'DM Sans, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif',
+    position: 'relative' as const,
   },
   logo: {
     display: 'flex',
