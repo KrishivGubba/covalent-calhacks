@@ -294,8 +294,10 @@ if MOUNT_MCP:
     mcp_server = create_mcp_server()
     if mcp_server:
         try:
-            # Mount the MCP HTTP app - this enables MCP protocol at /mcp
-            mcp_http_app = mcp_server.http_app(path="/mcp")
+            # Mount the MCP HTTP app so the external URL is exactly /mcp.
+            # If we set path="/mcp" here and also mount at "/mcp", the effective
+            # route becomes "/mcp/mcp", which breaks action_executor parity.
+            mcp_http_app = mcp_server.http_app(path="/")
             app.mount("/mcp", mcp_http_app)
         except Exception as e:
             log.warning(f"⚠️ Failed to mount MCP server: {e}")

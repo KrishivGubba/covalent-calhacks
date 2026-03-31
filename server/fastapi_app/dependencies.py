@@ -113,6 +113,7 @@ def get_action_executor():
 # Display schema lazy loading
 _display_schema_func = None
 _resolve_display_fields_func = None
+_is_inherited_value_func = None
 
 
 def get_display_schema_func():
@@ -131,6 +132,15 @@ def get_resolve_display_fields_func():
         from covalent_mcp.toolclasses.base import resolve_display_fields
         _resolve_display_fields_func = resolve_display_fields
     return _resolve_display_fields_func
+
+
+def get_is_inherited_value_func():
+    """Lazy-load _is_inherited_value from covalent_mcp.toolclasses.base."""
+    global _is_inherited_value_func
+    if _is_inherited_value_func is None:
+        from covalent_mcp.toolclasses.base import _is_inherited_value
+        _is_inherited_value_func = _is_inherited_value
+    return _is_inherited_value_func
 
 
 # FastAPI dependency functions for use with Depends()

@@ -1,8 +1,8 @@
 """
 MCP (Model Context Protocol) endpoints.
 """
-import json
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import JSONResponse
 from typing import Optional
 
 from ..dependencies import tree_dependency, get_action_executor
@@ -21,12 +21,12 @@ async def mcp_health():
         ae = get_action_executor()
         health_result = await ae.health_check()
         return health_result
-        
+
     except Exception as e:
-        return {
+        return JSONResponse(status_code=500, content={
             "status": "unhealthy",
             "error": str(e)
-        }
+        })
 
 
 @router.get("/action_history")
@@ -41,46 +41,54 @@ async def get_action_history(
     Get action execution history.
     """
     try:
+        limit = min(limit, 200)
+
+        # Keep Flask behavior: ensure table exists before reading.
+        try:
+            tree.dao.execute_query("""
+                CREATE TABLE IF NOT EXISTS action_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action_uuid TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    action_data TEXT,
+                    creation_timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+                    node_uuid TEXT,
+                    status TEXT DEFAULT 'pending',
+                    result TEXT,
+                    error_message TEXT,
+                    duration_ms INTEGER
+                )
+            """)
+        except Exception:
+            pass
+
         records = tree.dao.get_action_history(
             limit=limit,
             offset=offset,
             status=status,
             action_type=action_type
         )
-        
-        history_list = []
+
+        if records is None:
+            records = []
+
+        history = []
         for record in records:
-            (id_, action_uuid, action_type_, action_data, creation_timestamp,
-             node_uuid, status_, result, error_message, duration_ms) = record
-            
-            action_data_parsed = None
-            if action_data:
-                try:
-                    action_data_parsed = json.loads(action_data)
-                except json.JSONDecodeError:
-                    action_data_parsed = action_data
-            
-            history_list.append({
-                "id": id_,
-                "action_uuid": action_uuid,
-                "action_type": action_type_,
-                "action_data": action_data_parsed,
-                "creation_timestamp": creation_timestamp,
-                "node_uuid": node_uuid,
-                "status": status_,
-                "result": result,
-                "error_message": error_message,
-                "duration_ms": duration_ms
+            history.append({
+                "id": record[0],
+                "action_uuid": record[1],
+                "action_type": record[2],
+                "action_data": record[3],
+                "creation_timestamp": record[4],
+                "node_uuid": record[5],
+                "status": record[6],
+                "result": record[7],
+                "error_message": record[8],
+                "duration_ms": record[9],
             })
-        
-        return {
-            "status": "success",
-            "history": history_list,
-            "count": len(history_list),
-            "limit": limit,
-            "offset": offset
-        }
-        
+
+        return {"history": history, "count": len(history)}
+
     except Exception as e:
         log.error(f"Error in /action_history: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(status_code=500, content={"error": str(e)})

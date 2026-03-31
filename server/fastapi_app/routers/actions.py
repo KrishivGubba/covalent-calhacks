@@ -1,14 +1,20 @@
 """
 Action planning and execution endpoints.
 """
-import asyncio
 import json
 import time
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 
-from ..dependencies import tree_dependency, get_action_executor, get_display_schema_func, get_resolve_display_fields_func
+from ..dependencies import (
+    tree_dependency,
+    get_action_executor,
+    get_display_schema_func,
+    get_resolve_display_fields_func,
+    get_is_inherited_value_func,
+)
 from logger import get_logger
 
 log = get_logger()
@@ -36,28 +42,37 @@ class ExecuteActionRequest(BaseModel):
 
 class EditActionRequest(BaseModel):
     action_uuid: str
-    action_name: str
-    action_plan: str
+    action_name: Optional[str] = None
+    action_plan: Optional[str] = None
+    action_override: Optional[Dict[str, Any]] = None
     persist: bool = False
 
 
-def _resolve_tool_display(proposed_action: dict, loop=None) -> dict:
+def _error_response(message: str, status_code: int = 500, **extra: Any) -> JSONResponse:
+    payload: Dict[str, Any] = {"status": "error", "error": message}
+    payload.update(extra)
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+async def _resolve_tool_display(proposed_action: dict) -> dict:
     """Resolve display schema for a proposed action."""
     tool_name = proposed_action.get("tool_name", "")
     parameters = proposed_action.get("parameters", {})
-    
+
     get_display_schema = get_display_schema_func()
     schema = get_display_schema(tool_name)
-    
+
     if schema is None:
+        is_inherited_value = get_is_inherited_value_func()
         fallback_fields = []
         for key, value in parameters.items():
+            is_inherited = is_inherited_value(value)
             fallback_fields.append({
                 "key": key,
                 "label": key.replace("_", " ").title(),
-                "source": "param",
-                "editable": True,
-                "widget": "text_input",
+                "source": "inherited" if is_inherited else "param",
+                "editable": not is_inherited,
+                "widget": "display_text" if is_inherited else "text_input",
                 "required": False,
                 "value": value,
             })
@@ -67,20 +82,9 @@ def _resolve_tool_display(proposed_action: dict, loop=None) -> dict:
             "fields": fallback_fields,
             "has_schema": False,
         }
-    
+
     resolve_display_fields = get_resolve_display_fields_func()
-    _loop = loop or asyncio.new_event_loop()
-    _owns_loop = loop is None
-    if _owns_loop:
-        asyncio.set_event_loop(_loop)
-    try:
-        display_info = _loop.run_until_complete(
-            resolve_display_fields(schema, parameters)
-        )
-    finally:
-        if _owns_loop:
-            _loop.close()
-    
+    display_info = await resolve_display_fields(schema, parameters)
     display_info["has_schema"] = True
     return display_info
 
@@ -96,20 +100,20 @@ async def plan_action_endpoint(
     Returns proposed action(s) for user approval/editing.
     """
     start_time = time.perf_counter()
-    
+
     try:
         action_text, collected_data = tree.get_action_context(
-            body.action_uuid, 
+            body.action_uuid,
             action_override=body.action_override
         )
-        
+
         if not action_text:
-            raise HTTPException(status_code=400, detail="Failed to retrieve action details")
-        
+            return _error_response("Failed to retrieve action details", status_code=400)
+
         log.info(f"📋 Planning action: {action_text[:100]}...")
-        
+
         ae = get_action_executor()
-        
+
         if body.skip_research:
             plan_result = await ae.plan_action(action_text, collected_data)
             research_info = {"resources_read": [], "context_gathered": collected_data}
@@ -123,23 +127,23 @@ async def plan_action_endpoint(
                 "error": result.get("error")
             }
             research_info = result.get("research", {"resources_read": [], "context_gathered": collected_data})
-        
+
         duration_ms = int((time.perf_counter() - start_time) * 1000)
-        
+
         if plan_result["status"] == "error":
-            return {
-                "status": "error",
-                "error": plan_result["error"],
-                "research": research_info,
-                "duration_ms": duration_ms
-            }
-        
+            return _error_response(
+                plan_result["error"],
+                status_code=500,
+                research=research_info,
+                duration_ms=duration_ms,
+            )
+
         # Resolve display schemas
         displays = []
         proposed_actions = plan_result.get("proposed_actions") or []
         for action in proposed_actions:
             try:
-                display_info = _resolve_tool_display(action)
+                display_info = await _resolve_tool_display(action)
                 displays.append({
                     "step_id": action.get("step_id", len(displays) + 1),
                     **display_info
@@ -153,7 +157,7 @@ async def plan_action_endpoint(
                     "fields": [],
                     "has_schema": False
                 })
-        
+
         return {
             "status": "success",
             "research": research_info,
@@ -165,14 +169,13 @@ async def plan_action_endpoint(
             "context_data": research_info.get("context_gathered", collected_data),
             "duration_ms": duration_ms
         }
-        
-    except HTTPException:
-        raise
+
     except Exception as e:
         log.error(f"Error in /plan_action: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        return _error_response(str(e), status_code=500, duration_ms=duration_ms)
 
 
 @router.post("/plan_action_direct")
@@ -181,15 +184,15 @@ async def plan_action_direct_endpoint(body: PlanActionDirectRequest):
     Plan an action directly without going through the action_uuid lookup.
     """
     start_time = time.perf_counter()
-    
+
     try:
         if not body.action_text:
-            raise HTTPException(status_code=400, detail="action_text is required")
-        
+            return _error_response("action_text is required", status_code=400)
+
         log.info(f"📋 Planning action (direct): {body.action_text[:100]}...")
-        
+
         ae = get_action_executor()
-        
+
         if body.skip_research:
             plan_result = await ae.plan_action(body.action_text, body.context)
             research_info = {"resources_read": [], "context_gathered": body.context}
@@ -203,23 +206,23 @@ async def plan_action_direct_endpoint(body: PlanActionDirectRequest):
                 "error": result.get("error")
             }
             research_info = result.get("research", {"resources_read": [], "context_gathered": body.context})
-        
+
         duration_ms = int((time.perf_counter() - start_time) * 1000)
-        
+
         if plan_result["status"] == "error":
-            return {
-                "status": "error",
-                "error": plan_result["error"],
-                "research": research_info,
-                "duration_ms": duration_ms
-            }
-        
+            return _error_response(
+                plan_result["error"],
+                status_code=500,
+                research=research_info,
+                duration_ms=duration_ms,
+            )
+
         # Resolve display schemas
         displays = []
         proposed_actions = plan_result.get("proposed_actions") or []
         for action in proposed_actions:
             try:
-                display_info = _resolve_tool_display(action)
+                display_info = await _resolve_tool_display(action)
                 displays.append({
                     "step_id": action.get("step_id", len(displays) + 1),
                     **display_info
@@ -232,7 +235,7 @@ async def plan_action_direct_endpoint(body: PlanActionDirectRequest):
                     "fields": [],
                     "has_schema": False
                 })
-        
+
         return {
             "status": "success",
             "research": research_info,
@@ -244,14 +247,13 @@ async def plan_action_direct_endpoint(body: PlanActionDirectRequest):
             "context_data": research_info.get("context_gathered", body.context),
             "duration_ms": duration_ms
         }
-        
-    except HTTPException:
-        raise
+
     except Exception as e:
         log.error(f"Error in /plan_action_direct: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        return _error_response(str(e), status_code=500, duration_ms=duration_ms)
 
 
 @router.post("/execute_action")
@@ -265,19 +267,19 @@ async def execute_action_endpoint(
     Supports both single-action and multi-action (chain) execution.
     """
     start_time = time.perf_counter()
-    
+
     try:
         ae = get_action_executor()
         action_data = tree.dao.get_action_by_id(body.action_uuid)
         node_uuid = action_data[4] if action_data else None
-        
+
         if body.actions and isinstance(body.actions, list):
             # Multi-action execution
             log.info(f"🚀 Executing action chain with {len(body.actions)} actions")
-            
+
             chain_result = await ae.execute_action_chain(body.actions)
             duration_ms = int((time.perf_counter() - start_time) * 1000)
-            
+
             # Log each action result to history
             for step_result in chain_result.get("results", []):
                 try:
@@ -299,23 +301,30 @@ async def execute_action_endpoint(
                     )
                 except Exception as log_err:
                     log.warning(f"⚠️ Failed to log action history: {log_err}")
-            
+
             # Update last_selected timestamp
             tree.dao.update_action_last_selected(body.action_uuid)
-            
-            return {
+
+            chain_status = chain_result.get("status", "success")
+            payload = {
                 "status": chain_result.get("status", "success"),
                 "results": chain_result.get("results", []),
+                "summary": chain_result.get("summary", {}),
                 "duration_ms": duration_ms
             }
-        
-        elif body.tool_name and body.parameters is not None:
+            if chain_status == "success":
+                return JSONResponse(status_code=200, content=payload)
+            if chain_status == "partial":
+                return JSONResponse(status_code=207, content=payload)
+            return JSONResponse(status_code=500, content=payload)
+
+        elif body.tool_name and body.parameters:
             # Single-action execution
             log.info(f"🚀 Executing {body.tool_name} with parameters: {body.parameters}")
-            
+
             exec_result = await ae.execute_action(body.tool_name, body.parameters)
             duration_ms = int((time.perf_counter() - start_time) * 1000)
-            
+
             if exec_result["status"] == "error":
                 tree.dao.insert_action_history(
                     action_uuid=body.action_uuid,
@@ -327,12 +336,12 @@ async def execute_action_endpoint(
                     error_message=exec_result["error"],
                     duration_ms=duration_ms
                 )
-                return {
-                    "status": "error",
-                    "error": exec_result["error"],
-                    "duration_ms": duration_ms
-                }
-            
+                return _error_response(
+                    exec_result["error"],
+                    status_code=500,
+                    duration_ms=duration_ms,
+                )
+
             # Log successful execution
             tree.dao.insert_action_history(
                 action_uuid=body.action_uuid,
@@ -344,28 +353,27 @@ async def execute_action_endpoint(
                 error_message=None,
                 duration_ms=duration_ms
             )
-            
+
             tree.dao.update_action_last_selected(body.action_uuid)
-            
+
             return {
                 "status": "success",
                 "result": exec_result.get("result"),
                 "duration_ms": duration_ms
             }
-        
+
         else:
-            raise HTTPException(
+            return _error_response(
+                "Missing tool_name or parameters (for single action) or actions array (for multi-action)",
                 status_code=400,
-                detail="Missing tool_name or parameters (for single action) or actions array (for multi-action)"
             )
-        
-    except HTTPException:
-        raise
+
     except Exception as e:
         log.error(f"Error in /execute_action: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        return _error_response(str(e), status_code=500, duration_ms=duration_ms)
 
 
 @router.post("/edit_action")
@@ -378,18 +386,32 @@ async def edit_action_endpoint(
     """
     try:
         log.info(f"✏️ Editing action {body.action_uuid} (persist={body.persist})")
-        
-        if body.persist:
-            tree.dao.update_action(body.action_uuid, body.action_name, body.action_plan)
-        
-        return {
-            "status": "success",
-            "action_uuid": body.action_uuid,
-            "action_name": body.action_name,
-            "action_plan": body.action_plan,
-            "persisted": body.persist
+
+        action_data = tree.dao.get_action_by_id(body.action_uuid)
+        if not action_data:
+            return JSONResponse(status_code=404, content={"error": "action not found"})
+
+        _, existing_name, existing_plan, _, _ = action_data
+
+        override = body.action_override or {}
+        effective_action = {
+            "action_name": override.get("action_name") or body.action_name or existing_name,
+            "action_plan": override.get("action_plan") or body.action_plan or existing_plan,
         }
-        
+
+        if body.persist:
+            tree.dao.update_action(
+                body.action_uuid,
+                effective_action["action_name"],
+                effective_action["action_plan"],
+            )
+
+        return {
+            "message": "Action edit processed",
+            "persisted": body.persist,
+            "effective_action": effective_action,
+        }
+
     except Exception as e:
         log.error(f"Error in /edit_action: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(status_code=500, content={"error": str(e)})
