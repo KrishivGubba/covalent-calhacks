@@ -44,8 +44,8 @@ def load_html_template(filename: str, replacements: dict = None) -> str:
 
 
 class AuthStartRequest(BaseModel):
-    state: str
-    code_verifier: str
+    state: Optional[str] = None
+    code_verifier: Optional[str] = None
 
 
 class LogoutRequest(BaseModel):

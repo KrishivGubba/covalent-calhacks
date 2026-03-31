@@ -5,7 +5,7 @@ import json
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional
 
 from ..dependencies import tree_dependency
 from logger import get_logger

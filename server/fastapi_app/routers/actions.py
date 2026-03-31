@@ -22,26 +22,26 @@ router = APIRouter()
 
 
 class PlanActionRequest(BaseModel):
-    action_uuid: str
+    action_uuid: str = ""
     action_override: Optional[Dict[str, Any]] = None
     skip_research: bool = False
 
 
 class PlanActionDirectRequest(BaseModel):
-    action_text: str
+    action_text: str = ""
     context: str = ""
     skip_research: bool = False
 
 
 class ExecuteActionRequest(BaseModel):
-    action_uuid: str
+    action_uuid: str = ""
     tool_name: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = None
     actions: Optional[List[Dict[str, Any]]] = None
 
 
 class EditActionRequest(BaseModel):
-    action_uuid: str
+    action_uuid: str = ""
     action_name: Optional[str] = None
     action_plan: Optional[str] = None
     action_override: Optional[Dict[str, Any]] = None
@@ -386,6 +386,9 @@ async def edit_action_endpoint(
     """
     try:
         log.info(f"✏️ Editing action {body.action_uuid} (persist={body.persist})")
+
+        if not body.action_uuid:
+            return JSONResponse(status_code=400, content={"error": "action_uuid is required"})
 
         action_data = tree.dao.get_action_by_id(body.action_uuid)
         if not action_data:

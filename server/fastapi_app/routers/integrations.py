@@ -4,7 +4,7 @@ Integration management endpoints (Google, GitHub, Notion, Filesystem).
 import os
 import json
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -54,11 +54,11 @@ def _get_filesystem_description(integration_dao) -> str:
 
 
 class FilesystemConnectRequest(BaseModel):
-    root_path: str
+    root_path: Optional[str] = None
 
 
 class FilesystemUpdateRequest(BaseModel):
-    root_path: str
+    root_path: Optional[str] = None
 
 
 @router.get("/status")
@@ -191,9 +191,9 @@ async def filesystem_update_root(
 # ==================== Google ====================
 
 class GoogleStartRequest(BaseModel):
-    state: str
-    code_verifier: str
-    auth_token: str
+    state: Optional[str] = None
+    code_verifier: Optional[str] = None
+    auth_token: Optional[str] = None
 
 
 @router.post("/google/start")
@@ -401,9 +401,9 @@ async def google_disconnect(integration_dao=Depends(integration_dao_dependency))
 # ==================== GitHub ====================
 
 class GitHubStartRequest(BaseModel):
-    state: str
-    code_verifier: str
-    auth_token: str
+    state: Optional[str] = None
+    code_verifier: Optional[str] = None
+    auth_token: Optional[str] = None
 
 
 @router.post("/github/start")
@@ -576,8 +576,8 @@ async def github_disconnect(integration_dao=Depends(integration_dao_dependency))
 # ==================== Notion ====================
 
 class NotionStartRequest(BaseModel):
-    state: str
-    auth_token: str
+    state: Optional[str] = None
+    auth_token: Optional[str] = None
 
 
 @router.post("/notion/start")

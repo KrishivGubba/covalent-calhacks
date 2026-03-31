@@ -31,7 +31,7 @@ async def mcp_health():
 
 @router.get("/action_history")
 async def get_action_history(
-    limit: int = Query(default=50, ge=1, le=500),
+    limit: int = Query(default=50, ge=1),
     offset: int = Query(default=0, ge=0),
     status: Optional[str] = Query(default=None),
     action_type: Optional[str] = Query(default=None),
