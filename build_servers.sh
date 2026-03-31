@@ -87,9 +87,6 @@ pyinstaller server/run_fastapi.py \
   --hidden-import=httptools \
   --add-data="server/htmlstuff:server/htmlstuff" \
   --add-data="model_config.yml:." \
-  --add-data="$SITE_PACKAGES/fastapi:fastapi" \
-  --add-data="$SITE_PACKAGES/starlette:starlette" \
-  --add-data="$SITE_PACKAGES/uvicorn:uvicorn" \
   --copy-metadata=fastapi \
   --copy-metadata=starlette \
   --copy-metadata=uvicorn \
@@ -98,13 +95,7 @@ pyinstaller server/run_fastapi.py \
   --copy-metadata=langchain \
   --copy-metadata=langchain-core \
   --copy-metadata=langchain-openai \
-  --copy-metadata=openai \
-  --collect-submodules=rich \
-  --collect-submodules=fastapi \
-  --collect-submodules=starlette \
-  --collect-submodules=uvicorn \
-  --collect-submodules=pydantic \
-  --collect-submodules=anyio
+  --copy-metadata=openai
 
 echo ""
 echo "=== Build complete ==="

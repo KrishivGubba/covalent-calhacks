@@ -1,0 +1,47 @@
+{
+  "policy": "strict_wire_parity_plus_bug_cleanup",
+  "notes": [
+    "Flask behavior is temporary baseline authority.",
+    "Allowlist entries are only for approved deterministic bug cleanups.",
+    "No production cutover until unapproved mismatch count is zero."
+  ],
+  "surfaces": {
+    "actions": {
+      "endpoints": ["/plan_action", "/plan_action_direct", "/execute_action", "/edit_action"],
+      "must_match": ["status_code", "json_shape", "status", "error"]
+    },
+    "auth": {
+      "endpoints": ["/auth/check", "/auth/session", "/auth/current", "/auth/session/refresh", "/auth/logout"],
+      "must_match": ["status_code", "json_shape", "error_contract"]
+    },
+    "integrations": {
+      "endpoints": [
+        "/integrations/status",
+        "/integrations/filesystem/root",
+        "/integrations/google/check",
+        "/integrations/github/check",
+        "/integrations/notion/check",
+        "/integrations/google/refresh",
+        "/integrations/notion/refresh"
+      ],
+      "must_match": ["status_code", "json_shape", "status", "error"]
+    },
+    "mcp": {
+      "endpoints": ["/mcp", "/mcp_health", "/action_history"],
+      "must_match": ["mounted_path", "status_code", "json_shape"]
+    },
+    "tab_completion": {
+      "endpoints": ["/tab_predict", "/tab_context", "/tab_feedback"],
+      "must_match": ["status_code", "json_shape", "prediction_contract"]
+    },
+    "graph": {
+      "endpoints": ["/graph/reset", "/graph/cleanup", "/graph/data"],
+      "must_match": ["status_code", "json_shape"]
+    }
+  },
+  "approved_bug_cleanup_scope": [
+    "MCP mount path normalization (/mcp exact reachability)",
+    "Async display-resolution path (remove nested event-loop misuse)",
+    "DAO concurrency safety (shared-cursor race elimination)"
+  ]
+}
