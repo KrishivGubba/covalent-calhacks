@@ -12,6 +12,9 @@ SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])")
 echo "Using site-packages: $SITE_PACKAGES"
 
 echo "=== Building FastAPI server ==="
+# Keep PyInstaller inputs tight for smaller bundles:
+# - avoid copying full site-packages trees as --add-data
+# - avoid broad --collect-submodules sweeps unless required by a regression
 pyinstaller server/run_fastapi.py \
   --noconfirm \
   --name flask-server \

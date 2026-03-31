@@ -1,0 +1,35 @@
+{
+  "cases": [
+    {
+      "id": "tab_predict_basic",
+      "method": "POST",
+      "path": "/tab_predict",
+      "body": {
+        "app_name": "Terminal",
+        "text_buffer": "import",
+        "context_type": "full_query",
+        "activity_id": "determinism_case_tab_predict"
+      },
+      "stable_paths": ["prediction", "confidence"],
+      "repeats": 5,
+      "concurrency": 8
+    },
+    {
+      "id": "execute_action_missing",
+      "method": "POST",
+      "path": "/execute_action",
+      "body": {"action_uuid": ""},
+      "stable_paths": ["status", "error"],
+      "repeats": 5,
+      "concurrency": 8
+    },
+    {
+      "id": "auth_check_missing_state",
+      "method": "GET",
+      "path": "/auth/check",
+      "stable_paths": ["status", "error"],
+      "repeats": 5,
+      "concurrency": 8
+    }
+  ]
+}
