@@ -639,7 +639,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   detailGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
     gap: '10px',
   },
   detailItem: {
@@ -718,7 +718,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   formGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
     gap: '10px',
     marginBottom: '10px',
   },

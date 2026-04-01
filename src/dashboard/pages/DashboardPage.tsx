@@ -249,7 +249,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   statsRow: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
     gap: '12px',
     marginBottom: '24px',
   },
