@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import Sidebar, { PageType } from './components/Sidebar';
 import UpdateButton from './components/UpdateButton';
+import DashboardPage from './pages/DashboardPage';
 import AuthPage from './pages/AuthPage';
 import SettingsPage from './pages/SettingsPage';
 import MCPPage from './pages/MCPPage';
@@ -12,11 +13,11 @@ import type { ActionResultPayload } from '../utils/actionNotifications';
 import { loadAuthStatus } from '../shared/authService';
 
 const Dashboard: React.FC = () => {
-  const [currentPage, setCurrentPage] = useState<PageType>('settings');
+  const [currentPage, setCurrentPage] = useState<PageType>('dashboard');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
 
-  const currentPageRef = useRef<PageType>('settings');
+  const currentPageRef = useRef<PageType>('dashboard');
 
   const handlePageChange = useCallback((page: PageType) => {
     if (page === 'history' && currentPageRef.current !== 'history') {
@@ -77,6 +78,13 @@ const Dashboard: React.FC = () => {
 
   const renderPage = () => {
     switch (currentPage) {
+      case 'dashboard':
+        return (
+          <DashboardPage
+            onOpenHistory={() => handlePageChange('history')}
+            onOpenProfile={() => handlePageChange('auth')}
+          />
+        );
       case 'settings':
         return <SettingsPage />;
       case 'mcp':
@@ -88,7 +96,12 @@ const Dashboard: React.FC = () => {
       case 'auth':
         return <AuthPage onAuthChange={handleAuthChange} />;
       default:
-        return <SettingsPage />;
+        return (
+          <DashboardPage
+            onOpenHistory={() => handlePageChange('history')}
+            onOpenProfile={() => handlePageChange('auth')}
+          />
+        );
     }
   };
 
