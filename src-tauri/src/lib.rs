@@ -661,6 +661,9 @@ fn set_onboarding_completed(
             let _ = window.hide();
         }
         if let Some(window) = app.get_webview_window("main") {
+            let _ = window.hide();
+        }
+        if let Some(window) = app.get_webview_window("dashboard") {
             let _ = window.show();
         }
     } else {
@@ -1793,6 +1796,9 @@ pub fn run() {
                     let _ = window.hide();
                 }
                 if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+                if let Some(window) = app.get_webview_window("dashboard") {
                     let _ = window.show();
                 }
             } else {
@@ -1969,6 +1975,9 @@ pub fn run() {
                 let (completed, _, _) = read_onboarding_state(&settings);
                 if completed {
                     if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.hide();
+                    }
+                    if let Some(window) = app_handle.get_webview_window("dashboard") {
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
