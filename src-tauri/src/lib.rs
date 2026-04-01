@@ -661,10 +661,11 @@ fn set_onboarding_completed(
             let _ = window.hide();
         }
         if let Some(window) = app.get_webview_window("main") {
-            let _ = window.hide();
+            let _ = window.show();
         }
         if let Some(window) = app.get_webview_window("dashboard") {
             let _ = window.show();
+            let _ = window.set_focus();
         }
     } else {
         if let Some(window) = app.get_webview_window("main") {
@@ -1796,10 +1797,11 @@ pub fn run() {
                     let _ = window.hide();
                 }
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
+                    let _ = window.show();
                 }
                 if let Some(window) = app.get_webview_window("dashboard") {
                     let _ = window.show();
+                    let _ = window.set_focus();
                 }
             } else {
                 // Keep data collection locked until onboarding is done.
@@ -1975,7 +1977,7 @@ pub fn run() {
                 let (completed, _, _) = read_onboarding_state(&settings);
                 if completed {
                     if let Some(window) = app_handle.get_webview_window("main") {
-                        let _ = window.hide();
+                        let _ = window.show();
                     }
                     if let Some(window) = app_handle.get_webview_window("dashboard") {
                         let _ = window.show();
