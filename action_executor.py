@@ -1199,7 +1199,7 @@ async def execute_action(tool_name: str, parameters: Dict[str, Any]) -> Dict[str
             if _MOUNT_MCP:
                 _hint = f"MCP server unreachable at http://localhost:{MCP_PORT}/mcp. Ensure FastAPI server is running with MCP mounted."
             else:
-                _hint = f"MCP server unreachable at http://localhost:{MCP_PORT}/mcp. Start it with: bash covalent_mcp/start_mcp.sh (or use start_servers.sh)"
+                _hint = f"MCP server unreachable at http://localhost:{MCP_PORT}/mcp. Start the API with mounted MCP via: bash start_servers.sh"
             return {"status": "error", "result": None, "error": _hint}
         return {
             "status": "error",

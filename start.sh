@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Start FastAPI server and MCP server for Covalent
+# Start Covalent API stack (FastAPI + mounted MCP)
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"

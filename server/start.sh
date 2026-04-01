@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Start Flask server and MCP server for Covalent
+# Backward-compatible start wrapper for Covalent API stack.
+# Primary path is FastAPI with MCP mounted at /mcp.
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
