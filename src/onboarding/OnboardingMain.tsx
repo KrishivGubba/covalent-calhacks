@@ -181,7 +181,6 @@ const OnboardingApp: React.FC = () => {
     signInComplete && permissionsComplete && integrationsComplete && profileComplete;
 
   useEffect(() => {
-    void invoke('notify_onboarding_change', { completed: false }).catch(() => undefined);
     void hydrate();
   }, []);
 
