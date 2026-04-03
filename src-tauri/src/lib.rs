@@ -1307,6 +1307,30 @@ fn open_main_window(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+fn apply_main_window_view_state(
+    window: &tauri::WebviewWindow,
+    view_state: &str,
+) -> Result<(), String> {
+    let (width, height) = match view_state {
+        "collapsed" => (80.0, 80.0),
+        "expanded" => (550.0, 450.0),
+        _ => return Err(format!("Invalid view state: {}", view_state)),
+    };
+
+    window
+        .set_size(tauri::LogicalSize::new(width, height))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_main_window_view_state(app: tauri::AppHandle, view_state: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        apply_main_window_view_state(&window, &view_state)
+    } else {
+        Err("Main window not found".to_string())
+    }
+}
+
 // Check if any Covalent window is currently focused
 #[tauri::command]
 fn is_covalent_focused(app: tauri::AppHandle) -> Result<bool, String> {
@@ -1936,6 +1960,7 @@ pub fn run() {
             edit_action,
             get_suggested_actions,
             clear_suggested_actions,
+            set_main_window_view_state,
             tab_completion::injector::inject_completion_text,
             get_cursor_position,
             get_cache_state,

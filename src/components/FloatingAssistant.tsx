@@ -140,6 +140,18 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
     };
   }, []);
 
+  useEffect(() => {
+    const syncMainWindowHitbox = async () => {
+      try {
+        await invoke('set_main_window_view_state', { viewState: viewState });
+      } catch (error) {
+        console.error('Failed to sync main window view state:', error);
+      }
+    };
+
+    void syncMainWindowHitbox();
+  }, [viewState]);
+
   // Helper: Get normalized proposed actions array
   const getProposedActions = (plan: ActionPlan): ProposedAction[] => {
     // #region agent log
