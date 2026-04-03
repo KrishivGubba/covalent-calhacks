@@ -218,11 +218,13 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
   const handleIconClick = () => {
     if (!isAnimating) {
       setIsAnimating(true);
+      const nextViewState: ViewState = viewState === 'collapsed' ? 'expanded' : 'collapsed';
+      const transitionDelayMs = viewState === 'expanded' ? 2000 : 100;
       setTimeout(() => {
-        // Toggle between collapsed and expanded
-        setViewState(viewState === 'collapsed' ? 'expanded' : 'collapsed');
+        // Delay collapse transition so the current animation can finish smoothly.
+        setViewState(nextViewState);
         setIsAnimating(false);
-      }, 100);
+      }, transitionDelayMs);
     }
   };
 
