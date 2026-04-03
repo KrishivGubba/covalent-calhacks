@@ -3,6 +3,7 @@ pub mod ai_provider;
 pub mod screen_context;
 pub mod tab_completion;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, Emitter};
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}};
@@ -619,6 +620,67 @@ fn read_onboarding_state(settings: &serde_json::Value) -> (bool, i64, Option<Str
     (completed, version, completed_at)
 }
 
+const SUGGESTED_ACTIONS_ALWAYS_ON_TOP_KEY: &str = "suggested_actions_always_on_top";
+const SUGGESTED_ACTIONS_PINNING_CHANGED_EVENT: &str = "suggested-actions-pinning-changed";
+
+fn read_suggested_actions_always_on_top(settings: &serde_json::Value) -> bool {
+    settings
+        .get(SUGGESTED_ACTIONS_ALWAYS_ON_TOP_KEY)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+fn get_suggested_actions_always_on_top_setting(app: &tauri::AppHandle) -> bool {
+    let settings = load_settings(app);
+    read_suggested_actions_always_on_top(&settings)
+}
+
+fn apply_suggested_actions_always_on_top(app: &tauri::AppHandle, always_on_top: bool) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(e) = window.set_always_on_top(always_on_top) {
+            eprintln!("⚠️  Failed to set main window always-on-top to {}: {}", always_on_top, e);
+        }
+    }
+}
+
+fn set_suggested_actions_always_on_top_internal(
+    app: &tauri::AppHandle,
+    always_on_top: bool,
+) -> bool {
+    save_setting(
+        app,
+        SUGGESTED_ACTIONS_ALWAYS_ON_TOP_KEY,
+        serde_json::Value::Bool(always_on_top),
+    );
+    apply_suggested_actions_always_on_top(app, always_on_top);
+    let _ = app.emit(
+        SUGGESTED_ACTIONS_PINNING_CHANGED_EVENT,
+        serde_json::json!({ "always_on_top": always_on_top }),
+    );
+    always_on_top
+}
+
+fn open_dashboard_or_onboarding(app: &tauri::AppHandle) {
+    let settings = load_settings(app);
+    let (completed, _, _) = read_onboarding_state(&settings);
+    if !completed {
+        println!("🧭 Onboarding incomplete — opening onboarding window");
+        if let Some(window) = app.get_webview_window("onboarding") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        return;
+    }
+
+    println!("🎛️  Opening dashboard");
+    if let Some(window) = app.get_webview_window("dashboard") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    } else {
+        eprintln!("⚠️  Dashboard window not found");
+    }
+}
+
 #[tauri::command]
 fn get_onboarding_state(app: tauri::AppHandle) -> serde_json::Value {
     let settings = load_settings(&app);
@@ -661,6 +723,8 @@ fn set_onboarding_completed(
             let _ = window.hide();
         }
         if let Some(window) = app.get_webview_window("main") {
+            let always_on_top = get_suggested_actions_always_on_top_setting(&app);
+            apply_suggested_actions_always_on_top(&app, always_on_top);
             let _ = window.show();
         }
         if let Some(window) = app.get_webview_window("dashboard") {
@@ -1298,13 +1362,24 @@ fn open_main_window(app: tauri::AppHandle) -> Result<(), String> {
 
     println!("🪟 Opening main window");
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_always_on_top(true);
+        let always_on_top = get_suggested_actions_always_on_top_setting(&app);
+        apply_suggested_actions_always_on_top(&app, always_on_top);
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
         Ok(())
     } else {
         Err("Main window not found".to_string())
     }
+}
+
+#[tauri::command]
+fn get_suggested_actions_always_on_top(app: tauri::AppHandle) -> bool {
+    get_suggested_actions_always_on_top_setting(&app)
+}
+
+#[tauri::command]
+fn set_suggested_actions_always_on_top(app: tauri::AppHandle, always_on_top: bool) -> bool {
+    set_suggested_actions_always_on_top_internal(&app, always_on_top)
 }
 
 fn apply_main_window_view_state(
@@ -1494,8 +1569,8 @@ pub fn run() {
             // Create and manage context state
             let context_state = ContextState::new();
 
-            // Load persisted settings (excluded apps + onboarding state)
-            let onboarding_completed = {
+            // Load persisted settings (excluded apps + onboarding state + suggested actions pinning).
+            let (onboarding_completed, suggested_actions_always_on_top) = {
                 let handle = app.handle().clone();
                 let settings = load_settings(&handle);
                 let excluded = if let Some(arr) = settings.get("excluded_apps").and_then(|v| v.as_array()) {
@@ -1529,7 +1604,23 @@ pub fn run() {
                     "🧭 Onboarding state loaded: completed={}, version={}, completed_at={:?}",
                     completed, version, completed_at
                 );
-                completed
+                let always_on_top = read_suggested_actions_always_on_top(&settings);
+                if settings
+                    .get(SUGGESTED_ACTIONS_ALWAYS_ON_TOP_KEY)
+                    .and_then(|v| v.as_bool())
+                    .is_none()
+                {
+                    save_setting(
+                        &handle,
+                        SUGGESTED_ACTIONS_ALWAYS_ON_TOP_KEY,
+                        serde_json::Value::Bool(always_on_top),
+                    );
+                }
+                println!(
+                    "📌 Suggested actions always-on-top loaded: {}",
+                    always_on_top
+                );
+                (completed, always_on_top)
             };
 
             app.manage(context_state.clone());
