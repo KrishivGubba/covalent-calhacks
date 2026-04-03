@@ -158,7 +158,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
       // Let the visual collapse animation finish before shrinking the native window hitbox.
       collapseDelayTimer = setTimeout(() => {
         void syncMainWindowHitbox('collapsed');
-      }, 2000);
+      }, 1000);
     } else {
       void syncMainWindowHitbox(viewState);
     }
