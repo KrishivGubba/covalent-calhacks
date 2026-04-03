@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 const SettingsPage: React.FC = () => {
   const [excludedApps, setExcludedApps] = useState<string[]>([]);
@@ -8,10 +9,34 @@ const SettingsPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [tabCompletionEnabled, setTabCompletionEnabled] = useState(false);
   const [tabCompletionLoading, setTabCompletionLoading] = useState(false);
+  const [suggestedActionsAlwaysOnTop, setSuggestedActionsAlwaysOnTop] = useState(true);
+  const [suggestedActionsPinLoading, setSuggestedActionsPinLoading] = useState(false);
 
   useEffect(() => {
     loadExcludedApps();
     loadTabCompletionStatus();
+    loadSuggestedActionsPinningStatus();
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+
+    const subscribe = async () => {
+      unlisten = await listen<{ always_on_top?: boolean }>(
+        'suggested-actions-pinning-changed',
+        (event) => {
+          if (typeof event.payload?.always_on_top === 'boolean') {
+            setSuggestedActionsAlwaysOnTop(event.payload.always_on_top);
+          }
+        },
+      );
+    };
+
+    void subscribe();
+
+    return () => {
+      if (unlisten) unlisten();
+    };
   }, []);
 
   const loadTabCompletionStatus = async () => {
@@ -32,6 +57,29 @@ const SettingsPage: React.FC = () => {
       console.error('Failed to toggle tab completion:', error);
     } finally {
       setTabCompletionLoading(false);
+    }
+  };
+
+  const loadSuggestedActionsPinningStatus = async () => {
+    try {
+      const status = await invoke<boolean>('get_suggested_actions_always_on_top');
+      setSuggestedActionsAlwaysOnTop(status);
+    } catch (error) {
+      console.error('Failed to get suggested actions pinning status:', error);
+    }
+  };
+
+  const handleSuggestedActionsPinToggle = async () => {
+    setSuggestedActionsPinLoading(true);
+    try {
+      const newState = await invoke<boolean>('set_suggested_actions_always_on_top', {
+        alwaysOnTop: !suggestedActionsAlwaysOnTop,
+      });
+      setSuggestedActionsAlwaysOnTop(newState);
+    } catch (error) {
+      console.error('Failed to toggle suggested actions pinning status:', error);
+    } finally {
+      setSuggestedActionsPinLoading(false);
     }
   };
 
@@ -138,6 +186,47 @@ const SettingsPage: React.FC = () => {
                 style={{
                   ...styles.toggleThumb,
                   transform: tabCompletionEnabled ? 'translateX(20px)' : 'translateX(2px)',
+                }}
+              />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div style={styles.section}>
+        <h2 style={styles.sectionTitle}>Suggested Actions Window</h2>
+        <p style={styles.sectionDescription}>
+          Control whether the Suggested Actions window stays pinned above other applications.
+        </p>
+        <div style={styles.card}>
+          <div style={styles.toggleRow}>
+            <div>
+              <div style={styles.toggleLabel}>Always on top</div>
+              <div style={styles.toggleDescription}>
+                {suggestedActionsAlwaysOnTop
+                  ? 'Pinned — Suggested Actions stays above other windows'
+                  : 'Unpinned — Suggested Actions behaves like a normal window'}
+              </div>
+            </div>
+            <button
+              onClick={handleSuggestedActionsPinToggle}
+              disabled={suggestedActionsPinLoading}
+              style={{
+                ...styles.toggleTrack,
+                backgroundColor: suggestedActionsAlwaysOnTop ? '#1A1A1A' : '#D4CFC6',
+                opacity: suggestedActionsPinLoading ? 0.6 : 1,
+                cursor: suggestedActionsPinLoading ? 'not-allowed' : 'pointer',
+              }}
+              aria-label={
+                suggestedActionsAlwaysOnTop
+                  ? 'Disable suggested actions always-on-top'
+                  : 'Enable suggested actions always-on-top'
+              }
+            >
+              <div
+                style={{
+                  ...styles.toggleThumb,
+                  transform: suggestedActionsAlwaysOnTop ? 'translateX(20px)' : 'translateX(2px)',
                 }}
               />
             </button>

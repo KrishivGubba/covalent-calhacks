@@ -1913,6 +1913,7 @@ pub fn run() {
                     let _ = window.hide();
                 }
                 if let Some(window) = app.get_webview_window("main") {
+                    apply_suggested_actions_always_on_top(&app.handle(), suggested_actions_always_on_top);
                     let _ = window.show();
                 }
                 if let Some(window) = app.get_webview_window("dashboard") {
@@ -1935,15 +1936,15 @@ pub fn run() {
             }
             
             // Create menu items
-            let open_dashboard = MenuItem::with_id(app, "open_dashboard", "Dashboard", true, Some("cmd+;"))?;
-            let quit = PredefinedMenuItem::quit(app, Some("Quit"))?;
+            let open_dashboard = MenuItem::with_id(app, "open_dashboard", "Dashboard", true, Some("cmd+,"))?;
+            let app_menu_quit = PredefinedMenuItem::quit(app, Some("Quit"))?;
             
             // Create Profile submenu
             let profile_submenu = Submenu::with_items(
                 app,
                 "Profile",
                 true,
-                &[&open_dashboard, &quit],
+                &[&open_dashboard, &app_menu_quit],
             )?;
             
             // Create Edit submenu with standard clipboard operations
@@ -1967,28 +1968,43 @@ pub fn run() {
             
             // Set menu
             app.set_menu(menu)?;
+
+            // Create tray/menu-bar icon and menu
+            let tray_show_dashboard = MenuItem::with_id(app, "tray_show_dashboard", "Show Dashboard", true, None::<&str>)?;
+            let tray_toggle_pin = MenuItem::with_id(
+                app,
+                "tray_toggle_suggested_pin",
+                "Toggle Suggested Actions Always-On-Top",
+                true,
+                None::<&str>,
+            )?;
+            let tray_quit = PredefinedMenuItem::quit(app, Some("Quit"))?;
+            let tray_menu = Menu::with_items(app, &[&tray_show_dashboard, &tray_toggle_pin, &tray_quit])?;
+
+            let mut tray_builder = TrayIconBuilder::with_id("covalent-menu-bar")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(true)
+                .tooltip("Covalent");
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray_builder = tray_builder.icon(icon);
+            }
+            let tray_icon = tray_builder.build(app)?;
+            app.manage(tray_icon);
             
             // Handle menu events
             app.on_menu_event(move |app, event| {
                 match event.id().as_ref() {
-                    "open_dashboard" => {
-                        let settings = load_settings(app);
-                        let (completed, _, _) = read_onboarding_state(&settings);
-                        if !completed {
-                            println!("🧭 Onboarding incomplete — opening onboarding window");
-                            if let Some(window) = app.get_webview_window("onboarding") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                            return;
-                        }
-                        println!("🎛️  Opening dashboard");
-                        if let Some(window) = app.get_webview_window("dashboard") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        } else {
-                            eprintln!("⚠️  Dashboard window not found");
-                        }
+                    "open_dashboard" | "tray_show_dashboard" => {
+                        open_dashboard_or_onboarding(app);
+                    }
+                    "tray_toggle_suggested_pin" => {
+                        let current = get_suggested_actions_always_on_top_setting(app);
+                        let next = !current;
+                        let applied = set_suggested_actions_always_on_top_internal(app, next);
+                        println!(
+                            "📌 Suggested actions always-on-top set to {} (via tray menu)",
+                            applied
+                        );
                     }
                     _ => {}
                 }
@@ -2051,6 +2067,8 @@ pub fn run() {
             edit_action,
             get_suggested_actions,
             clear_suggested_actions,
+            get_suggested_actions_always_on_top,
+            set_suggested_actions_always_on_top,
             set_main_window_view_state,
             tab_completion::injector::inject_completion_text,
             get_cursor_position,
@@ -2094,6 +2112,8 @@ pub fn run() {
                 let (completed, _, _) = read_onboarding_state(&settings);
                 if completed {
                     if let Some(window) = app_handle.get_webview_window("main") {
+                        let always_on_top = read_suggested_actions_always_on_top(&settings);
+                        apply_suggested_actions_always_on_top(&app_handle, always_on_top);
                         let _ = window.show();
                     }
                     if let Some(window) = app_handle.get_webview_window("dashboard") {
