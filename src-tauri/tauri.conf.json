@@ -26,6 +26,7 @@
         "visibleOnAllWorkspaces": true,
         "skipTaskbar": true,
         "visible": false,
+        "alwaysOnTop": true,
         "center": false,
         "contentProtected": false,
         "focus": false,

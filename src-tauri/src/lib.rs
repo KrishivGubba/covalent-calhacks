@@ -1298,6 +1298,7 @@ fn open_main_window(app: tauri::AppHandle) -> Result<(), String> {
 
     println!("🪟 Opening main window");
     if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_always_on_top(true);
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
         Ok(())
