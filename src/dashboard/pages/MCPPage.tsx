@@ -210,7 +210,6 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
         ))}
       </div>
 
-      <div style={styles.constructionNote}>Under Construction</div>
     </div>
   );
 };
@@ -328,15 +327,6 @@ const styles: { [key: string]: React.CSSProperties } = {
   loadingText: {
     color: '#9A9A96',
     fontSize: '0.9rem',
-  },
-  constructionNote: {
-    backgroundColor: '#F4F1EC',
-    border: '1px solid #E8E4DC',
-    borderRadius: '10px',
-    padding: '12px 16px',
-    color: '#9A9A96',
-    fontSize: '0.825rem',
-    textAlign: 'center',
   },
   loginPrompt: {
     backgroundColor: 'rgba(193, 122, 95, 0.08)',
