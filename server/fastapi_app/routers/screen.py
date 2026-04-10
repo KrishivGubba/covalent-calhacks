@@ -1,6 +1,7 @@
 """
 Screen context endpoint.
 """
+import asyncio
 import json
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -112,9 +113,12 @@ FULL CONTEXT DATA (JSON):
         # Convert body to JSON string for storage
         data_str = json.dumps(body.model_dump(), ensure_ascii=False)
         
-        # Call learn_with_structure
+        # Call learn_with_structure in a thread pool so the event loop stays free
+        # for dashboard/graph/action requests during this blocking LLM+DB work.
         log.debug("📍 Calling tree.learn_with_structure()...")
-        result = tree.learn_with_structure(comprehensive_context_str, data_str, available_mcps=connected_mcps)
+        result = await asyncio.to_thread(
+            tree.learn_with_structure, comprehensive_context_str, data_str, connected_mcps
+        )
         log.debug(f"📍 Operation: {result['operation']}, Confidence: {result['confidence']}")
         
         recent_actions = result.get("actions", [])

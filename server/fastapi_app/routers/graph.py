@@ -1,6 +1,7 @@
 """
 Graph management endpoints.
 """
+import asyncio
 import json
 from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,28 +20,27 @@ class GraphDataResponse(BaseModel):
     stats: dict
 
 
+def _fetch_graph_data_sync():
+    """Run all SQLite reads for /graph/data in one blocking call (called via to_thread)."""
+    conn = get_encrypted_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT UUID, Metadata, parent_uuid, children_uuid_arr FROM node_table")
+    raw_nodes = cursor.fetchall()
+    cursor.execute("SELECT UUID, Action_name, Node_UUID FROM action_table")
+    raw_actions = cursor.fetchall()
+    cursor.execute("SELECT UUID, Node_UUID, key, type, category FROM data_table")
+    raw_data = cursor.fetchall()
+    conn.close()
+    return raw_nodes, raw_actions, raw_data
+
+
 @router.get("/data")
 async def get_graph_data():
     """
     Return full graph data (nodes, edges, actions, data entries) for UI visualization.
     """
     try:
-        conn = get_encrypted_conn()
-        cursor = conn.cursor()
-        
-        # Get all nodes
-        cursor.execute("SELECT UUID, Metadata, parent_uuid, children_uuid_arr FROM node_table")
-        raw_nodes = cursor.fetchall()
-        
-        # Get all actions
-        cursor.execute("SELECT UUID, Action_name, Node_UUID FROM action_table")
-        raw_actions = cursor.fetchall()
-        
-        # Get all data entries
-        cursor.execute("SELECT UUID, Node_UUID, key, type, category FROM data_table")
-        raw_data = cursor.fetchall()
-        
-        conn.close()
+        raw_nodes, raw_actions, raw_data = await asyncio.to_thread(_fetch_graph_data_sync)
         
         # Build actions-per-node lookup
         actions_per_node = defaultdict(list)
