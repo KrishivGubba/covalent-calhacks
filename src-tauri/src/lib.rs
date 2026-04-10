@@ -725,6 +725,10 @@ fn set_onboarding_completed(
         if let Some(window) = app.get_webview_window("main") {
             let always_on_top = get_suggested_actions_always_on_top_setting(&app);
             apply_suggested_actions_always_on_top(&app, always_on_top);
+            // Explicitly reset to top-left before first show — macOS ignores the
+            // tauri.conf.json x/y for windows that were created with visible:false
+            // and overrides position with its own placement on first reveal.
+            let _ = window.set_position(tauri::LogicalPosition::new(0.0, 50.0));
             let _ = window.show();
         }
         if let Some(window) = app.get_webview_window("dashboard") {
