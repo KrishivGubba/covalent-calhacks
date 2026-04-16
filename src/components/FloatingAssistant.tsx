@@ -1,4 +1,4 @@
-import React, { useState, memo, useEffect } from 'react';
+import React, { useState, memo, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Action, ActionPlan, ProposedAction, ActionDisplay, ActionResult, ExecutionSummary, ExecutionResponse } from './SuggestedActions';
 import { disableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
@@ -127,6 +127,7 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
   const [editableParamsMap, setEditableParamsMap] = useState<Record<number, Record<string, unknown>>>({});
   const [executionResults, setExecutionResults] = useState<ActionResult[] | null>(null);
   const [executionSummary, setExecutionSummary] = useState<ExecutionSummary | null>(null);
+  const previousViewStateRef = useRef<ViewState>('collapsed');
 
 
 
@@ -139,6 +140,35 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
       clearInterval(interval);
     };
   }, []);
+
+  useEffect(() => {
+    const previousViewState = previousViewStateRef.current;
+    previousViewStateRef.current = viewState;
+    let collapseDelayTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const syncMainWindowHitbox = async (targetViewState: ViewState) => {
+      try {
+        await invoke('set_main_window_view_state', { viewState: targetViewState });
+      } catch (error) {
+        console.error('Failed to sync main window view state:', error);
+      }
+    };
+
+    if (previousViewState === 'expanded' && viewState === 'collapsed') {
+      // Let the visual collapse animation finish before shrinking the native window hitbox.
+      collapseDelayTimer = setTimeout(() => {
+        void syncMainWindowHitbox('collapsed');
+      }, 1000);
+    } else {
+      void syncMainWindowHitbox(viewState);
+    }
+
+    return () => {
+      if (collapseDelayTimer) {
+        clearTimeout(collapseDelayTimer);
+      }
+    };
+  }, [viewState]);
 
   // Helper: Get normalized proposed actions array
   const getProposedActions = (plan: ActionPlan): ProposedAction[] => {

@@ -1,0 +1,138 @@
+{
+  "cases": [
+    {
+      "id": "health",
+      "method": "GET",
+      "path": "/health",
+      "must_match_paths": ["status"]
+    },
+    {
+      "id": "mcp_health",
+      "method": "GET",
+      "path": "/mcp_health",
+      "must_match_paths": ["status"]
+    },
+    {
+      "id": "action_history",
+      "method": "GET",
+      "path": "/action_history",
+      "query": {"limit": 5, "offset": 0},
+      "must_match_paths": ["count"]
+    },
+    {
+      "id": "auth_current",
+      "method": "GET",
+      "path": "/auth/current",
+      "must_match_paths": ["authenticated", "expired"]
+    },
+    {
+      "id": "auth_session_missing_user",
+      "method": "GET",
+      "path": "/auth/session",
+      "must_match_paths": ["error"]
+    },
+    {
+      "id": "auth_check_missing_state",
+      "method": "GET",
+      "path": "/auth/check",
+      "must_match_paths": ["status", "error"]
+    },
+    {
+      "id": "integrations_status",
+      "method": "GET",
+      "path": "/integrations/status",
+      "must_match_paths": ["integrations[0].id"]
+    },
+    {
+      "id": "google_check_missing_state",
+      "method": "GET",
+      "path": "/integrations/google/check",
+      "must_match_paths": ["status", "error"]
+    },
+    {
+      "id": "github_check_missing_state",
+      "method": "GET",
+      "path": "/integrations/github/check",
+      "must_match_paths": ["status", "error"]
+    },
+    {
+      "id": "notion_check_missing_state",
+      "method": "GET",
+      "path": "/integrations/notion/check",
+      "must_match_paths": ["status", "error"]
+    },
+    {
+      "id": "filesystem_root",
+      "method": "GET",
+      "path": "/integrations/filesystem/root",
+      "must_match_paths": ["connected"]
+    },
+    {
+      "id": "plan_action_direct_missing",
+      "method": "POST",
+      "path": "/plan_action_direct",
+      "body": {"action_text": ""},
+      "must_match_paths": ["status", "error"]
+    },
+    {
+      "id": "execute_action_missing",
+      "method": "POST",
+      "path": "/execute_action",
+      "body": {"action_uuid": ""},
+      "must_match_paths": ["status", "error"]
+    },
+    {
+      "id": "edit_action_missing_uuid",
+      "method": "POST",
+      "path": "/edit_action",
+      "body": {"persist": false},
+      "must_match_paths": ["error"]
+    },
+    {
+      "id": "tab_predict_missing",
+      "method": "POST",
+      "path": "/tab_predict",
+      "body": {"app_name": "Terminal"},
+      "must_match_paths": ["error"]
+    },
+    {
+      "id": "tab_predict_basic",
+      "method": "POST",
+      "path": "/tab_predict",
+      "body": {
+        "app_name": "Terminal",
+        "text_buffer": "import",
+        "context_type": "full_query",
+        "activity_id": "parity_case_tab_predict"
+      },
+      "must_match_paths": ["prediction", "confidence"]
+    },
+    {
+      "id": "tab_context_basic",
+      "method": "POST",
+      "path": "/tab_context",
+      "body": {
+        "app_name": "Terminal",
+        "activity_id": "parity_case_tab_context",
+        "context_data": "{\"sample\":true}",
+        "activity_type": "Development::CLI"
+      },
+      "must_match_paths": ["message"]
+    },
+    {
+      "id": "tab_feedback_basic",
+      "method": "POST",
+      "path": "/tab_feedback",
+      "body": {
+        "app_name": "Terminal",
+        "activity_id": "parity_case_tab_feedback",
+        "declined_prediction": "git status --short",
+        "typed_text": "git st",
+        "chars_after": "at",
+        "time_to_decline_ms": 220,
+        "signal": "negative"
+      },
+      "must_match_paths": ["acknowledged"]
+    }
+  ]
+}

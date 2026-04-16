@@ -63,13 +63,14 @@ interface LayoutEdge {
   toY: number;
 }
 
+// Refined color palette that works on light background
 const COLORS = {
-  root: '#e63946',
-  level1: '#f77f00',
-  level2: '#fcbf49',
-  withActions: '#9b5de5',
-  leaf: '#2a9d8f',
-  deepLeaf: '#457b9d',
+  root: '#C17A5F',      // warm terracotta (matches brand)
+  level1: '#6B5EA8',    // muted purple
+  level2: '#3B7DD8',    // medium blue
+  withActions: '#9b5de5', // vivid purple for nodes with actions
+  leaf: '#2a9d8f',      // teal
+  deepLeaf: '#457b9d',  // steel blue
 };
 
 function getNodeColor(depth: number, hasActions: boolean, isRoot: boolean): string {
@@ -84,7 +85,6 @@ function getNodeColor(depth: number, hasActions: boolean, isRoot: boolean): stri
 function computeLayout(nodes: GraphNode[], _edges: GraphEdge[]): { layoutNodes: LayoutNode[]; layoutEdges: LayoutEdge[] } {
   if (nodes.length === 0) return { layoutNodes: [], layoutEdges: [] };
 
-  // Build children map
   const childrenMap: Record<string, string[]> = {};
   const nodeMap: Record<string, GraphNode> = {};
   let rootId: string | null = null;
@@ -101,18 +101,13 @@ function computeLayout(nodes: GraphNode[], _edges: GraphEdge[]): { layoutNodes: 
     }
   }
 
-  // If no root found, use the first node
   if (!rootId && nodes.length > 0) rootId = nodes[0].id;
   if (!rootId) return { layoutNodes: [], layoutEdges: [] };
 
-  // Compute subtree widths (leaf count)
   const subtreeWidth: Record<string, number> = {};
   function calcWidth(id: string): number {
     const children = childrenMap[id] || [];
-    if (children.length === 0) {
-      subtreeWidth[id] = 1;
-      return 1;
-    }
+    if (children.length === 0) { subtreeWidth[id] = 1; return 1; }
     let w = 0;
     for (const c of children) w += calcWidth(c);
     subtreeWidth[id] = w;
@@ -122,16 +117,12 @@ function computeLayout(nodes: GraphNode[], _edges: GraphEdge[]): { layoutNodes: 
 
   const NODE_H_SPACING = 160;
   const NODE_V_SPACING = 120;
-
-  // Assign positions
   const positions: Record<string, { x: number; y: number }> = {};
 
   function assignPositions(id: string, left: number, top: number) {
     const children = childrenMap[id] || [];
     const totalWidth = (subtreeWidth[id] || 1) * NODE_H_SPACING;
-    const x = left + totalWidth / 2;
-    const y = top;
-    positions[id] = { x, y };
+    positions[id] = { x: left + totalWidth / 2, y: top };
 
     let childLeft = left;
     for (const c of children) {
@@ -143,7 +134,6 @@ function computeLayout(nodes: GraphNode[], _edges: GraphEdge[]): { layoutNodes: 
 
   assignPositions(rootId, 0, 40);
 
-  // Build layout nodes
   const layoutNodes: LayoutNode[] = nodes.map((node) => {
     const pos = positions[node.id] || { x: 0, y: 0 };
     const isRoot = node.parent_id === null;
@@ -163,7 +153,6 @@ function computeLayout(nodes: GraphNode[], _edges: GraphEdge[]): { layoutNodes: 
     };
   });
 
-  // Build layout edges
   const layoutEdges: LayoutEdge[] = [];
   for (const node of nodes) {
     if (node.parent_id && positions[node.parent_id] && positions[node.id]) {
@@ -179,7 +168,7 @@ function computeLayout(nodes: GraphNode[], _edges: GraphEdge[]): { layoutNodes: 
   return { layoutNodes, layoutEdges };
 }
 
-// ── Tooltip component ──────────────────────────────────────────────────────────
+// ── Tooltip ────────────────────────────────────────────────────────────────────
 
 const Tooltip: React.FC<{
   node: LayoutNode;
@@ -187,15 +176,12 @@ const Tooltip: React.FC<{
   mouseY: number;
   containerRect: DOMRect;
 }> = ({ node, mouseX, mouseY, containerRect }) => {
-  const tooltipWidth = 280;
-  const tooltipPad = 12;
+  const tooltipWidth = 272;
+  const tooltipPad = 14;
   let left = mouseX - containerRect.left + 16;
   let top = mouseY - containerRect.top - 10;
 
-  // Keep tooltip inside container
-  if (left + tooltipWidth > containerRect.width) {
-    left = mouseX - containerRect.left - tooltipWidth - 16;
-  }
+  if (left + tooltipWidth > containerRect.width) left = mouseX - containerRect.left - tooltipWidth - 16;
   if (top < 0) top = 8;
 
   return (
@@ -205,33 +191,33 @@ const Tooltip: React.FC<{
         left,
         top,
         width: tooltipWidth,
-        backgroundColor: '#1e1e2e',
-        border: '1px solid #3a3a4a',
-        borderRadius: 10,
+        backgroundColor: '#FFFFFF',
+        border: '1px solid #E8E4DC',
+        borderRadius: 12,
         padding: tooltipPad,
         pointerEvents: 'none',
         zIndex: 100,
-        boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+        boxShadow: '0 8px 24px rgba(0,0,0,0.10)',
       }}
     >
-      <div style={{ fontWeight: 600, fontSize: '0.9rem', color: '#fff', marginBottom: 6 }}>
+      <div style={{ fontWeight: 700, fontSize: '0.875rem', color: '#1A1A1A', marginBottom: 4, letterSpacing: '-0.01em' }}>
         {node.label}
       </div>
-      <div style={{ fontSize: '0.75rem', color: '#71717a', fontFamily: 'monospace', marginBottom: 8 }}>
+      <div style={{ fontSize: '0.7rem', color: '#9A9A96', fontFamily: 'monospace', marginBottom: 10 }}>
         {node.id.slice(0, 12)}...
       </div>
       {node.actions.length > 0 && (
-        <div style={{ marginBottom: 6 }}>
-          <div style={{ fontSize: '0.75rem', color: '#9b5de5', fontWeight: 600, marginBottom: 4 }}>
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: '0.7rem', color: '#9b5de5', fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             Actions ({node.actions.length})
           </div>
           {node.actions.slice(0, 4).map((a, i) => (
-            <div key={i} style={{ fontSize: '0.75rem', color: '#a1a1aa', paddingLeft: 8 }}>
-              • {a.name.length > 40 ? a.name.slice(0, 40) + '...' : a.name}
+            <div key={i} style={{ fontSize: '0.775rem', color: '#5A5A5A', paddingLeft: 8, marginBottom: 2 }}>
+              · {a.name.length > 40 ? a.name.slice(0, 40) + '...' : a.name}
             </div>
           ))}
           {node.actions.length > 4 && (
-            <div style={{ fontSize: '0.7rem', color: '#71717a', paddingLeft: 8, fontStyle: 'italic' }}>
+            <div style={{ fontSize: '0.7rem', color: '#9A9A96', paddingLeft: 8, fontStyle: 'italic' }}>
               +{node.actions.length - 4} more
             </div>
           )}
@@ -239,23 +225,23 @@ const Tooltip: React.FC<{
       )}
       {node.data.length > 0 && (
         <div>
-          <div style={{ fontSize: '0.75rem', color: '#2a9d8f', fontWeight: 600, marginBottom: 4 }}>
+          <div style={{ fontSize: '0.7rem', color: '#2a9d8f', fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             Data ({node.data.length})
           </div>
           {node.data.slice(0, 3).map((d, i) => (
-            <div key={i} style={{ fontSize: '0.75rem', color: '#a1a1aa', paddingLeft: 8 }}>
-              • [{d.category || 'uncategorized'}] {d.key ? (d.key.length > 30 ? d.key.slice(0, 30) + '...' : d.key) : '(no key)'}
+            <div key={i} style={{ fontSize: '0.775rem', color: '#5A5A5A', paddingLeft: 8, marginBottom: 2 }}>
+              · [{d.category || 'uncategorized'}] {d.key ? (d.key.length > 30 ? d.key.slice(0, 30) + '...' : d.key) : '(no key)'}
             </div>
           ))}
           {node.data.length > 3 && (
-            <div style={{ fontSize: '0.7rem', color: '#71717a', paddingLeft: 8, fontStyle: 'italic' }}>
+            <div style={{ fontSize: '0.7rem', color: '#9A9A96', paddingLeft: 8, fontStyle: 'italic' }}>
               +{node.data.length - 3} more
             </div>
           )}
         </div>
       )}
       {node.actions.length === 0 && node.data.length === 0 && (
-        <div style={{ fontSize: '0.75rem', color: '#52525b', fontStyle: 'italic' }}>
+        <div style={{ fontSize: '0.775rem', color: '#D4CFC6', fontStyle: 'italic' }}>
           No actions or data
         </div>
       )}
@@ -263,7 +249,7 @@ const Tooltip: React.FC<{
   );
 };
 
-// ── Graph canvas component ─────────────────────────────────────────────────────
+// ── Graph canvas ───────────────────────────────────────────────────────────────
 
 const GraphVisualization: React.FC<{
   nodes: GraphNode[];
@@ -279,7 +265,6 @@ const GraphVisualization: React.FC<{
 
   const { layoutNodes, layoutEdges } = computeLayout(nodes, edges);
 
-  // Compute SVG viewBox bounds from layout
   const padding = 60;
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const n of layoutNodes) {
@@ -294,7 +279,6 @@ const GraphVisualization: React.FC<{
   const offsetX = -minX + padding;
   const offsetY = -minY + padding;
 
-  // Update container rect on mount + resize
   useEffect(() => {
     const update = () => {
       if (containerRef.current) setContainerRect(containerRef.current.getBoundingClientRect());
@@ -304,7 +288,6 @@ const GraphVisualization: React.FC<{
     return () => window.removeEventListener('resize', update);
   }, []);
 
-  // Center the graph initially when layout changes
   useEffect(() => {
     if (containerRef.current && layoutNodes.length > 0) {
       const rect = containerRef.current.getBoundingClientRect();
@@ -322,7 +305,6 @@ const GraphVisualization: React.FC<{
     const delta = e.deltaY > 0 ? 0.9 : 1.1;
     setTransform((prev) => {
       const newScale = Math.min(Math.max(prev.scale * delta, 0.1), 4);
-      // Zoom toward mouse position
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return { ...prev, scale: newScale };
       const mx = e.clientX - rect.left;
@@ -346,9 +328,7 @@ const GraphVisualization: React.FC<{
     }
   }, [isPanning, panStart]);
 
-  const handleMouseUp = useCallback(() => {
-    setIsPanning(false);
-  }, []);
+  const handleMouseUp = useCallback(() => setIsPanning(false), []);
 
   return (
     <div
@@ -375,9 +355,8 @@ const GraphVisualization: React.FC<{
         }}
       >
         <defs>
-          {/* Glow filter for hovered nodes */}
           <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur stdDeviation="4" result="coloredBlur" />
+            <feGaussianBlur stdDeviation="3" result="coloredBlur" />
             <feMerge>
               <feMergeNode in="coloredBlur" />
               <feMergeNode in="SourceGraphic" />
@@ -397,9 +376,9 @@ const GraphVisualization: React.FC<{
               key={`edge-${i}`}
               d={`M ${fx} ${fy} C ${fx} ${midY}, ${tx} ${midY}, ${tx} ${ty}`}
               fill="none"
-              stroke="#3a3a4a"
+              stroke="#D4CFC6"
               strokeWidth={1.5}
-              opacity={0.6}
+              opacity={0.7}
             />
           );
         })}
@@ -409,7 +388,6 @@ const GraphVisualization: React.FC<{
           const nx = node.x + offsetX;
           const ny = node.y + offsetY;
           const isHovered = hoveredNode?.id === node.id;
-          // Truncate label for display
           const displayLabel = node.label.length > 20 ? node.label.slice(0, 18) + '...' : node.label;
           return (
             <g
@@ -418,19 +396,17 @@ const GraphVisualization: React.FC<{
               onMouseLeave={() => setHoveredNode(null)}
               style={{ cursor: 'pointer' }}
             >
-              {/* Node circle */}
               <circle
                 cx={nx}
                 cy={ny}
                 r={isHovered ? node.radius + 3 : node.radius}
                 fill={node.color}
-                opacity={isHovered ? 1 : 0.85}
+                opacity={isHovered ? 1 : 0.88}
                 filter={isHovered ? 'url(#glow)' : undefined}
-                stroke={isHovered ? '#fff' : 'rgba(255,255,255,0.1)'}
-                strokeWidth={isHovered ? 2 : 1}
+                stroke={isHovered ? '#FFFFFF' : 'rgba(255,255,255,0.5)'}
+                strokeWidth={isHovered ? 2.5 : 1.5}
                 style={{ transition: 'r 0.15s ease, opacity 0.15s ease' }}
               />
-              {/* Badge: action count */}
               {node.actions.length > 0 && (
                 <>
                   <circle
@@ -438,7 +414,7 @@ const GraphVisualization: React.FC<{
                     cy={ny - node.radius * 0.7}
                     r={8}
                     fill="#9b5de5"
-                    stroke="#1a1a2e"
+                    stroke="#FFFFFF"
                     strokeWidth={1.5}
                   />
                   <text
@@ -453,14 +429,13 @@ const GraphVisualization: React.FC<{
                   </text>
                 </>
               )}
-              {/* Label */}
               <text
                 x={nx}
                 y={ny + node.radius + 16}
                 textAnchor="middle"
-                fill="#d4d4d8"
+                fill="#5A5A5A"
                 fontSize={11}
-                fontFamily="Inter, system-ui, sans-serif"
+                fontFamily="DM Sans, system-ui, sans-serif"
                 fontWeight={500}
               >
                 {displayLabel}
@@ -470,7 +445,6 @@ const GraphVisualization: React.FC<{
         })}
       </svg>
 
-      {/* Tooltip overlay (HTML, positioned outside SVG for cleaner rendering) */}
       {hoveredNode && containerRect && (
         <Tooltip node={hoveredNode} mouseX={mousePos.x} mouseY={mousePos.y} containerRect={containerRect} />
       )}
@@ -496,15 +470,10 @@ const MemoryPage: React.FC = () => {
       const data: GraphResponse = await response.json();
       setGraphData(data);
     } catch (err: any) {
-      console.error('Failed to load graph data:', err);
       setError(err.message || 'Failed to load graph data');
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleClearGraph = () => {
-    setShowConfirmDialog(true);
   };
 
   const confirmClearGraph = async () => {
@@ -512,20 +481,14 @@ const MemoryPage: React.FC = () => {
     setResetting(true);
     setError(null);
     try {
-      console.log('Calling graph reset endpoint...');
       const response = await fetch(`${BACKEND_URL}/graph/reset`, { method: 'POST' });
-      console.log('Graph reset response status:', response.status);
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new Error(body.error || `HTTP ${response.status}`);
       }
-      const result = await response.json();
-      console.log('Graph reset result:', result);
-      // Clear UI immediately, then reload fresh data
       setGraphData(null);
       await loadGraphData();
     } catch (err: any) {
-      console.error('Failed to reset graph:', err);
       setError(err.message || 'Failed to reset graph');
     } finally {
       setResetting(false);
@@ -540,17 +503,13 @@ const MemoryPage: React.FC = () => {
 
   return (
     <div style={styles.container}>
-      {/* Header */}
       <div style={styles.header}>
         <div>
           <h1 style={styles.title}>Memory Graph</h1>
-          <p style={styles.subtitle}>
-            Visualize and edit what Covalent knows about you
-          </p>
+          <p style={styles.subtitle}>Visualize and edit what Covalent knows about you</p>
         </div>
       </div>
 
-      {/* Error banner */}
       {error && (
         <div style={styles.errorBanner}>
           <span>{error}</span>
@@ -558,7 +517,6 @@ const MemoryPage: React.FC = () => {
         </div>
       )}
 
-      {/* Stats bar */}
       {hasData && graphData && (
         <div style={styles.statsBar}>
           <div style={styles.statItem}>
@@ -578,7 +536,6 @@ const MemoryPage: React.FC = () => {
         </div>
       )}
 
-      {/* Main graph area */}
       {loading ? (
         <div style={styles.graphContainer}>
           <div style={styles.loadingState}>
@@ -600,7 +557,6 @@ const MemoryPage: React.FC = () => {
         </div>
       )}
 
-      {/* Actions */}
       <div style={styles.footer}>
         <div style={styles.actionButtons}>
           <button style={styles.refreshButton} onClick={loadGraphData} disabled={loading}>
@@ -608,7 +564,7 @@ const MemoryPage: React.FC = () => {
           </button>
           <button
             style={styles.clearButton}
-            onClick={handleClearGraph}
+            onClick={() => setShowConfirmDialog(true)}
             disabled={resetting || loading}
           >
             {resetting ? 'Resetting...' : 'Clear Graph'}
@@ -616,25 +572,18 @@ const MemoryPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Confirmation Dialog */}
       {showConfirmDialog && (
         <div style={styles.dialogOverlay}>
           <div style={styles.dialogBox}>
-            <h3 style={styles.dialogTitle}>Clear Graph?</h3>
+            <h3 style={styles.dialogTitle}>Clear Memory Graph?</h3>
             <p style={styles.dialogText}>
               This will permanently delete all nodes, actions, and data from your knowledge graph. This action cannot be undone.
             </p>
             <div style={styles.dialogButtons}>
-              <button
-                style={styles.dialogCancelBtn}
-                onClick={() => setShowConfirmDialog(false)}
-              >
+              <button style={styles.dialogCancelBtn} onClick={() => setShowConfirmDialog(false)}>
                 Cancel
               </button>
-              <button
-                style={styles.dialogConfirmBtn}
-                onClick={confirmClearGraph}
-              >
+              <button style={styles.dialogConfirmBtn} onClick={confirmClearGraph}>
                 Yes, Clear Everything
               </button>
             </div>
@@ -655,39 +604,39 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
   },
   header: {
-    marginBottom: '20px',
+    marginBottom: '18px',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
   },
   title: {
-    fontSize: '1.75rem',
-    fontWeight: 600,
-    color: '#ffffff',
-    margin: '0 0 6px 0',
+    fontSize: '1.6rem',
+    fontWeight: 700,
+    color: '#1A1A1A',
+    margin: '0 0 5px 0',
     letterSpacing: '-0.02em',
   },
   subtitle: {
-    fontSize: '0.9rem',
-    color: '#71717a',
+    fontSize: '0.875rem',
+    color: '#5A5A5A',
     margin: 0,
   },
   errorBanner: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: 'rgba(230, 57, 70, 0.1)',
-    border: '1px solid rgba(230, 57, 70, 0.3)',
-    borderRadius: 8,
+    backgroundColor: 'rgba(239, 68, 68, 0.06)',
+    border: '1px solid rgba(239, 68, 68, 0.22)',
+    borderRadius: 10,
     padding: '10px 16px',
-    marginBottom: 16,
-    color: '#e63946',
+    marginBottom: 14,
+    color: '#991b1b',
     fontSize: '0.85rem',
   },
   errorDismiss: {
     background: 'none',
     border: 'none',
-    color: '#e63946',
+    color: '#991b1b',
     fontSize: '1.1rem',
     cursor: 'pointer',
     padding: '0 4px',
@@ -696,11 +645,12 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: 20,
-    marginBottom: 16,
+    marginBottom: 14,
     padding: '12px 20px',
-    backgroundColor: '#141414',
-    borderRadius: 10,
-    border: '1px solid #27272a',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    border: '1px solid #E8E4DC',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
   },
   statItem: {
     display: 'flex',
@@ -711,26 +661,27 @@ const styles: Record<string, React.CSSProperties> = {
   statValue: {
     fontSize: '1.1rem',
     fontWeight: 700,
-    color: '#ffffff',
+    color: '#1A1A1A',
     fontVariantNumeric: 'tabular-nums',
   },
   statLabel: {
-    fontSize: '0.7rem',
-    color: '#71717a',
+    fontSize: '0.68rem',
+    color: '#9A9A96',
     textTransform: 'uppercase',
-    letterSpacing: '0.05em',
+    letterSpacing: '0.06em',
+    fontWeight: 600,
   },
   statDivider: {
     width: 1,
     height: 28,
-    backgroundColor: '#27272a',
+    backgroundColor: '#E8E4DC',
   },
   graphContainer: {
     flex: 1,
     minHeight: 400,
-    backgroundColor: '#0d0d12',
-    borderRadius: 12,
-    border: '1px solid #27272a',
+    backgroundColor: '#F4F1EC',
+    borderRadius: 14,
+    border: '1px solid #E8E4DC',
     overflow: 'hidden',
     position: 'relative',
   },
@@ -743,81 +694,86 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 12,
   },
   spinner: {
-    width: 28,
-    height: 28,
-    border: '3px solid #27272a',
-    borderTopColor: '#C5F467',
+    width: 26,
+    height: 26,
+    border: '3px solid #E8E4DC',
+    borderTopColor: '#1A1A1A',
     borderRadius: '50%',
     animation: 'spin 0.8s linear infinite',
   },
   loadingText: {
-    color: '#71717a',
-    fontSize: '0.9rem',
+    color: '#9A9A96',
+    fontSize: '0.875rem',
+    margin: 0,
   },
   emptyState: {
     flex: 1,
     minHeight: 400,
-    backgroundColor: '#0d0d12',
-    borderRadius: 12,
-    border: '1px solid #27272a',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    border: '1px solid #E8E4DC',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 48,
+    boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
   },
   emptyIcon: {
-    fontSize: '2.5rem',
-    color: '#27272a',
-    marginBottom: 16,
+    fontSize: '2rem',
+    color: '#D4CFC6',
+    marginBottom: 14,
   },
   emptyTitle: {
-    fontSize: '1.15rem',
-    fontWeight: 600,
-    color: '#ffffff',
+    fontSize: '1.1rem',
+    fontWeight: 700,
+    color: '#1A1A1A',
     marginBottom: 8,
+    marginTop: 0,
+    letterSpacing: '-0.01em',
   },
   emptyText: {
     fontSize: '0.85rem',
-    color: '#52525b',
+    color: '#9A9A96',
     lineHeight: 1.6,
     textAlign: 'center',
-    maxWidth: 400,
+    maxWidth: 380,
+    margin: 0,
   },
   footer: {
     display: 'flex',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
     alignItems: 'center',
-    marginTop: 16,
-    gap: 16,
-    flexWrap: 'wrap',
+    marginTop: 14,
+    gap: 10,
   },
   actionButtons: {
     display: 'flex',
-    gap: 10,
-    marginLeft: 'auto',
+    gap: 8,
   },
   refreshButton: {
     padding: '9px 20px',
-    backgroundColor: '#C5F467',
+    backgroundColor: '#1A1A1A',
     border: 'none',
-    borderRadius: 8,
-    color: '#0a0a0a',
-    fontSize: '0.82rem',
+    borderRadius: 100,
+    color: '#FFFFFF',
+    fontSize: '0.825rem',
     fontWeight: 600,
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    transition: 'all 0.15s ease',
+    fontFamily: 'inherit',
   },
   clearButton: {
     padding: '9px 20px',
     backgroundColor: 'transparent',
-    border: '1px solid rgba(230, 57, 70, 0.4)',
-    borderRadius: 8,
-    color: '#e63946',
-    fontSize: '0.82rem',
+    border: '1px solid rgba(239, 68, 68, 0.3)',
+    borderRadius: 100,
+    color: '#991b1b',
+    fontSize: '0.825rem',
     fontWeight: 500,
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    transition: 'all 0.15s ease',
+    fontFamily: 'inherit',
   },
   dialogOverlay: {
     position: 'fixed',
@@ -825,58 +781,63 @@ const styles: Record<string, React.CSSProperties> = {
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.25)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 1000,
+    backdropFilter: 'blur(4px)',
   },
   dialogBox: {
-    backgroundColor: '#1a1a1f',
-    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
     padding: '28px 32px',
-    maxWidth: 420,
+    maxWidth: 400,
     width: '90%',
-    border: '1px solid #27272a',
-    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)',
+    border: '1px solid #E8E4DC',
+    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.12)',
   },
   dialogTitle: {
-    fontSize: '1.15rem',
-    fontWeight: 600,
-    color: '#ffffff',
-    marginBottom: 12,
+    fontSize: '1.05rem',
+    fontWeight: 700,
+    color: '#1A1A1A',
+    marginBottom: 10,
     marginTop: 0,
+    letterSpacing: '-0.01em',
   },
   dialogText: {
-    fontSize: '0.88rem',
-    color: '#a1a1aa',
+    fontSize: '0.875rem',
+    color: '#5A5A5A',
     lineHeight: 1.6,
-    marginBottom: 24,
+    marginBottom: 22,
+    marginTop: 0,
   },
   dialogButtons: {
     display: 'flex',
     justifyContent: 'flex-end',
-    gap: 10,
+    gap: 8,
   },
   dialogCancelBtn: {
-    padding: '10px 20px',
+    padding: '9px 18px',
     backgroundColor: 'transparent',
-    border: '1px solid #27272a',
-    borderRadius: 8,
-    color: '#ffffff',
-    fontSize: '0.82rem',
+    border: '1px solid #E8E4DC',
+    borderRadius: 100,
+    color: '#5A5A5A',
+    fontSize: '0.825rem',
     fontWeight: 500,
     cursor: 'pointer',
+    fontFamily: 'inherit',
   },
   dialogConfirmBtn: {
-    padding: '10px 20px',
-    backgroundColor: '#e63946',
+    padding: '9px 18px',
+    backgroundColor: '#ef4444',
     border: 'none',
-    borderRadius: 8,
-    color: '#ffffff',
-    fontSize: '0.82rem',
+    borderRadius: 100,
+    color: '#FFFFFF',
+    fontSize: '0.825rem',
     fontWeight: 600,
     cursor: 'pointer',
+    fontFamily: 'inherit',
   },
 };
 

@@ -3,6 +3,8 @@ anthropic
 mcp
 langchain
 pydantic
+fastapi
+uvicorn[standard]
 langchain-core
 httpx
 starlette

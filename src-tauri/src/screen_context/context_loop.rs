@@ -147,6 +147,10 @@ impl ContextLoop {
         
         // Check if context collection is disabled BEFORE doing any work
         if let Some(ref state) = self.context_state {
+            if !state.is_onboarding_complete() {
+                println!("  🧭 Onboarding not complete - skipping context collection");
+                return Ok(());
+            }
             if !state.is_authenticated() {
                 println!("  🔒 User not authenticated - skipping context collection");
                 return Ok(());
@@ -327,4 +331,3 @@ impl Default for ContextLoop {
         Self::new().expect("Failed to create ContextLoop")
     }
 }
-

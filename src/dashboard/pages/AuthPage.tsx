@@ -1,82 +1,96 @@
-import React, { useState, useEffect } from 'react';
-import { openUrl } from '@tauri-apps/plugin-opener';
-
-interface AuthStatus {
-  authenticated: boolean;
-  user: string | null;
-  message: string;
-}
-
-// Auth0 PKCE config (for opening login in browser)
-const AUTH0_DOMAIN = 'dev-sb3sx3jnljwod4ab.us.auth0.com';
-const AUTH0_AUDIENCE = 'https://dev-sb3sx3jnljwod4ab.us.auth0.com/api/v2/';
-const FLASK_PORT = import.meta.env.VITE_FLASK_PORT ?? '15001';
-const REDIRECT_URI = `http://localhost:${FLASK_PORT}/callback`;
-const SCOPE = 'openid profile email offline_access';
-const AUTH0_CLIENT_ID = import.meta.env.VITE_AUTH0_CLIENT_ID ?? '';
-
-const AUTH_CHECK_URL = `http://localhost:${FLASK_PORT}/auth/check`;
-const SERVER_BASE = `http://localhost:${FLASK_PORT}`;
-const POLL_INTERVAL_MS = 1500;
-const POLL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-
-// localStorage key for persistent user_id
-const USER_ID_KEY = 'covalent_user_id';
-
-function randomString(length: number): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
-  const array = new Uint8Array(length);
-  crypto.getRandomValues(array);
-  return Array.from(array, (b) => chars[b % chars.length]).join('');
-}
-
-function base64UrlEncode(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-async function sha256(plain: string): Promise<ArrayBuffer> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(plain);
-  return await crypto.subtle.digest('SHA-256', data);
-}
-
-async function buildAuth0AuthorizeUrl(): Promise<string> {
-  const state = randomString(32);
-  const codeVerifier = randomString(64);
-  const codeChallenge = base64UrlEncode(await sha256(codeVerifier));
-
-  sessionStorage.setItem('auth0_state', state);
-  sessionStorage.setItem('auth0_code_verifier', codeVerifier);
-
-  const params = new URLSearchParams({
-    response_type: 'code',
-    client_id: AUTH0_CLIENT_ID,
-    redirect_uri: REDIRECT_URI,
-    scope: SCOPE,
-    audience: AUTH0_AUDIENCE,
-    state,
-    code_challenge: codeChallenge,
-    code_challenge_method: 'S256',
-  });
-
-  return `https://${AUTH0_DOMAIN}/authorize?${params.toString()}`;
-}
-
-type AuthCheckResponse = {
-  status: 'pending' | 'ready' | 'error';
-  access_token?: string;
-  id_token?: string;
-  refresh_token?: string;
-  user_info?: { email?: string; name?: string; sub?: string; [key: string]: unknown };
-  error?: string;
-  error_description?: string;
-};
+import React, { useEffect, useState } from 'react';
+import { getVersion } from '@tauri-apps/api/app';
+import {
+  loadAuthStatus,
+  logoutAuth,
+  startAuthLogin,
+  type AuthStatus,
+} from '../../shared/authService';
+import {
+  getOnboardingProfile,
+  saveOnboardingProfile,
+  type OnboardingProfile,
+} from '../../shared/onboardingProfileService';
 
 interface AuthPageProps {
   onAuthChange: (authenticated: boolean) => void;
+}
+
+type EditableProfileForm = {
+  name: string;
+  company_name: string;
+  role: string;
+  work_summary: string;
+  key_projects_text: string;
+  source_of_truth_text: string;
+  usage_scope: 'work-only' | 'work-and-personal';
+};
+
+const EMPTY_EDITABLE_PROFILE: EditableProfileForm = {
+  name: '',
+  company_name: '',
+  role: '',
+  work_summary: '',
+  key_projects_text: '',
+  source_of_truth_text: '',
+  usage_scope: 'work-only',
+};
+
+function normalizeMultilineList(input: string): string[] {
+  return input
+    .split(/\n|,/g)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function toEditableProfileForm(profile: OnboardingProfile | null): EditableProfileForm {
+  if (!profile) return EMPTY_EDITABLE_PROFILE;
+  return {
+    name: profile.name ?? '',
+    company_name: profile.company_name ?? '',
+    role: profile.role ?? '',
+    work_summary: profile.work_summary ?? '',
+    key_projects_text: (profile.key_projects ?? []).join('\n'),
+    source_of_truth_text: (profile.source_of_truth ?? []).join('\n'),
+    usage_scope:
+      profile.usage_scope === 'work-and-personal' ? 'work-and-personal' : 'work-only',
+  };
+}
+
+function toOnboardingPayload(form: EditableProfileForm): OnboardingProfile {
+  return {
+    name: form.name.trim(),
+    company_name: form.company_name.trim(),
+    role: form.role.trim(),
+    work_summary: form.work_summary.trim(),
+    key_projects: normalizeMultilineList(form.key_projects_text),
+    source_of_truth: normalizeMultilineList(form.source_of_truth_text),
+    usage_scope: form.usage_scope,
+  };
+}
+
+function validateProfileForm(form: EditableProfileForm): string | null {
+  const payload = toOnboardingPayload(form);
+  if (
+    !payload.name ||
+    !payload.company_name ||
+    !payload.role ||
+    !payload.work_summary ||
+    !payload.usage_scope
+  ) {
+    return 'Please complete all profile fields before saving.';
+  }
+  if (payload.key_projects.length === 0) {
+    return 'Add at least one key project.';
+  }
+  if (payload.source_of_truth.length === 0) {
+    return 'Add at least one source of truth.';
+  }
+  return null;
+}
+
+function formatUsageScope(value: string): string {
+  return value === 'work-and-personal' ? 'Work + personal' : 'Work only';
 }
 
 const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
@@ -84,249 +98,116 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
   const [loading, setLoading] = useState(true);
   const [polling, setPolling] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string>('');
+  const [profile, setProfile] = useState<OnboardingProfile | null>(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileSavedAt, setProfileSavedAt] = useState<string | null>(null);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileForm, setProfileForm] = useState<EditableProfileForm>(EMPTY_EDITABLE_PROFILE);
+  const [profileFormError, setProfileFormError] = useState<string | null>(null);
 
   useEffect(() => {
-    console.log('[AuthPage] FLASK_PORT:', FLASK_PORT);
-    console.log('[AuthPage] SERVER_BASE:', SERVER_BASE);
-    console.log('[AuthPage] AUTH_CHECK_URL:', AUTH_CHECK_URL);
-    loadAuthStatus();
+    void hydrate();
+    void hydrateOnboardingProfile();
+    getVersion().then(setAppVersion).catch(() => setAppVersion(''));
   }, []);
 
-  const loadAuthStatus = async () => {
+  const hydrate = async () => {
+    setLoading(true);
     try {
-      // First check localStorage for persistent user_id
-      const userId = localStorage.getItem(USER_ID_KEY);
-      
-      if (userId) {
-        console.log('[AuthPage] Found saved user_id, checking backend session...');
-        
-        // Check backend for persistent session
-        const sessionRes = await fetch(`${SERVER_BASE}/auth/session?user_id=${encodeURIComponent(userId)}`);
-        const sessionData = await sessionRes.json();
-        
-        if (sessionData.session) {
-          const session = sessionData.session;
-          
-          // Check if token is expired
-          if (sessionData.expired) {
-            console.log('[AuthPage] Session expired, attempting refresh...');
-            
-            // Try to refresh the token
-            const refreshRes = await fetch(`${SERVER_BASE}/auth/session/refresh`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ user_id: userId }),
-            });
-            
-            if (refreshRes.ok) {
-              const refreshData = await refreshRes.json();
-              console.log('[AuthPage] Token refreshed successfully');
-              
-              // Update sessionStorage with new token
-              sessionStorage.setItem('auth0_access_token', refreshData.access_token);
-              if (session.user_info) {
-                sessionStorage.setItem('auth0_user', JSON.stringify(session.user_info));
-              }
-              
-              const user = session.user_info;
-              setAuthStatus({
-                authenticated: true,
-                user: user?.email || user?.name || 'Authenticated',
-                message: 'Session restored',
-              });
-              onAuthChange(true);
-              return;
-            } else {
-              // Refresh failed - clear everything and require re-login
-              console.log('[AuthPage] Token refresh failed, clearing session');
-              localStorage.removeItem(USER_ID_KEY);
-              sessionStorage.clear();
-              setAuthStatus({ authenticated: false, user: null, message: 'Session expired. Please log in again.' });
-              onAuthChange(false);
-              return;
-            }
-          }
-          
-          // Session is valid and not expired
-          console.log('[AuthPage] Valid session found');
-          sessionStorage.setItem('auth0_access_token', session.access_token);
-          if (session.id_token) sessionStorage.setItem('auth0_id_token', session.id_token);
-          if (session.refresh_token) sessionStorage.setItem('auth0_refresh_token', session.refresh_token);
-          if (session.user_info) sessionStorage.setItem('auth0_user', JSON.stringify(session.user_info));
-          
-          const user = session.user_info;
-          setAuthStatus({
-            authenticated: true,
-            user: user?.email || user?.name || 'Authenticated',
-            message: 'Connected via Auth0',
-          });
-          onAuthChange(true);
-          return;
-        } else {
-          // No session found in backend - clear stale localStorage
-          console.log('[AuthPage] No backend session found, clearing localStorage');
-          localStorage.removeItem(USER_ID_KEY);
-          onAuthChange(false);
-        }
-      }
-      
-      // Fallback: check sessionStorage (for current session tokens)
-      const token = sessionStorage.getItem('auth0_access_token');
-      const userJson = sessionStorage.getItem('auth0_user');
-      if (token) {
-        const user = userJson ? JSON.parse(userJson) : null;
-        setAuthStatus({
-          authenticated: true,
-          user: user?.email || user?.name || 'Authenticated',
-          message: 'Connected via Auth0',
-        });
-        onAuthChange(true);
-      } else {
-        // No auth found
-        setAuthStatus({ authenticated: false, user: null, message: 'Not connected' });
-        onAuthChange(false);
-      }
-    } catch (error) {
-      console.error('Failed to load auth status:', error);
-      setAuthStatus({ authenticated: false, user: null, message: 'Failed to load auth status' });
+      const status = await loadAuthStatus();
+      setAuthStatus(status);
+      onAuthChange(status.authenticated);
+    } catch {
+      setAuthStatus({
+        authenticated: false,
+        user: null,
+        message: 'Failed to load auth status',
+      });
       onAuthChange(false);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleLogin = async () => {
-    console.log('brothher in christ');
-    console.log('[AuthPage] AUTH0_CLIENT_ID:', AUTH0_CLIENT_ID ? `${AUTH0_CLIENT_ID.substring(0, 8)}...` : 'MISSING');
-    console.log('[AuthPage] SERVER_BASE:', SERVER_BASE);
-    console.log('[AuthPage] Debug:');
-    console.log('  VITE_FLASK_PORT:', import.meta.env.VITE_FLASK_PORT);
-    console.log('  AUTH0_CLIENT_ID:', AUTH0_CLIENT_ID);
-    console.log('  SERVER_BASE:', SERVER_BASE);
-    console.log('  AUTH_CHECK_URL:', AUTH_CHECK_URL);
-    console.log('  POLL_TIMEOUT_MS:', POLL_TIMEOUT_MS);
-    if (!AUTH0_CLIENT_ID) {
-      alert('Auth0 is not configured. Set VITE_AUTH0_CLIENT_ID in .env.');
-      return;
-    }
-    setAuthError(null);
+  const hydrateOnboardingProfile = async () => {
+    setProfileLoading(true);
+    setProfileError(null);
     try {
-      console.log('[AuthPage] Building Auth0 URL...');
-      const url = await buildAuth0AuthorizeUrl();
-      console.log('[AuthPage] Auth0 URL built:', url?.substring(0, 80) + '...');
-      const state = sessionStorage.getItem('auth0_state');
-      const codeVerifier = sessionStorage.getItem('auth0_code_verifier');
-      console.log('[AuthPage] state:', state ? 'present' : 'MISSING');
-      console.log('[AuthPage] codeVerifier:', codeVerifier ? 'present' : 'MISSING');
-      if (!state || !codeVerifier) {
-        setAuthError('Failed to generate auth session. Please try again.');
-        return;
-      }
-
-      console.log('[AuthPage] Sending /auth/start to', `${SERVER_BASE}/auth/start`);
-      const startRes = await fetch(`${SERVER_BASE}/auth/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state, code_verifier: codeVerifier }),
-      });
-      console.log('[AuthPage] /auth/start response status:', startRes.status);
-      if (!startRes.ok) {
-        const errData = await startRes.json().catch(() => ({}));
-        console.error('[AuthPage] /auth/start error:', errData);
-        setAuthError(errData.error || 'Failed to start auth session');
-        return;
-      }
-
-      console.log('[AuthPage] Opening Auth0 URL in browser...');
-      await openUrl(url);
-      console.log('[AuthPage] Auth0 URL opened, starting poll...');
-      setPolling(true);
-
-      const started = Date.now();
-      const poll = async (): Promise<void> => {
-        if (Date.now() - started > POLL_TIMEOUT_MS) {
-          setPolling(false);
-          setAuthError('Login timed out. Please try again.');
-          return;
-        }
-        try {
-          const r = await fetch(`${AUTH_CHECK_URL}?state=${encodeURIComponent(state)}`);
-          const data: AuthCheckResponse = await r.json();
-
-          if (data.status === 'ready' && data.access_token) {
-            setPolling(false);
-            // Store tokens received from backend
-            sessionStorage.setItem('auth0_access_token', data.access_token);
-            if (data.id_token) sessionStorage.setItem('auth0_id_token', data.id_token);
-            if (data.refresh_token) sessionStorage.setItem('auth0_refresh_token', data.refresh_token);
-            if (data.user_info) sessionStorage.setItem('auth0_user', JSON.stringify(data.user_info));
-            sessionStorage.removeItem('auth0_state');
-            sessionStorage.removeItem('auth0_code_verifier');
-
-            // Save user_id to localStorage for persistent sessions
-            const user = data.user_info;
-            if (user?.sub) {
-              localStorage.setItem(USER_ID_KEY, user.sub);
-              console.log('[AuthPage] Saved user_id to localStorage:', user.sub);
-            }
-
-            setAuthStatus({
-              authenticated: true,
-              user: user?.email || user?.name || user?.sub || 'Authenticated',
-              message: 'Successfully authenticated',
-            });
-            onAuthChange(true);
-            return;
-          }
-          if (data.status === 'error') {
-            setPolling(false);
-            setAuthError(data.error_description || data.error || 'Login failed');
-            sessionStorage.removeItem('auth0_state');
-            sessionStorage.removeItem('auth0_code_verifier');
-            return;
-          }
-        } catch (e) {
-          console.error('Auth poll error:', e);
-        }
-        setTimeout(poll, POLL_INTERVAL_MS);
-      };
-      setTimeout(poll, POLL_INTERVAL_MS);
-    } catch (error) {
-      console.error('[AuthPage] handleLogin error:', error);
-      alert(`Could not open login page: ${error instanceof Error ? error.message : String(error)}`);
+      const profileResult = await getOnboardingProfile();
+      setProfile(profileResult);
+      setProfileSavedAt(profileResult?.saved_at ?? null);
+    } catch (e) {
+      setProfileError(e instanceof Error ? e.message : 'Failed to load onboarding profile');
+    } finally {
+      setProfileLoading(false);
     }
   };
 
-  const handleLogout = async () => {
-    // Call backend to delete the persistent session
-    const userId = localStorage.getItem(USER_ID_KEY);
-    if (userId) {
-      try {
-        await fetch(`${SERVER_BASE}/auth/logout`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: userId }),
-        });
-        console.log('[AuthPage] Backend session deleted');
-      } catch (error) {
-        console.error('[AuthPage] Failed to delete backend session:', error);
-      }
+  const handleLogin = async () => {
+    setAuthError(null);
+    setPolling(true);
+
+    const result = await startAuthLogin();
+    setPolling(false);
+
+    if (!result.ok) {
+      setAuthError(result.error);
+      return;
     }
 
-    // Clear localStorage (persistent user_id)
-    localStorage.removeItem(USER_ID_KEY);
+    setAuthStatus(result.status);
+    onAuthChange(true);
+  };
 
-    // Clear sessionStorage (current session tokens)
-    sessionStorage.removeItem('auth0_access_token');
-    sessionStorage.removeItem('auth0_id_token');
-    sessionStorage.removeItem('auth0_refresh_token');
-    sessionStorage.removeItem('auth0_user');
-    sessionStorage.removeItem('auth0_state');
-    sessionStorage.removeItem('auth0_code_verifier');
-
-    setAuthStatus({ authenticated: false, user: null, message: 'Logged out' });
-    onAuthChange(false);
+  const handleLogout = async () => {
+    await logoutAuth();
+    const status: AuthStatus = {
+      authenticated: false,
+      user: null,
+      message: 'Logged out',
+    };
+    setAuthStatus(status);
     setAuthError(null);
+    onAuthChange(false);
+  };
+
+  const openProfileEditor = () => {
+    setProfileForm(toEditableProfileForm(profile));
+    setProfileFormError(null);
+    setIsEditingProfile(true);
+  };
+
+  const updateProfileField = <K extends keyof EditableProfileForm>(
+    key: K,
+    value: EditableProfileForm[K],
+  ) => {
+    setProfileForm((prev) => ({ ...prev, [key]: value }));
+    setProfileFormError(null);
+  };
+
+  const handleSaveProfile = async () => {
+    const validationError = validateProfileForm(profileForm);
+    if (validationError) {
+      setProfileFormError(validationError);
+      return;
+    }
+
+    setProfileSaving(true);
+    setProfileFormError(null);
+    try {
+      const saved = await saveOnboardingProfile(toOnboardingPayload(profileForm));
+      setProfile(saved);
+      setProfileSavedAt(saved.saved_at ?? null);
+      setProfileError(null);
+      setIsEditingProfile(false);
+    } catch (e) {
+      setProfileFormError(e instanceof Error ? e.message : 'Failed to save onboarding profile');
+    } finally {
+      setProfileSaving(false);
+    }
   };
 
   if (loading) {
@@ -347,10 +228,12 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
       <div style={styles.card}>
         <div style={styles.statusSection}>
           <div style={styles.statusHeader}>
-            <div style={{
-              ...styles.statusDot,
-              backgroundColor: authStatus?.authenticated ? '#10B981' : '#6B7280'
-            }}></div>
+            <div
+              style={{
+                ...styles.statusDot,
+                backgroundColor: authStatus?.authenticated ? '#22c55e' : '#D4CFC6',
+              }}
+            />
             <span style={styles.statusText}>
               {authStatus?.authenticated ? 'Connected' : 'Not Connected'}
             </span>
@@ -358,17 +241,17 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
 
           {authStatus?.user && (
             <div style={styles.userInfo}>
-              <span style={styles.userLabel}>Account:</span>
+              <span style={styles.userLabel}>Account</span>
               <span style={styles.userName}>{authStatus.user}</span>
             </div>
           )}
 
-          {authError && (
-            <div style={styles.errorBox}>{authError}</div>
-          )}
+          {authError && <div style={styles.errorBox}>{authError}</div>}
 
           {polling && (
-            <div style={styles.messageBox}>Waiting for you to sign in… You can close this after logging in in the browser.</div>
+            <div style={styles.messageBox}>
+              Waiting for you to sign in. You can close this after logging in from the browser.
+            </div>
           )}
 
           {authStatus?.message && !authError && !polling && (
@@ -378,8 +261,12 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
 
         <div style={styles.actions}>
           {!authStatus?.authenticated ? (
-            <button style={styles.primaryButton} onClick={handleLogin} disabled={polling}>
-              {polling ? 'Signing in…' : 'Connect Account'}
+            <button
+              style={{ ...styles.primaryButton, opacity: polling ? 0.6 : 1, cursor: polling ? 'not-allowed' : 'pointer' }}
+              onClick={handleLogin}
+              disabled={polling}
+            >
+              {polling ? 'Signing in...' : 'Connect Account'}
             </button>
           ) : (
             <button style={styles.secondaryButton} onClick={handleLogout}>
@@ -388,116 +275,499 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
           )}
         </div>
       </div>
+
+      <div style={styles.card}>
+        <div style={styles.profileHeaderRow}>
+          <div>
+            <h2 style={styles.sectionTitle}>Work Profile</h2>
+            <p style={styles.sectionSubtitle}>
+              Review and edit the details captured during onboarding.
+            </p>
+          </div>
+          <button
+            style={{
+              ...styles.secondaryButton,
+              opacity: profileLoading ? 0.6 : 1,
+              cursor: profileLoading ? 'not-allowed' : 'pointer',
+            }}
+            disabled={profileLoading}
+            onClick={openProfileEditor}
+          >
+            {profile ? 'Edit details' : 'Add details'}
+          </button>
+        </div>
+
+        {profileLoading && <div style={styles.loadingText}>Loading profile...</div>}
+
+        {!profileLoading && profileError && (
+          <div style={styles.errorBox}>
+            {profileError}
+            <div style={styles.inlineActionRow}>
+              <button style={styles.linkButton} onClick={() => void hydrateOnboardingProfile()}>
+                Retry
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!profileLoading && !profileError && !profile && (
+          <div style={styles.messageBox}>
+            No onboarding profile found yet. Add your details to personalize Covalent.
+          </div>
+        )}
+
+        {!profileLoading && !profileError && profile && (
+          <div style={styles.profileDetails}>
+            <div style={styles.detailGrid}>
+              <div style={styles.detailItem}>
+                <span style={styles.detailLabel}>Name</span>
+                <span style={styles.detailValue}>{profile.name}</span>
+              </div>
+              <div style={styles.detailItem}>
+                <span style={styles.detailLabel}>Company</span>
+                <span style={styles.detailValue}>{profile.company_name}</span>
+              </div>
+              <div style={styles.detailItem}>
+                <span style={styles.detailLabel}>Role</span>
+                <span style={styles.detailValue}>{profile.role}</span>
+              </div>
+              <div style={styles.detailItem}>
+                <span style={styles.detailLabel}>Usage Scope</span>
+                <span style={styles.detailValue}>{formatUsageScope(profile.usage_scope)}</span>
+              </div>
+            </div>
+
+            <div style={styles.longField}>
+              <span style={styles.detailLabel}>Work Summary</span>
+              <p style={styles.longFieldText}>{profile.work_summary}</p>
+            </div>
+
+            <div style={styles.longField}>
+              <span style={styles.detailLabel}>Key Projects</span>
+              <p style={styles.longFieldText}>{(profile.key_projects ?? []).join(', ')}</p>
+            </div>
+
+            <div style={styles.longField}>
+              <span style={styles.detailLabel}>Sources of Truth</span>
+              <p style={styles.longFieldText}>{(profile.source_of_truth ?? []).join(', ')}</p>
+            </div>
+
+            {profileSavedAt && (
+              <div style={styles.savedAtText}>
+                Last updated {new Date(profileSavedAt).toLocaleString()}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {isEditingProfile && (
+        <div
+          style={styles.modalOverlay}
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !profileSaving) {
+              setIsEditingProfile(false);
+            }
+          }}
+        >
+          <div style={styles.modalCard}>
+            <h3 style={styles.modalTitle}>Edit onboarding details</h3>
+            <p style={styles.modalSubtitle}>
+              Update your work context so Covalent can stay aligned.
+            </p>
+
+            <div style={styles.formGrid}>
+              <label style={styles.fieldLabel}>
+                <span>Name</span>
+                <input
+                  value={profileForm.name}
+                  onChange={(e) => updateProfileField('name', e.target.value)}
+                  style={styles.input}
+                  placeholder="Your full name"
+                />
+              </label>
+              <label style={styles.fieldLabel}>
+                <span>Company</span>
+                <input
+                  value={profileForm.company_name}
+                  onChange={(e) => updateProfileField('company_name', e.target.value)}
+                  style={styles.input}
+                  placeholder="Acme Inc."
+                />
+              </label>
+              <label style={styles.fieldLabel}>
+                <span>Role</span>
+                <input
+                  value={profileForm.role}
+                  onChange={(e) => updateProfileField('role', e.target.value)}
+                  style={styles.input}
+                  placeholder="Staff Product Engineer"
+                />
+              </label>
+              <label style={styles.fieldLabel}>
+                <span>Usage scope</span>
+                <select
+                  value={profileForm.usage_scope}
+                  onChange={(e) =>
+                    updateProfileField(
+                      'usage_scope',
+                      e.target.value === 'work-and-personal'
+                        ? 'work-and-personal'
+                        : 'work-only',
+                    )
+                  }
+                  style={styles.input}
+                >
+                  <option value="work-only">Work only</option>
+                  <option value="work-and-personal">Work + personal</option>
+                </select>
+              </label>
+            </div>
+
+            <label style={styles.fieldLabel}>
+              <span>Work summary</span>
+              <textarea
+                value={profileForm.work_summary}
+                onChange={(e) => updateProfileField('work_summary', e.target.value)}
+                style={styles.textarea}
+                placeholder="What you do day to day, your team, and your goals."
+              />
+            </label>
+
+            <div style={styles.formGrid}>
+              <label style={styles.fieldLabel}>
+                <span>Key projects (one per line)</span>
+                <textarea
+                  value={profileForm.key_projects_text}
+                  onChange={(e) => updateProfileField('key_projects_text', e.target.value)}
+                  style={styles.textarea}
+                  placeholder={'Project Atlas PRD\nCheckout reliability initiative'}
+                />
+              </label>
+              <label style={styles.fieldLabel}>
+                <span>Sources of truth (one per line)</span>
+                <textarea
+                  value={profileForm.source_of_truth_text}
+                  onChange={(e) => updateProfileField('source_of_truth_text', e.target.value)}
+                  style={styles.textarea}
+                  placeholder={'Notion Teamspace\nGitHub org/repo\nShared Drive docs'}
+                />
+              </label>
+            </div>
+
+            {profileFormError && <div style={styles.errorBox}>{profileFormError}</div>}
+
+            <div style={styles.modalActions}>
+              <button
+                style={styles.secondaryButton}
+                onClick={() => setIsEditingProfile(false)}
+                disabled={profileSaving}
+              >
+                Cancel
+              </button>
+              <button
+                style={{
+                  ...styles.primaryButton,
+                  opacity: profileSaving ? 0.7 : 1,
+                  cursor: profileSaving ? 'not-allowed' : 'pointer',
+                }}
+                onClick={() => void handleSaveProfile()}
+                disabled={profileSaving}
+              >
+                {profileSaving ? 'Saving...' : 'Save changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {appVersion && <div style={styles.versionText}>v{appVersion}</div>}
     </div>
   );
 };
 
-const styles = {
+const styles: { [key: string]: React.CSSProperties } = {
   container: {
     padding: '40px',
-    maxWidth: '800px',
+    maxWidth: '700px',
   },
   header: {
-    marginBottom: '32px',
+    marginBottom: '28px',
   },
   title: {
-    fontSize: '1.75rem',
-    fontWeight: '600',
-    color: '#ffffff',
-    margin: '0 0 8px 0',
+    fontSize: '1.6rem',
+    fontWeight: '700',
+    color: '#1A1A1A',
+    margin: '0 0 6px 0',
     letterSpacing: '-0.02em',
   },
   subtitle: {
-    fontSize: '0.95rem',
-    color: '#a1a1aa',
+    fontSize: '0.9rem',
+    color: '#5A5A5A',
     margin: 0,
   },
   card: {
-    backgroundColor: '#141414',
-    borderRadius: '12px',
-    padding: '28px',
-    border: '1px solid #27272a',
-    marginBottom: '24px',
+    backgroundColor: '#FFFFFF',
+    borderRadius: '14px',
+    padding: '24px',
+    border: '1px solid #E8E4DC',
+    marginBottom: '20px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
   },
   statusSection: {
-    marginBottom: '28px',
+    marginBottom: '24px',
   },
   statusHeader: {
     display: 'flex',
     alignItems: 'center',
-    gap: '12px',
-    marginBottom: '16px',
+    gap: '10px',
+    marginBottom: '14px',
   },
   statusDot: {
-    width: '10px',
-    height: '10px',
+    width: '9px',
+    height: '9px',
     borderRadius: '50%',
+    flexShrink: 0,
   },
   statusText: {
-    fontSize: '1.05rem',
-    fontWeight: '500',
-    color: '#ffffff',
+    fontSize: '1rem',
+    fontWeight: '600',
+    color: '#1A1A1A',
   },
   userInfo: {
     display: 'flex',
-    gap: '8px',
+    gap: '10px',
+    alignItems: 'center',
     marginBottom: '12px',
+    padding: '10px 14px',
+    backgroundColor: '#FAFAF8',
+    borderRadius: '10px',
+    border: '1px solid #E8E4DC',
   },
   userLabel: {
-    color: '#a1a1aa',
-    fontSize: '0.9rem',
+    color: '#9A9A96',
+    fontSize: '0.825rem',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
   },
   userName: {
-    color: '#ffffff',
+    color: '#1A1A1A',
     fontWeight: '500',
-    fontSize: '0.9rem',
+    fontSize: '0.875rem',
   },
   messageBox: {
-    backgroundColor: 'rgba(197, 244, 103, 0.08)',
-    border: '1px solid rgba(197, 244, 103, 0.2)',
-    borderRadius: '8px',
+    backgroundColor: 'rgba(193, 122, 95, 0.08)',
+    border: '1px solid rgba(193, 122, 95, 0.25)',
+    borderRadius: '10px',
     padding: '12px 16px',
-    color: '#a1a1aa',
+    color: '#5A5A5A',
     fontSize: '0.85rem',
+    lineHeight: '1.55',
   },
   errorBox: {
-    backgroundColor: 'rgba(239, 68, 68, 0.08)',
-    border: '1px solid rgba(239, 68, 68, 0.3)',
-    borderRadius: '8px',
+    backgroundColor: 'rgba(239, 68, 68, 0.06)',
+    border: '1px solid rgba(239, 68, 68, 0.22)',
+    borderRadius: '10px',
     padding: '12px 16px',
-    color: '#ef4444',
+    color: '#991b1b',
     fontSize: '0.85rem',
     marginBottom: '12px',
   },
   actions: {
     display: 'flex',
-    gap: '12px',
+    gap: '10px',
+    marginTop: '4px',
   },
   primaryButton: {
-    padding: '12px 24px',
-    backgroundColor: '#C5F467',
+    padding: '11px 24px',
+    backgroundColor: '#1A1A1A',
     border: 'none',
-    borderRadius: '8px',
-    color: '#0a0a0a',
-    fontSize: '0.9rem',
+    borderRadius: '100px',
+    color: '#FFFFFF',
+    fontSize: '0.875rem',
     fontWeight: '600',
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    transition: 'all 0.15s ease',
+    fontFamily: 'inherit',
   },
   secondaryButton: {
-    padding: '12px 24px',
+    padding: '11px 24px',
     backgroundColor: 'transparent',
-    border: '1px solid #27272a',
-    borderRadius: '8px',
-    color: '#ffffff',
-    fontSize: '0.9rem',
+    border: '1px solid #E8E4DC',
+    borderRadius: '100px',
+    color: '#5A5A5A',
+    fontSize: '0.875rem',
     fontWeight: '500',
     cursor: 'pointer',
-    transition: 'all 0.2s ease',
+    transition: 'all 0.15s ease',
+    fontFamily: 'inherit',
+  },
+  linkButton: {
+    border: 'none',
+    backgroundColor: 'transparent',
+    color: '#1A1A1A',
+    padding: 0,
+    marginTop: '8px',
+    cursor: 'pointer',
+    fontWeight: '600',
+    fontSize: '0.8rem',
+    fontFamily: 'inherit',
+  },
+  profileHeaderRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '12px',
+    marginBottom: '14px',
+  },
+  sectionTitle: {
+    margin: 0,
+    color: '#1A1A1A',
+    fontSize: '1.05rem',
+    fontWeight: '700',
+  },
+  sectionSubtitle: {
+    margin: '6px 0 0 0',
+    color: '#5A5A5A',
+    fontSize: '0.86rem',
+  },
+  profileDetails: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+  },
+  detailGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gap: '10px',
+  },
+  detailItem: {
+    border: '1px solid #E8E4DC',
+    borderRadius: '10px',
+    backgroundColor: '#FAFAF8',
+    padding: '10px 12px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px',
+  },
+  detailLabel: {
+    color: '#9A9A96',
+    fontSize: '0.73rem',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+    fontWeight: '600',
+  },
+  detailValue: {
+    color: '#1A1A1A',
+    fontSize: '0.88rem',
+    fontWeight: '500',
+    lineHeight: '1.4',
+  },
+  longField: {
+    border: '1px solid #E8E4DC',
+    borderRadius: '10px',
+    backgroundColor: '#FAFAF8',
+    padding: '10px 12px',
+  },
+  longFieldText: {
+    color: '#1A1A1A',
+    fontSize: '0.86rem',
+    margin: '6px 0 0 0',
+    lineHeight: '1.5',
+    whiteSpace: 'pre-wrap',
+  },
+  savedAtText: {
+    color: '#9A9A96',
+    fontSize: '0.78rem',
+  },
+  inlineActionRow: {
+    display: 'flex',
+    gap: '8px',
+  },
+  modalOverlay: {
+    position: 'fixed',
+    inset: 0,
+    backgroundColor: 'rgba(26, 26, 26, 0.28)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '20px',
+    zIndex: 50,
+  },
+  modalCard: {
+    width: 'min(760px, 100%)',
+    maxHeight: '88vh',
+    overflowY: 'auto',
+    backgroundColor: '#FFFFFF',
+    borderRadius: '14px',
+    border: '1px solid #E8E4DC',
+    boxShadow: '0 12px 32px rgba(0,0,0,0.15)',
+    padding: '22px',
+  },
+  modalTitle: {
+    margin: 0,
+    fontSize: '1.15rem',
+    color: '#1A1A1A',
+    fontWeight: '700',
+  },
+  modalSubtitle: {
+    margin: '6px 0 14px 0',
+    color: '#5A5A5A',
+    fontSize: '0.86rem',
+  },
+  formGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gap: '10px',
+    marginBottom: '10px',
+  },
+  fieldLabel: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    fontSize: '0.8rem',
+    color: '#5A5A5A',
+    fontWeight: '600',
+  },
+  input: {
+    border: '1px solid #E8E4DC',
+    borderRadius: '9px',
+    padding: '10px 11px',
+    fontSize: '0.86rem',
+    color: '#1A1A1A',
+    backgroundColor: '#FFFFFF',
+    fontFamily: 'inherit',
+  },
+  textarea: {
+    minHeight: '86px',
+    resize: 'vertical',
+    border: '1px solid #E8E4DC',
+    borderRadius: '9px',
+    padding: '10px 11px',
+    fontSize: '0.86rem',
+    color: '#1A1A1A',
+    backgroundColor: '#FFFFFF',
+    fontFamily: 'inherit',
+    lineHeight: '1.45',
+  },
+  modalActions: {
+    marginTop: '14px',
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: '10px',
   },
   loadingText: {
-    color: '#a1a1aa',
-    fontSize: '0.95rem',
+    color: '#9A9A96',
+    fontSize: '0.9rem',
+  },
+  versionText: {
+    position: 'fixed',
+    bottom: '16px',
+    right: '24px',
+    color: '#D4CFC6',
+    fontSize: '0.72rem',
+    fontWeight: '500',
   },
 };
 

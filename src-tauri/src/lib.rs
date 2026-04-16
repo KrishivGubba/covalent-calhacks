@@ -3,6 +3,7 @@ pub mod ai_provider;
 pub mod screen_context;
 pub mod tab_completion;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, Emitter};
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}};
@@ -50,6 +51,8 @@ pub struct ContextState {
     // Whether the user is currently authenticated — context collection MUST NOT
     // run when this is false to avoid collecting data without user consent.
     pub is_authenticated: Arc<AtomicBool>,
+    // Whether first-run onboarding has been completed.
+    pub is_onboarding_complete: Arc<AtomicBool>,
 }
 
 // Store for suggested actions
@@ -106,6 +109,7 @@ impl ContextState {
             user_paused: Arc::new(AtomicBool::new(false)), // Not manually paused by default
             excluded_apps: Arc::new(RwLock::new(Vec::new())),
             is_authenticated: Arc::new(AtomicBool::new(false)), // NOT authenticated until login
+            is_onboarding_complete: Arc::new(AtomicBool::new(false)), // First run requires onboarding
         }
     }
 
@@ -181,6 +185,19 @@ impl ContextState {
             println!("🔒 User logged out — context collection suspended");
         }
     }
+
+    pub fn is_onboarding_complete(&self) -> bool {
+        self.is_onboarding_complete.load(Ordering::Relaxed)
+    }
+
+    pub fn set_onboarding_complete(&self, completed: bool) {
+        let prev = self.is_onboarding_complete.swap(completed, Ordering::Relaxed);
+        if completed && !prev {
+            println!("✅ Onboarding completed");
+        } else if !completed && prev {
+            println!("🧭 Onboarding marked incomplete");
+        }
+    }
 }
 
 fn resolve_server_binary(app_dir: &PathBuf, server_name: &str, is_dev: bool) -> PathBuf {
@@ -201,18 +218,6 @@ fn ensure_executable(path: &PathBuf) {
             let _ = std::fs::set_permissions(path, perms);
         }
     }
-}
-
-/// Find a free port by binding to port 0 and letting the OS assign one.
-fn find_free_port() -> Result<u16, String> {
-    use std::net::TcpListener;
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| format!("Failed to find a free port: {}", e))?;
-    let port = listener.local_addr()
-        .map_err(|e| format!("Failed to get local address: {}", e))?
-        .port();
-    drop(listener);
-    Ok(port)
 }
 
 /// Check whether a port is available. If not, return an error describing which
@@ -277,34 +282,46 @@ fn wait_for_server(url: &str, timeout_secs: u64, accept_any: bool) -> bool {
     false
 }
 
-struct FlaskServer {
+struct PythonServer {
     process: Arc<Mutex<Option<Child>>>,
 }
 
-impl FlaskServer {
+impl PythonServer {
     fn new() -> Self {
         Self {
             process: Arc::new(Mutex::new(None)),
         }
     }
 
-    fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>, mcp_port: u16) -> Result<(), String> {
-        let binary = resolve_server_binary(&app_dir, "flask-server", is_dev);
+    fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>) -> Result<(), String> {
+        // Preferred server binary name.
+        let preferred_binary = resolve_server_binary(&app_dir, "covalent-server", is_dev);
+        // Backward-compatible fallback for older local bundles.
+        let legacy_binary = resolve_server_binary(&app_dir, "flask-server", is_dev);
+        let binary = if preferred_binary.exists() {
+            preferred_binary
+        } else {
+            legacy_binary
+        };
 
         if !binary.exists() {
-            return Err(format!("Flask server binary not found at {:?}", binary));
+            return Err(format!(
+                "Python server binary not found. Expected {:?} (or legacy {:?})",
+                resolve_server_binary(&app_dir, "covalent-server", is_dev),
+                resolve_server_binary(&app_dir, "flask-server", is_dev)
+            ));
         }
 
-        let flask_port: u16 = std::env::var("VITE_FLASK_PORT")
+        let server_port: u16 = std::env::var("VITE_FLASK_PORT")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(15001);
 
-        check_port_available(flask_port)?;
+        check_port_available(server_port)?;
         ensure_executable(&binary);
 
         let work_dir = binary.parent().unwrap().to_path_buf();
-        println!("Starting Flask server binary: {:?}", binary);
+        println!("Starting API server binary: {:?}", binary);
 
         let mut cmd = Command::new(&binary);
         cmd.current_dir(&work_dir)
@@ -325,7 +342,7 @@ impl FlaskServer {
                 Ok(file) => {
                     let file_clone = file.try_clone()
                         .expect("Failed to clone log file handle");
-                    println!("Redirecting Flask stdout/stderr → {:?}", log_path);
+                    println!("Redirecting server stdout/stderr → {:?}", log_path);
                     cmd.stdout(file).stderr(file_clone);
                 }
                 Err(e) => {
@@ -351,8 +368,8 @@ impl FlaskServer {
             }
         }
 
-        cmd.env("VITE_FLASK_PORT", flask_port.to_string());
-        cmd.env("MCP_PORT", mcp_port.to_string());
+        cmd.env("VITE_FLASK_PORT", server_port.to_string());
+        cmd.env("MOUNT_MCP_SERVER", "true");
 
         let db_path = if let Some(dir) = data_dir {
             dir.join("graph.db")
@@ -366,20 +383,20 @@ impl FlaskServer {
 
         match cmd.spawn() {
             Ok(child) => {
-                println!("Flask server started with PID: {:?}", child.id());
+                println!("Python server started with PID: {:?}", child.id());
                 *self.process.lock().unwrap() = Some(child);
 
-                let health_url = format!("http://127.0.0.1:{}/health", flask_port);
+                let health_url = format!("http://127.0.0.1:{}/health", server_port);
                 if wait_for_server(&health_url, 30, false) {
-                    println!("✅ Flask server is healthy and serving on port {}", flask_port);
+                    println!("✅ Python server is healthy and serving on port {}", server_port);
                 } else {
-                    eprintln!("⚠️  Flask server started but health check timed out after 30s");
+                    eprintln!("⚠️  Python server started but health check timed out after 30s");
                 }
                 Ok(())
             }
             Err(e) => {
-                eprintln!("Failed to start Flask server: {}", e);
-                Err(format!("Failed to start Flask server: {}", e))
+                eprintln!("Failed to start Python server: {}", e);
+                Err(format!("Failed to start Python server: {}", e))
             }
         }
     }
@@ -388,7 +405,7 @@ impl FlaskServer {
         if let Ok(mut process_guard) = self.process.lock() {
             if let Some(mut child) = process_guard.take() {
                 let pid = child.id();
-                println!("Stopping Flask server process group (PID: {})", pid);
+                println!("Stopping Python server process group (PID: {})", pid);
                 unsafe {
                     libc::killpg(pid as i32, libc::SIGTERM);
                 }
@@ -402,107 +419,7 @@ impl FlaskServer {
     }
 }
 
-impl Drop for FlaskServer {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-struct McpServer {
-    process: Arc<Mutex<Option<Child>>>,
-}
-
-impl McpServer {
-    fn new() -> Self {
-        Self {
-            process: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    /// Start the MCP server on a dynamically assigned free port.
-    /// Returns the port number so callers can pass it to Flask.
-    fn start(&self, app_dir: PathBuf, is_dev: bool, data_dir: Option<&PathBuf>) -> Result<u16, String> {
-        let binary = resolve_server_binary(&app_dir, "mcp-server", is_dev);
-
-        if !binary.exists() {
-            return Err(format!("MCP server binary not found at {:?}", binary));
-        }
-
-        let mcp_port = find_free_port()?;
-        ensure_executable(&binary);
-
-        let work_dir = binary.parent().unwrap().to_path_buf();
-        println!("Starting MCP server binary: {:?} on port {}", binary, mcp_port);
-
-        let mut cmd = Command::new(&binary);
-        cmd.current_dir(&work_dir)
-            .process_group(0)
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit());
-
-        if let Ok(env_path) = std::fs::read_to_string(app_dir.join(".env")) {
-            for line in env_path.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                if let Some((key, value)) = line.split_once('=') {
-                    cmd.env(key.trim(), value.trim());
-                }
-            }
-        }
-
-        cmd.env("MCP_PORT", mcp_port.to_string());
-
-        let db_path = if let Some(dir) = data_dir {
-            dir.join("graph.db")
-        } else {
-            app_dir.join("context-engine").join("graph.db")
-        };
-        cmd.env("GRAPH_DB_PATH", db_path.to_string_lossy().as_ref());
-        if let Some(dir) = data_dir {
-            cmd.env("COVALENT_DATA_DIR", dir.to_string_lossy().as_ref());
-        }
-
-        match cmd.spawn() {
-            Ok(child) => {
-                println!("MCP server started with PID: {:?}", child.id());
-                *self.process.lock().unwrap() = Some(child);
-
-                let mcp_url = format!("http://127.0.0.1:{}/mcp", mcp_port);
-                if wait_for_server(&mcp_url, 15, true) {
-                    println!("✅ MCP server is healthy and serving on port {}", mcp_port);
-                } else {
-                    eprintln!("⚠️  MCP server started but health check timed out after 15s");
-                }
-                Ok(mcp_port)
-            }
-            Err(e) => {
-                eprintln!("Failed to start MCP server: {}", e);
-                Err(format!("Failed to start MCP server: {}", e))
-            }
-        }
-    }
-
-    fn stop(&self) {
-        if let Ok(mut process_guard) = self.process.lock() {
-            if let Some(mut child) = process_guard.take() {
-                let pid = child.id();
-                println!("Stopping MCP server process group (PID: {})", pid);
-                unsafe {
-                    libc::killpg(pid as i32, libc::SIGTERM);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                unsafe {
-                    libc::killpg(pid as i32, libc::SIGKILL);
-                }
-                let _ = child.wait();
-            }
-        }
-    }
-}
-
-impl Drop for McpServer {
+impl Drop for PythonServer {
     fn drop(&mut self) {
         self.stop();
     }
@@ -684,6 +601,422 @@ fn save_setting(app: &tauri::AppHandle, key: &str, value: serde_json::Value) {
         }
         Err(e) => eprintln!("⚠️  Failed to serialize settings: {}", e),
     }
+}
+
+fn read_onboarding_state(settings: &serde_json::Value) -> (bool, i64, Option<String>) {
+    let onboarding = settings.get("onboarding");
+    let completed = onboarding
+        .and_then(|v| v.get("completed"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let version = onboarding
+        .and_then(|v| v.get("version"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1);
+    let completed_at = onboarding
+        .and_then(|v| v.get("completed_at"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    (completed, version, completed_at)
+}
+
+const SUGGESTED_ACTIONS_ALWAYS_ON_TOP_KEY: &str = "suggested_actions_always_on_top";
+const SUGGESTED_ACTIONS_PINNING_CHANGED_EVENT: &str = "suggested-actions-pinning-changed";
+
+fn read_suggested_actions_always_on_top(settings: &serde_json::Value) -> bool {
+    settings
+        .get(SUGGESTED_ACTIONS_ALWAYS_ON_TOP_KEY)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+fn get_suggested_actions_always_on_top_setting(app: &tauri::AppHandle) -> bool {
+    let settings = load_settings(app);
+    read_suggested_actions_always_on_top(&settings)
+}
+
+fn apply_suggested_actions_always_on_top(app: &tauri::AppHandle, always_on_top: bool) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(e) = window.set_always_on_top(always_on_top) {
+            eprintln!("⚠️  Failed to set main window always-on-top to {}: {}", always_on_top, e);
+        }
+    }
+}
+
+fn set_suggested_actions_always_on_top_internal(
+    app: &tauri::AppHandle,
+    always_on_top: bool,
+) -> bool {
+    save_setting(
+        app,
+        SUGGESTED_ACTIONS_ALWAYS_ON_TOP_KEY,
+        serde_json::Value::Bool(always_on_top),
+    );
+    apply_suggested_actions_always_on_top(app, always_on_top);
+    let _ = app.emit(
+        SUGGESTED_ACTIONS_PINNING_CHANGED_EVENT,
+        serde_json::json!({ "always_on_top": always_on_top }),
+    );
+    always_on_top
+}
+
+fn open_dashboard_or_onboarding(app: &tauri::AppHandle) {
+    let settings = load_settings(app);
+    let (completed, _, _) = read_onboarding_state(&settings);
+    if !completed {
+        println!("🧭 Onboarding incomplete — opening onboarding window");
+        if let Some(window) = app.get_webview_window("onboarding") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        return;
+    }
+
+    println!("🎛️  Opening dashboard");
+    if let Some(window) = app.get_webview_window("dashboard") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    } else {
+        eprintln!("⚠️  Dashboard window not found");
+    }
+}
+
+#[tauri::command]
+fn get_onboarding_state(app: tauri::AppHandle) -> serde_json::Value {
+    let settings = load_settings(&app);
+    let (completed, version, completed_at) = read_onboarding_state(&settings);
+    serde_json::json!({
+        "completed": completed,
+        "version": version,
+        "completed_at": completed_at
+    })
+}
+
+#[tauri::command]
+fn set_onboarding_completed(
+    app: tauri::AppHandle,
+    state: tauri::State<ContextState>,
+    completed: bool,
+) -> serde_json::Value {
+    let completed_at = if completed {
+        Some(chrono::Utc::now().to_rfc3339())
+    } else {
+        None
+    };
+    save_setting(
+        &app,
+        "onboarding",
+        serde_json::json!({
+            "version": 1,
+            "completed": completed,
+            "completed_at": completed_at
+        }),
+    );
+    state.set_onboarding_complete(completed);
+    if completed {
+        state.enable_if_not_user_paused();
+    } else {
+        state.disable();
+    }
+    if completed {
+        if let Some(window) = app.get_webview_window("onboarding") {
+            let _ = window.hide();
+        }
+        if let Some(window) = app.get_webview_window("main") {
+            let always_on_top = get_suggested_actions_always_on_top_setting(&app);
+            apply_suggested_actions_always_on_top(&app, always_on_top);
+            // Explicitly reset to top-left before first show — macOS ignores the
+            // tauri.conf.json x/y for windows that were created with visible:false
+            // and overrides position with its own placement on first reveal.
+            let _ = window.set_position(tauri::LogicalPosition::new(0.0, 50.0));
+            let _ = window.show();
+        }
+        if let Some(window) = app.get_webview_window("dashboard") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    } else {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.hide();
+        }
+        if let Some(window) = app.get_webview_window("dashboard") {
+            let _ = window.hide();
+        }
+        if let Some(window) = app.get_webview_window("onboarding") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+    let payload = serde_json::json!({
+        "completed": completed,
+        "version": 1,
+        "completed_at": completed_at
+    });
+    let _ = app.emit("onboarding-changed", payload.clone());
+    payload
+}
+
+#[tauri::command]
+fn notify_onboarding_change(completed: bool, app: tauri::AppHandle, state: tauri::State<ContextState>) {
+    state.set_onboarding_complete(completed);
+    if completed {
+        state.enable_if_not_user_paused();
+    } else {
+        state.disable();
+    }
+    let _ = app.emit("onboarding-changed", serde_json::json!({ "completed": completed }));
+}
+
+#[cfg(target_os = "macos")]
+fn check_accessibility_permission_macos() -> bool {
+    unsafe { accessibility_sys::AXIsProcessTrusted() }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_accessibility_permission_macos() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn request_accessibility_permission_macos() -> bool {
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::string::CFString;
+
+    unsafe {
+        let prompt_key = CFString::wrap_under_get_rule(accessibility_sys::kAXTrustedCheckOptionPrompt);
+        let options: CFDictionary<CFString, CFBoolean> =
+            CFDictionary::from_CFType_pairs(&[(prompt_key, CFBoolean::true_value())]);
+        accessibility_sys::AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn request_accessibility_permission_macos() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn check_screen_recording_permission_macos() -> bool {
+    core_graphics::access::ScreenCaptureAccess::default().preflight()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_screen_recording_permission_macos() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn request_screen_recording_permission_macos() -> bool {
+    core_graphics::access::ScreenCaptureAccess::default().request()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn request_screen_recording_permission_macos() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn macos_tcc_db_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let path = std::path::Path::new(&home)
+        .join("Library")
+        .join("Application Support")
+        .join("com.apple.TCC")
+        .join("TCC.db");
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn tcc_access_column(conn: &rusqlite::Connection) -> Option<&'static str> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(access)")
+        .ok()?;
+    let rows = stmt
+        .query_map([], |row| {
+            let name: String = row.get(1)?;
+            Ok(name)
+        })
+        .ok()?;
+
+    let mut has_auth_value = false;
+    let mut has_allowed = false;
+    for row in rows {
+        if let Ok(col) = row {
+            if col == "auth_value" {
+                has_auth_value = true;
+            }
+            if col == "allowed" {
+                has_allowed = true;
+            }
+        }
+    }
+
+    if has_auth_value {
+        Some("auth_value")
+    } else if has_allowed {
+        Some("allowed")
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn tcc_client_candidates(app: &tauri::AppHandle) -> Vec<String> {
+    use std::collections::HashSet;
+
+    let mut clients = HashSet::new();
+    clients.insert(app.config().identifier.clone());
+    // Backward compatibility for older dev builds that used this identifier.
+    clients.insert("com.hem.src-tauri".to_string());
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        clients.insert(exe_path.to_string_lossy().to_string());
+        if let Ok(canonical) = std::fs::canonicalize(&exe_path) {
+            clients.insert(canonical.to_string_lossy().to_string());
+        }
+    }
+
+    clients.into_iter().collect()
+}
+
+#[cfg(target_os = "macos")]
+fn check_tcc_permission_for_service(
+    app: &tauri::AppHandle,
+    service: &str,
+) -> Option<bool> {
+    let db_path = macos_tcc_db_path()?;
+    let conn = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .ok()?;
+    let value_column = tcc_access_column(&conn)?;
+
+    let sql = format!(
+        "SELECT {} FROM access WHERE service = ?1 AND client = ?2 ORDER BY last_modified DESC LIMIT 1",
+        value_column
+    );
+
+    for client in tcc_client_candidates(app) {
+        let auth_value: Option<i64> = conn
+            .query_row(&sql, rusqlite::params![service, client], |row| row.get(0))
+            .ok();
+        if let Some(v) = auth_value {
+            // auth_value semantics (modern): 0 denied, 2 allowed.
+            // allowed semantics (legacy): 0 denied, 1 allowed.
+            if value_column == "auth_value" {
+                return Some(v >= 2);
+            }
+            return Some(v >= 1);
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn check_accessibility_permission_with_fallback(app: &tauri::AppHandle) -> bool {
+    if check_accessibility_permission_macos() {
+        return true;
+    }
+    check_tcc_permission_for_service(app, "kTCCServiceAccessibility").unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_accessibility_permission_with_fallback(_app: &tauri::AppHandle) -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn check_screen_recording_permission_with_fallback(app: &tauri::AppHandle) -> bool {
+    if check_screen_recording_permission_macos() {
+        return true;
+    }
+    check_tcc_permission_for_service(app, "kTCCServiceScreenCapture").unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_screen_recording_permission_with_fallback(_app: &tauri::AppHandle) -> bool {
+    false
+}
+
+#[tauri::command]
+fn get_permission_statuses(app: tauri::AppHandle) -> serde_json::Value {
+    let settings = load_settings(&app);
+    let notifications = settings
+        .get("notification_permission_granted")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    serde_json::json!({
+        "accessibility": check_accessibility_permission_with_fallback(&app),
+        "screen_recording": check_screen_recording_permission_with_fallback(&app),
+        "notifications": notifications
+    })
+}
+
+#[tauri::command]
+fn request_accessibility_permission(app: tauri::AppHandle) -> bool {
+    if request_accessibility_permission_macos() {
+        return true;
+    }
+    check_accessibility_permission_with_fallback(&app)
+}
+
+#[tauri::command]
+fn request_screen_recording_permission(app: tauri::AppHandle) -> bool {
+    if request_screen_recording_permission_macos() {
+        return true;
+    }
+    check_screen_recording_permission_with_fallback(&app)
+}
+
+#[tauri::command]
+fn open_permission_settings(section: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let url = match section.as_str() {
+            "accessibility" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+            }
+            "screen_recording" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            }
+            _ => {
+                return Err(format!("Unknown permission section: {}", section));
+            }
+        };
+
+        let status = std::process::Command::new("open")
+            .arg(url)
+            .status()
+            .map_err(|e| format!("Failed to open System Settings: {}", e))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Failed to open System Settings".to_string())
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = section;
+        Err("Permission settings are only supported on macOS".to_string())
+    }
+}
+
+#[tauri::command]
+fn set_notification_permission_status(app: tauri::AppHandle, granted: bool) {
+    save_setting(
+        &app,
+        "notification_permission_granted",
+        serde_json::Value::Bool(granted),
+    );
 }
 
 // Tab completion control commands
@@ -996,6 +1329,16 @@ async fn get_auth_status() -> Result<serde_json::Value, String> {
 // Open dashboard and navigate to history page
 #[tauri::command]
 fn open_dashboard_history(app: tauri::AppHandle) -> Result<(), String> {
+    let settings = load_settings(&app);
+    let (completed, _, _) = read_onboarding_state(&settings);
+    if !completed {
+        if let Some(window) = app.get_webview_window("onboarding") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        return Err("Onboarding is not complete yet".to_string());
+    }
+
     println!("🎛️  Opening dashboard to history page");
     if let Some(window) = app.get_webview_window("dashboard") {
         window.show().map_err(|e| e.to_string())?;
@@ -1011,11 +1354,57 @@ fn open_dashboard_history(app: tauri::AppHandle) -> Result<(), String> {
 // Open main window (FloatingAssistant)
 #[tauri::command]
 fn open_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    let settings = load_settings(&app);
+    let (completed, _, _) = read_onboarding_state(&settings);
+    if !completed {
+        if let Some(window) = app.get_webview_window("onboarding") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        return Err("Onboarding is not complete yet".to_string());
+    }
+
     println!("🪟 Opening main window");
     if let Some(window) = app.get_webview_window("main") {
+        let always_on_top = get_suggested_actions_always_on_top_setting(&app);
+        apply_suggested_actions_always_on_top(&app, always_on_top);
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
         Ok(())
+    } else {
+        Err("Main window not found".to_string())
+    }
+}
+
+#[tauri::command]
+fn get_suggested_actions_always_on_top(app: tauri::AppHandle) -> bool {
+    get_suggested_actions_always_on_top_setting(&app)
+}
+
+#[tauri::command]
+fn set_suggested_actions_always_on_top(app: tauri::AppHandle, always_on_top: bool) -> bool {
+    set_suggested_actions_always_on_top_internal(&app, always_on_top)
+}
+
+fn apply_main_window_view_state(
+    window: &tauri::WebviewWindow,
+    view_state: &str,
+) -> Result<(), String> {
+    let (width, height) = match view_state {
+        "collapsed" => (80.0, 80.0),
+        "expanded" => (550.0, 450.0),
+        _ => return Err(format!("Invalid view state: {}", view_state)),
+    };
+
+    window
+        .set_size(tauri::LogicalSize::new(width, height))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_main_window_view_state(app: tauri::AppHandle, view_state: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        apply_main_window_view_state(&window, &view_state)
     } else {
         Err("Main window not found".to_string())
     }
@@ -1025,7 +1414,7 @@ fn open_main_window(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn is_covalent_focused(app: tauri::AppHandle) -> Result<bool, String> {
     // Check all Covalent windows to see if any are focused
-    let window_labels = vec!["main", "dashboard", "ghost-text", "completion-popup"];
+    let window_labels = vec!["main", "dashboard", "onboarding", "ghost-text", "completion-popup"];
     
     for label in window_labels {
         if let Some(window) = app.get_webview_window(label) {
@@ -1156,46 +1545,22 @@ pub fn run() {
             };
 
             // In dev mode, MANUAL_SERVERS=1 skips spawning bundled servers
-            // so you can run `python server/app.py` and `python run_mcp.py` yourself.
+            // so you can run the server yourself with: ./start_servers.sh
             let manual_servers = is_dev && std::env::var("MANUAL_SERVERS").unwrap_or_default() == "1";
 
             if manual_servers {
                 println!("⏭️  MANUAL_SERVERS=1 — skipping bundled server startup");
-                println!("   Start servers yourself:");
-                println!("     python run_mcp.py");
-                println!("     python server/app.py");
+                println!("   Start the server yourself: ./start_servers.sh");
             }
 
-            let mcp_server = McpServer::new();
-            let mcp_port: u16 = if !manual_servers {
-                match mcp_server.start(app_dir.clone(), is_dev, data_dir.as_ref()) {
-                    Ok(port) => {
-                        println!("✓ MCP server started successfully on port {}", port);
-                        port
-                    }
-                    Err(e) => {
-                        eprintln!("✗ Failed to start MCP server: {}", e);
-                        8001
-                    }
-                }
-            } else {
-                let port: u16 = std::env::var("MCP_PORT")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(8001);
-                println!("⏭️  Manual mode — assuming MCP on port {}", port);
-                port
-            };
-            app.manage(mcp_server);
-
-            let flask_server = FlaskServer::new();
+            let python_server = PythonServer::new();
             if !manual_servers {
-                match flask_server.start(app_dir.clone(), is_dev, data_dir.as_ref(), mcp_port) {
-                    Ok(_) => println!("✓ Flask server started successfully"),
-                    Err(e) => eprintln!("✗ Failed to start Flask server: {}", e),
+                match python_server.start(app_dir.clone(), is_dev, data_dir.as_ref()) {
+                    Ok(_) => println!("✓ Python server started successfully (MCP mounted at /mcp)"),
+                    Err(e) => eprintln!("✗ Failed to start Python server: {}", e),
                 }
             }
-            app.manage(flask_server);
+            app.manage(python_server);
 
             println!("Starting Ollama serve...");
             let ollama_server = OllamaServer::new();
@@ -1208,8 +1573,8 @@ pub fn run() {
             // Create and manage context state
             let context_state = ContextState::new();
 
-            // Load excluded apps from settings (or seed defaults on first run)
-            {
+            // Load persisted settings (excluded apps + onboarding state + suggested actions pinning).
+            let (onboarding_completed, suggested_actions_always_on_top) = {
                 let handle = app.handle().clone();
                 let settings = load_settings(&handle);
                 let excluded = if let Some(arr) = settings.get("excluded_apps").and_then(|v| v.as_array()) {
@@ -1237,7 +1602,30 @@ pub fn run() {
                 };
                 context_state.set_excluded_apps_list(excluded.clone());
                 println!("🔒 Excluded apps loaded: {:?}", excluded);
-            }
+                let (completed, version, completed_at) = read_onboarding_state(&settings);
+                context_state.set_onboarding_complete(completed);
+                println!(
+                    "🧭 Onboarding state loaded: completed={}, version={}, completed_at={:?}",
+                    completed, version, completed_at
+                );
+                let always_on_top = read_suggested_actions_always_on_top(&settings);
+                if settings
+                    .get(SUGGESTED_ACTIONS_ALWAYS_ON_TOP_KEY)
+                    .and_then(|v| v.as_bool())
+                    .is_none()
+                {
+                    save_setting(
+                        &handle,
+                        SUGGESTED_ACTIONS_ALWAYS_ON_TOP_KEY,
+                        serde_json::Value::Bool(always_on_top),
+                    );
+                }
+                println!(
+                    "📌 Suggested actions always-on-top loaded: {}",
+                    always_on_top
+                );
+                (completed, always_on_top)
+            };
 
             app.manage(context_state.clone());
             
@@ -1522,36 +1910,105 @@ pub fn run() {
                     eprintln!("   Tab completion will not be available");
                 }
             }
+
+            // Startup window gating based on first-run onboarding completion.
+            if onboarding_completed {
+                if let Some(window) = app.get_webview_window("onboarding") {
+                    let _ = window.hide();
+                }
+                if let Some(window) = app.get_webview_window("main") {
+                    apply_suggested_actions_always_on_top(&app.handle(), suggested_actions_always_on_top);
+                    let _ = window.show();
+                }
+                if let Some(window) = app.get_webview_window("dashboard") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            } else {
+                // Keep data collection locked until onboarding is done.
+                context_state.disable();
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+                if let Some(window) = app.get_webview_window("dashboard") {
+                    let _ = window.hide();
+                }
+                if let Some(window) = app.get_webview_window("onboarding") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
             
             // Create menu items
-            let open_dashboard = MenuItem::with_id(app, "open_dashboard", "Dashboard", true, Some("cmd+;"))?;
-            let quit = PredefinedMenuItem::quit(app, Some("Quit"))?;
+            let open_dashboard = MenuItem::with_id(app, "open_dashboard", "Dashboard", true, Some("cmd+,"))?;
+            let app_menu_quit = PredefinedMenuItem::quit(app, Some("Quit"))?;
             
             // Create Profile submenu
             let profile_submenu = Submenu::with_items(
                 app,
                 "Profile",
                 true,
-                &[&open_dashboard, &quit],
+                &[&open_dashboard, &app_menu_quit],
+            )?;
+            
+            // Create Edit submenu with standard clipboard operations
+            let edit_submenu = Submenu::with_items(
+                app,
+                "Edit",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(app, Some("Undo"))?,
+                    &PredefinedMenuItem::redo(app, Some("Redo"))?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::cut(app, Some("Cut"))?,
+                    &PredefinedMenuItem::copy(app, Some("Copy"))?,
+                    &PredefinedMenuItem::paste(app, Some("Paste"))?,
+                    &PredefinedMenuItem::select_all(app, Some("Select All"))?,
+                ],
             )?;
             
             // Create menu bar
-            let menu = Menu::with_items(app, &[&profile_submenu])?;
+            let menu = Menu::with_items(app, &[&profile_submenu, &edit_submenu])?;
             
             // Set menu
             app.set_menu(menu)?;
+
+            // Create tray/menu-bar icon and menu
+            let tray_show_dashboard = MenuItem::with_id(app, "tray_show_dashboard", "Show Dashboard", true, None::<&str>)?;
+            let tray_toggle_pin = MenuItem::with_id(
+                app,
+                "tray_toggle_suggested_pin",
+                "Toggle Suggested Actions Always-On-Top",
+                true,
+                None::<&str>,
+            )?;
+            let tray_quit = PredefinedMenuItem::quit(app, Some("Quit"))?;
+            let tray_menu = Menu::with_items(app, &[&tray_show_dashboard, &tray_toggle_pin, &tray_quit])?;
+
+            let mut tray_builder = TrayIconBuilder::with_id("covalent-menu-bar")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(true)
+                .tooltip("Covalent");
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray_builder = tray_builder.icon(icon);
+            }
+            let tray_icon = tray_builder.build(app)?;
+            app.manage(tray_icon);
             
             // Handle menu events
             app.on_menu_event(move |app, event| {
                 match event.id().as_ref() {
-                    "open_dashboard" => {
-                        println!("🎛️  Opening dashboard");
-                        if let Some(window) = app.get_webview_window("dashboard") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        } else {
-                            eprintln!("⚠️  Dashboard window not found");
-                        }
+                    "open_dashboard" | "tray_show_dashboard" => {
+                        open_dashboard_or_onboarding(app);
+                    }
+                    "tray_toggle_suggested_pin" => {
+                        let current = get_suggested_actions_always_on_top_setting(app);
+                        let next = !current;
+                        let applied = set_suggested_actions_always_on_top_internal(app, next);
+                        println!(
+                            "📌 Suggested actions always-on-top set to {} (via tray menu)",
+                            applied
+                        );
                     }
                     _ => {}
                 }
@@ -1571,6 +2028,23 @@ pub fn run() {
                     }
                 }
             }
+            if window.label() == "onboarding" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    if app_quitting_for_window.load(Ordering::SeqCst) {
+                        println!("🧭 App quitting — allowing onboarding to close");
+                    } else {
+                        let settings = load_settings(&window.app_handle());
+                        let (completed, _, _) = read_onboarding_state(&settings);
+                        if completed {
+                            println!("🧭 Onboarding already complete — allowing close");
+                        } else {
+                            println!("🧭 Hiding onboarding window instead of closing");
+                            let _ = window.hide();
+                            api.prevent_close();
+                        }
+                    }
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             greet, 
@@ -1581,6 +2055,14 @@ pub fn run() {
             disable_context_collection,
             get_context_collection_status,
             enable_context_collection_if_not_user_paused,
+            get_onboarding_state,
+            set_onboarding_completed,
+            notify_onboarding_change,
+            get_permission_statuses,
+            request_accessibility_permission,
+            request_screen_recording_permission,
+            open_permission_settings,
+            set_notification_permission_status,
             get_tab_completion_status,
             set_tab_completion_enabled,
             toggle_tab_completion,
@@ -1589,6 +2071,9 @@ pub fn run() {
             edit_action,
             get_suggested_actions,
             clear_suggested_actions,
+            get_suggested_actions_always_on_top,
+            set_suggested_actions_always_on_top,
+            set_main_window_view_state,
             tab_completion::injector::inject_completion_text,
             get_cursor_position,
             get_cache_state,
@@ -1612,11 +2097,8 @@ pub fn run() {
                 println!("🧹 Exit requested — setting quit flag and stopping servers...");
                 app_quitting.store(true, Ordering::SeqCst);
 
-                if let Some(flask) = app_handle.try_state::<FlaskServer>() {
-                    flask.stop();
-                }
-                if let Some(mcp) = app_handle.try_state::<McpServer>() {
-                    mcp.stop();
+                if let Some(python) = app_handle.try_state::<PythonServer>() {
+                    python.stop();
                 }
                 if let Some(ollama) = app_handle.try_state::<OllamaServer>() {
                     ollama.stop();
@@ -1625,9 +2107,27 @@ pub fn run() {
             }
             tauri::RunEvent::Exit => {
                 println!("🧹 Running final pkill cleanup...");
+                let _ = Command::new("pkill").args(["-f", "covalent-server"]).output();
                 let _ = Command::new("pkill").args(["-f", "flask-server"]).output();
-                let _ = Command::new("pkill").args(["-f", "mcp-server"]).output();
                 println!("🧹 Cleanup complete");
+            }
+            tauri::RunEvent::Reopen { .. } => {
+                let settings = load_settings(&app_handle);
+                let (completed, _, _) = read_onboarding_state(&settings);
+                if completed {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let always_on_top = read_suggested_actions_always_on_top(&settings);
+                        apply_suggested_actions_always_on_top(&app_handle, always_on_top);
+                        let _ = window.show();
+                    }
+                    if let Some(window) = app_handle.get_webview_window("dashboard") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                } else if let Some(window) = app_handle.get_webview_window("onboarding") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
             }
             _ => {}
         }

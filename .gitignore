@@ -63,7 +63,7 @@ covalent_mcp/toolclasses/google/oauth_secrets.json
 2026-02-08-this-session-is-being-continued-from-a-previous-co.txt
 
 build-venv
-
+.codex/
 restart.sh
 
 dist/

@@ -49,9 +49,34 @@ def _encrypted_conn(path=None, timeout=10.0):
     conn.execute(f"PRAGMA key = '{get_db_encryption_key()}'")
     return conn
 
-# Import display schema registry for tool approval UI
-from covalent_mcp.tools import get_display_schema
-from covalent_mcp.toolclasses.base import resolve_display_fields, _is_inherited_value
+# Lazy-loaded imports for covalent_mcp.tools (deferred to first use)
+_display_schema_module = None
+_resolve_display_fields_func = None
+_is_inherited_value_func = None
+
+def _get_display_schema(tool_name):
+    """Lazy-load get_display_schema from covalent_mcp.tools."""
+    global _display_schema_module
+    if _display_schema_module is None:
+        from covalent_mcp.tools import get_display_schema
+        _display_schema_module = get_display_schema
+    return _display_schema_module(tool_name)
+
+def _get_resolve_display_fields():
+    """Lazy-load resolve_display_fields from covalent_mcp.toolclasses.base."""
+    global _resolve_display_fields_func
+    if _resolve_display_fields_func is None:
+        from covalent_mcp.toolclasses.base import resolve_display_fields
+        _resolve_display_fields_func = resolve_display_fields
+    return _resolve_display_fields_func
+
+def _is_inherited_value(value):
+    """Lazy-load _is_inherited_value from covalent_mcp.toolclasses.base."""
+    global _is_inherited_value_func
+    if _is_inherited_value_func is None:
+        from covalent_mcp.toolclasses.base import _is_inherited_value as inherited_check
+        _is_inherited_value_func = inherited_check
+    return _is_inherited_value_func(value)
 
 
 # =============================================================================
@@ -89,7 +114,7 @@ def _resolve_tool_display(proposed_action: dict, loop=None) -> dict:
     tool_name = proposed_action.get("tool_name", "")
     parameters = proposed_action.get("parameters", {})
 
-    schema = get_display_schema(tool_name)
+    schema = _get_display_schema(tool_name)  # Lazy-loaded
 
     if schema is None:
         # Fallback: show all params as editable text fields
@@ -114,6 +139,7 @@ def _resolve_tool_display(proposed_action: dict, loop=None) -> dict:
         }
 
     # Schema exists - resolve it (may call external APIs)
+    resolve_display_fields = _get_resolve_display_fields()  # Lazy-loaded
     _loop = loop or asyncio.new_event_loop()
     _owns_loop = loop is None
     if _owns_loop:
@@ -170,17 +196,24 @@ log.info(f"Database schema ensured at: {db_path}")
 # Set env var so downstream modules (MCP tools, etc.) can find the DB
 os.environ.setdefault('GRAPH_DB_PATH', db_path)
 
-# Import action executor for MCP integration (after GRAPH_DB_PATH is set)
+# Add parent directory to path for action_executor (imported lazily inside routes)
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from action_executor import (
-    plan_action,
-    execute_action,
-    execute_action_chain,
-    gather_context,
-    research_and_plan,
-    health_check as mcp_health_check
-)
 
+# Lazy imports for action_executor - these are expensive to import at startup
+# because they load langchain, numpy, MCP tools, etc.
+_action_executor_module = None
+
+def _get_action_executor():
+    """Lazy-load the action_executor module."""
+    global _action_executor_module
+    if _action_executor_module is None:
+        log.info("⏳ Lazy-loading action_executor module...")
+        import action_executor as ae
+        _action_executor_module = ae
+        log.info("✅ action_executor loaded")
+    return _action_executor_module
+
+# Tree is initialized lazily via property - it won't construct the graph until first use
 tree = Tree(db_path)
 
 
@@ -2132,19 +2165,20 @@ def plan_action_endpoint():
         log.info(f"📋 Planning action: {action_text[:100]}...")
         
         # Run the research + planning async function
+        ae = _get_action_executor()  # Lazy load action_executor
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             if skip_research:
                 # Skip research phase, just plan directly
                 plan_result = loop.run_until_complete(
-                    plan_action(action_text, collected_data)
+                    ae.plan_action(action_text, collected_data)
                 )
                 research_info = {"resources_read": [], "context_gathered": collected_data}
             else:
                 # Full research + planning flow
                 result = loop.run_until_complete(
-                    research_and_plan(action_text, collected_data)
+                    ae.research_and_plan(action_text, collected_data)
                 )
                 plan_result = {
                     "status": result["status"],
@@ -2262,17 +2296,18 @@ def plan_action_direct_endpoint():
         log.info(f"📋 Planning action (direct): {action_text[:100]}...")
         
         # Run the research + planning async function
+        ae = _get_action_executor()  # Lazy load action_executor
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             if skip_research:
                 plan_result = loop.run_until_complete(
-                    plan_action(action_text, context)
+                    ae.plan_action(action_text, context)
                 )
                 research_info = {"resources_read": [], "context_gathered": context}
             else:
                 result = loop.run_until_complete(
-                    research_and_plan(action_text, context)
+                    ae.research_and_plan(action_text, context)
                 )
                 plan_result = {
                     "status": result["status"],
@@ -2401,11 +2436,12 @@ def execute_action_endpoint():
             node_uuid = action_data[4] if action_data else None
             
             # Run the chain execution async function
+            ae = _get_action_executor()  # Lazy load action_executor
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
                 chain_result = loop.run_until_complete(
-                    execute_action_chain(actions)
+                    ae.execute_action_chain(actions)
                 )
             finally:
                 loop.close()
@@ -2480,11 +2516,12 @@ def execute_action_endpoint():
             node_uuid = action_data[4] if action_data else None
             
             # Run the execution async function
+            ae = _get_action_executor()  # Lazy load action_executor
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
                 exec_result = loop.run_until_complete(
-                    execute_action(tool_name, parameters)
+                    ae.execute_action(tool_name, parameters)
                 )
             finally:
                 loop.close()
@@ -2610,10 +2647,11 @@ def mcp_health_endpoint():
         }
     """
     try:
+        ae = _get_action_executor()  # Lazy load action_executor
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            health_result = loop.run_until_complete(mcp_health_check())
+            health_result = loop.run_until_complete(ae.health_check())
         finally:
             loop.close()
         
@@ -2836,6 +2874,38 @@ def tab_context():
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/tab_feedback", methods=["POST"])
+def tab_feedback():
+    """
+    Record decline feedback for tab-completion learning.
+    This endpoint is intentionally best-effort for frontend stability.
+    """
+    try:
+        body = request.get_json() or {}
+        app_name = body.get("app_name", "Unknown")
+        activity_id = body.get("activity_id", "")
+        signal = body.get("signal", "negative")
+
+        feedback_payload = {
+            "declined_prediction": body.get("declined_prediction", ""),
+            "typed_text": body.get("typed_text", ""),
+            "chars_after": body.get("chars_after", ""),
+            "time_to_decline_ms": body.get("time_to_decline_ms", 0),
+            "signal": signal,
+        }
+        summary = f"Tab completion feedback for {app_name} | Signal: {signal}"
+
+        try:
+            tree.learn(summary, json.dumps(feedback_payload), key=f"tab_feedback_{activity_id}")
+        except Exception as learn_err:
+            log.warning(f"Failed to persist tab feedback: {learn_err}")
+
+        return jsonify({"message": "Feedback acknowledged", "acknowledged": True}), 200
+    except Exception as e:
+        log.error(f"Error in /tab_feedback endpoint: {e}")
+        return jsonify({"message": "Feedback received with warnings", "acknowledged": False}), 200
 
 
 def generate_tab_prediction(text_buffer, context_data):

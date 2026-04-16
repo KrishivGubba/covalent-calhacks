@@ -6,6 +6,7 @@ Database is encrypted using SQLCipher. Encryption key is stored in macOS Keychai
 '''
 import os
 import sys
+import threading
 from pathlib import Path
 
 _project_root = Path(__file__).resolve().parent.parent
@@ -57,10 +58,11 @@ class GraphDAO:
         # Use DELETE mode (default) to avoid creating -shm and -wal files
         # This prevents unencrypted temporary files from being created
         self.conn.execute('PRAGMA journal_mode=DELETE')
-        self.cursor = self.conn.cursor()
+        # Serialize DB access across threads using this shared connection.
+        self._lock = threading.RLock()
 
     def get_all_nodes(self):
-        '''Retrieve all nodes from the database with their associated actions.'''
+        '''Retrieve all nodes from the database with their associated actions and embeddings.'''
         query = """
         SELECT 
             n.UUID as node_uuid,
@@ -69,10 +71,11 @@ class GraphDAO:
             n.last_modified,
             n.parent_uuid,
             n.children_uuid_arr,
-            GROUP_CONCAT(a.UUID || '|' || a.Action_name) as actions
+            GROUP_CONCAT(a.UUID || '|' || a.Action_name) as actions,
+            n.embedding
         FROM node_table n
         LEFT JOIN action_table a ON n.UUID = a.Node_UUID
-        GROUP BY n.UUID, n.Metadata, n.created, n.last_modified, n.parent_uuid, n.children_uuid_arr
+        GROUP BY n.UUID, n.Metadata, n.created, n.last_modified, n.parent_uuid, n.children_uuid_arr, n.embedding
         """
         # returns a list of tuples
         return self.execute_query(query)
@@ -83,9 +86,26 @@ class GraphDAO:
         '''
         if params is None:
             params = ()
-        self.cursor.execute(query, params)
-        self.conn.commit()
-        return self.cursor.fetchall()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(query, params)
+            self.conn.commit()
+            return cursor.fetchall()
+
+    def execute_write(self, query, params=None):
+        '''
+        Execute a write query and return metadata.
+
+        Returns:
+            tuple: (lastrowid, rowcount)
+        '''
+        if params is None:
+            params = ()
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(query, params)
+            self.conn.commit()
+            return cursor.lastrowid, cursor.rowcount
 
     def add_node(self, metadata, data):
         '''Insert a node into the database.'''
@@ -335,9 +355,7 @@ class GraphDAO:
             AND last_selected IS NOT NULL
             AND last_selected < ?
         """
-        self.cursor.execute(query, (node_uuid, threshold_date))
-        deleted_count = self.cursor.rowcount
-        self.conn.commit()
+        _, deleted_count = self.execute_write(query, (node_uuid, threshold_date))
         return deleted_count
 
     def get_data_for_node_by_category(self, node_uuid):
@@ -424,9 +442,7 @@ class GraphDAO:
             DELETE FROM data_table
             WHERE Node_UUID = ? AND category = ?
         """
-        self.cursor.execute(query, (node_uuid, category))
-        deleted_count = self.cursor.rowcount
-        self.conn.commit()
+        _, deleted_count = self.execute_write(query, (node_uuid, category))
         return deleted_count
 
     def increment_node_counter(self, node_uuid):
@@ -510,13 +526,14 @@ class GraphDAO:
 
     # ==================== GRAPH STRUCTURE METHODS ====================
 
-    def create_node(self, metadata, parent_uuid=None):
+    def create_node(self, metadata, parent_uuid=None, embedding=None):
         '''
         Create a new node with the given metadata.
 
         Args:
             metadata (str): Metadata/name for the node
             parent_uuid (str, optional): UUID of parent node (None for root-level)
+            embedding (bytes, optional): Serialized embedding vector
 
         Returns:
             str: UUID of the newly created node
@@ -530,11 +547,46 @@ class GraphDAO:
         children_uuid_arr = json.dumps([])
 
         query = """
-            INSERT INTO node_table (UUID, Metadata, created, last_modified, parent_uuid, children_uuid_arr)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO node_table (UUID, Metadata, created, last_modified, parent_uuid, children_uuid_arr, embedding)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """
-        self.execute_query(query, (node_uuid, metadata, current_time, current_time, parent_uuid, children_uuid_arr))
+        self.execute_query(query, (node_uuid, metadata, current_time, current_time, parent_uuid, children_uuid_arr, embedding))
         return node_uuid
+
+    def update_node_embedding(self, node_uuid, embedding):
+        '''
+        Update a node's embedding.
+
+        Args:
+            node_uuid (str): UUID of the node
+            embedding (bytes): Serialized embedding vector
+
+        Returns:
+            bool: True on success
+        '''
+        from datetime import datetime
+        current_time = datetime.now().isoformat()
+        query = """
+            UPDATE node_table
+            SET embedding = ?, last_modified = ?
+            WHERE UUID = ?
+        """
+        self.execute_query(query, (embedding, current_time, node_uuid))
+        return True
+
+    def get_nodes_without_embeddings(self):
+        '''
+        Get all nodes that don't have embeddings (for migration).
+
+        Returns:
+            list: List of tuples (uuid, metadata)
+        '''
+        query = """
+            SELECT UUID, Metadata
+            FROM node_table
+            WHERE embedding IS NULL
+        """
+        return self.execute_query(query)
 
     def add_child_to_node(self, parent_uuid, child_uuid):
         '''
@@ -903,11 +955,11 @@ class GraphDAO:
             (action_uuid, action_type, action_data, node_uuid, status, result, error_message, duration_ms)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
-        self.execute_query(
+        lastrowid, _ = self.execute_write(
             query,
             (action_uuid, action_type, action_data, node_uuid, status, result, error_message, duration_ms)
         )
-        return self.cursor.lastrowid
+        return lastrowid
 
     def get_action_history(self, limit=50, offset=0, status=None, action_type=None):
         """
@@ -966,7 +1018,8 @@ class GraphDAO:
 
     def close(self):
         '''Close the database connection.'''
-        self.conn.close()
+        with self._lock:
+            self.conn.close()
 
 
 class TestGraphDAO:

@@ -10,7 +10,7 @@ Runs a full end-to-end flow:
 Uses a safe filesystem write_file action so execution doesn't
 touch any external APIs (no emails sent, no events created).
 
-Requires: Flask server + MCP server running.
+Requires: FastAPI server + MCP server running.
 """
 import os
 import requests
@@ -18,7 +18,7 @@ import json
 import time
 import sys
 
-FLASK_URL = f"http://localhost:{os.environ.get('VITE_FLASK_PORT', '15001')}"
+BACKEND_URL = f"http://localhost:{os.environ.get('VITE_FLASK_PORT', '15001')}"
 
 # A task that triggers research (skip_research=False) and results in
 # a filesystem write_file tool call — safe to actually execute.
@@ -55,12 +55,12 @@ def run_plan(label: str, payload: dict) -> dict | None:
     t0 = time.perf_counter()
     try:
         resp = requests.post(
-            f"{FLASK_URL}/plan_action_direct",
+            f"{BACKEND_URL}/plan_action_direct",
             json=payload,
             timeout=180,
         )
     except requests.exceptions.ConnectionError:
-        print(f"  ❌ Connection failed — is the Flask server running on {FLASK_URL}?")
+        print(f"  ❌ Connection failed — is the server running on {BACKEND_URL}?")
         return None
 
     elapsed = time.perf_counter() - t0
@@ -107,7 +107,7 @@ def run_execute(tool_name: str, parameters: dict) -> dict | None:
     t0 = time.perf_counter()
     try:
         resp = requests.post(
-            f"{FLASK_URL}/execute_action",
+            f"{BACKEND_URL}/execute_action",
             json=payload,
             timeout=60,
         )

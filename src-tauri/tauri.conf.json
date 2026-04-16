@@ -2,13 +2,13 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Covalent",
 
-  "version": "0.1.28",
+  "version": "0.1.29",
   "identifier": "com.covalent.app",
 
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build && rm -rf src-tauri/servers && mkdir -p src-tauri/servers && cp -R dist-servers/flask-server src-tauri/servers/ && cp -R dist-servers/mcp-server src-tauri/servers/ && cp .env src-tauri/.env && cp model_config.yml src-tauri/model_config.yml",
+    "beforeBuildCommand": "npm run build && rm -rf src-tauri/servers && mkdir -p src-tauri/servers && cp -R dist-servers/covalent-server src-tauri/servers/ && cp .env src-tauri/.env && cp model_config.yml src-tauri/model_config.yml",
     "frontendDist": "../dist"
   },
   "app": {
@@ -25,7 +25,8 @@
         "resizable": true,
         "visibleOnAllWorkspaces": true,
         "skipTaskbar": true,
-        "visible": true,
+        "visible": false,
+        "alwaysOnTop": true,
         "center": false,
         "contentProtected": false,
         "focus": false,
@@ -75,7 +76,7 @@
       },
       {
         "label": "dashboard",
-        "title": "Covalent Dashboard",
+        "title": "Covalent",
         "url": "dashboard.html",
         "width": 1000,
         "height": 700,
@@ -84,7 +85,21 @@
         "resizable": true,
         "visible": false,
         "center": true,
-        "contentProtected": true
+        "contentProtected": false,
+        "theme": "Light"
+      },
+      {
+        "label": "onboarding",
+        "title": "Welcome to Covalent",
+        "url": "onboarding.html",
+        "width": 1170,
+        "height": 760,
+        "decorations": true,
+        "transparent": false,
+        "resizable": true,
+        "visible": false,
+        "center": true,
+        "contentProtected": false
       }
     ],
     "security": {
@@ -103,8 +118,7 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "servers/flask-server",
-      "servers/mcp-server",
+      "servers",
       ".env",
       "model_config.yml"
     ],
