@@ -75,7 +75,7 @@ jobs:
 
       - name: Restore executable permissions on server binary
         run: |
-          chmod +x dist-servers/flask-server/flask-server
+          chmod +x dist-servers/covalent-server/covalent-server
 
       - name: Import Apple certificate
         env:
@@ -189,13 +189,13 @@ jobs:
           # Re-sign the main server executable last to ensure it's properly signed
           # after all its dependencies
           echo "=== Re-signing main executable ==="
-          codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/flask-server/flask-server
+          codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/covalent-server/covalent-server
           
           echo "=== Server binary signing complete ==="
           
           # Verify signature on main executable
           echo "=== Verifying signature ==="
-          codesign --verify --verbose dist-servers/flask-server/flask-server
+          codesign --verify --verbose dist-servers/covalent-server/covalent-server
           
           # List all signed binaries for debugging
           echo "=== Signed binary count ==="

@@ -131,12 +131,12 @@ done
 # Re-sign main executable last
 echo ""
 echo "Re-signing main executable..."
-codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/flask-server/flask-server
+codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist-servers/covalent-server/covalent-server
 
 # Verify signature
 echo ""
 echo "=== Verifying signature ==="
-codesign --verify --verbose dist-servers/flask-server/flask-server
+codesign --verify --verbose dist-servers/covalent-server/covalent-server
 
 signed_count=$(find dist-servers -type f -exec sh -c 'file "$1" | grep -q "Mach-O" && echo "$1"' _ {} \; | wc -l)
 echo "Total signed binaries: $signed_count"
