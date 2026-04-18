@@ -122,7 +122,7 @@ class LargeContextSyncEngine:
                     completed_at = datetime.now(timezone.utc).isoformat()
                     message = f"{exc.__class__.__name__}: {exc}"
                     errors[provider.provider_id] = message
-                    log.error("Large context sync failed for provider %s: %s\n%s", provider.provider_id, message, traceback.format_exc())
+                    log.error(f"Large context sync failed for provider {provider.provider_id}: {message}\n{traceback.format_exc()}")
                     self.dao.mark_provider_completed(
                         provider.provider_id,
                         supports_live_sync=provider.supports_live_sync,
