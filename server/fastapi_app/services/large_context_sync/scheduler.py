@@ -68,7 +68,10 @@ class LargeContextSyncScheduler:
                 continue
 
             self.last_started_at = datetime.now(timezone.utc).isoformat()
-            await asyncio.to_thread(self.engine.sync_once)
+            try:
+                await asyncio.to_thread(self.engine.sync_once)
+            except Exception as exc:
+                log.error("Large context scheduler run failed: %s", exc)
             self.last_completed_at = datetime.now(timezone.utc).isoformat()
 
         log.info("Large context sync scheduler stopped")

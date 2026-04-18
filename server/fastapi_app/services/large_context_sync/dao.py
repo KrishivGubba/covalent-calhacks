@@ -29,6 +29,14 @@ class LargeContextSyncDAO:
                 """,
                 (markdown_root,),
             )
+            conn.execute(
+                """
+                UPDATE large_context_sync_config
+                SET markdown_root = COALESCE(markdown_root, ?)
+                WHERE id = 1
+                """,
+                (markdown_root,),
+            )
             for provider in providers:
                 conn.execute(
                     """

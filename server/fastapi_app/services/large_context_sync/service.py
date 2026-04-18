@@ -71,6 +71,7 @@ class LargeContextSyncService:
         return providers
 
     def get_status(self) -> dict:
+        latest_run = self.dao.get_latest_run()
         return {
             "config": self.get_config().model_dump(),
             "scheduler": {
@@ -80,5 +81,5 @@ class LargeContextSyncService:
                 "last_completed_at": self.scheduler.last_completed_at,
             },
             "providers": [state.model_dump() for state in self.dao.get_provider_states().values()],
-            "last_run": self.dao.get_latest_run().model_dump() if self.dao.get_latest_run() else None,
+            "last_run": latest_run.model_dump() if latest_run else None,
         }
