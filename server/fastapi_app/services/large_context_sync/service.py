@@ -39,6 +39,9 @@ class LargeContextSyncService:
 
     async def start(self) -> None:
         self.scheduler.start()
+        import asyncio
+
+        await asyncio.sleep(0)
 
     async def stop(self) -> None:
         await self.scheduler.stop()
