@@ -157,6 +157,78 @@ class GitHubClient:
         
         params = {"type": type, "per_page": 100}
         return self._request("GET", endpoint, params=params)
+
+    def get_authenticated_user(self) -> Dict[str, Any]:
+        """
+        Get the authenticated user profile.
+
+        Returns:
+            Authenticated user data dict
+        """
+        return self._request("GET", "/user")
+
+    def list_pull_requests(
+        self,
+        owner: str,
+        repo: str,
+        state: str = "open",
+        sort: str = "updated",
+        direction: str = "desc",
+        per_page: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """
+        List pull requests for a repository.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            state: open, closed, or all
+            sort: created, updated, popularity, long-running
+            direction: asc or desc
+            per_page: Number of results to return
+
+        Returns:
+            List of pull request dicts
+        """
+        params = {
+            "state": state,
+            "sort": sort,
+            "direction": direction,
+            "per_page": min(max(per_page, 1), 100),
+        }
+        return self._request("GET", f"/repos/{owner}/{repo}/pulls", params=params)
+
+    def list_issues(
+        self,
+        owner: str,
+        repo: str,
+        state: str = "open",
+        since: Optional[str] = None,
+        per_page: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """
+        List issues for a repository.
+
+        Pull requests are filtered out from the response.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            state: open, closed, or all
+            since: Optional ISO timestamp filter
+            per_page: Number of results to return
+
+        Returns:
+            List of issue dicts
+        """
+        params = {
+            "state": state,
+            "per_page": min(max(per_page, 1), 100),
+        }
+        if since:
+            params["since"] = since
+        issues = self._request("GET", f"/repos/{owner}/{repo}/issues", params=params)
+        return [issue for issue in issues if "pull_request" not in issue]
     
     # Issue operations
     
