@@ -157,3 +157,22 @@ def auth_dao_dependency():
 def integration_dao_dependency():
     """FastAPI dependency for IntegrationDAO."""
     return get_integration_dao()
+
+
+def refresh_tree_from_db() -> None:
+    """Refresh the cached Tree instance from the backing database if it exists."""
+    global _tree_instance
+    if _tree_instance is not None:
+        _tree_instance.__init__(get_db_path())
+
+
+def reset_cached_dependencies() -> None:
+    """Reset all dependency singletons. Primarily used by tests."""
+    global _tree_instance, _auth_dao_instance, _integration_dao_instance, _action_executor_module
+    _tree_instance = None
+    _auth_dao_instance = None
+    _integration_dao_instance = None
+    _action_executor_module = None
+    get_tree.cache_clear()
+    get_auth_dao.cache_clear()
+    get_integration_dao.cache_clear()
