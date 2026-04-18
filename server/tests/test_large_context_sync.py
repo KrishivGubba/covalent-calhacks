@@ -108,6 +108,16 @@ def _make_app(tmp_path: Path, monkeypatch, providers, *, interval_minutes: int |
     monkeypatch.setenv("COVALENT_DATA_DIR", str(data_dir))
     monkeypatch.setenv("MOUNT_MCP_SERVER", "false")
 
+    import security.key_manager as key_manager
+    monkeypatch.setattr(key_manager, "get_db_encryption_key", lambda: "0" * 64)
+    for module_name in ["graph_dao", "server.integration_dao", "server.auth_dao"]:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        if hasattr(module, "get_db_encryption_key"):
+            monkeypatch.setattr(module, "get_db_encryption_key", lambda: "0" * 64)
+
     import server.fastapi_app.dependencies as dependencies
     importlib.reload(dependencies)
     dependencies.reset_cached_dependencies()
