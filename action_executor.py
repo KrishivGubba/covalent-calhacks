@@ -14,6 +14,7 @@ import asyncio
 import pickle
 import json
 import re
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 import numpy as np
@@ -123,6 +124,33 @@ MCP_SERVERS = {
 # Tool Routing Configuration
 TOOL_CACHE_DIR = Path.home() / ".cache" / "covalent_action_executor"
 TOP_K_TOOLS = 25  # Number of relevant tools/resources to select
+
+# =============================================================================
+# ITERATIVE RESEARCH LOOP CONFIGURATION
+# =============================================================================
+# Budgets for the agentic research+plan loop. Each is env-overridable.
+# When any of these is exhausted we return an error to the caller instead of
+# forcing a (potentially incomplete) plan.
+
+MAX_RESEARCH_TURNS = int(os.getenv("RESEARCH_MAX_TURNS", "8"))
+MAX_RESOURCE_READS = int(os.getenv("RESEARCH_MAX_READS", "12"))
+RESEARCH_WALL_CLOCK_S = float(os.getenv("RESEARCH_WALL_CLOCK_S", "90"))
+MAX_DRAFT_ATTEMPTS = int(os.getenv("RESEARCH_MAX_DRAFTS", "4"))
+
+# Scratchpad bounds (keeps the rolling prompt below MAX_CONTEXT_CHARS).
+SCRATCHPAD_PER_READ_CHARS = 6_000
+SCRATCHPAD_TOTAL_CHARS = 30_000
+
+# Strict policy: these markers indicate an unfinished / placeholder value and
+# should cause plan validation to fail.
+FORBIDDEN_PLACEHOLDER_MARKERS = (
+    "[FILL IN",
+    "[Content to be generated",
+    "TODO:",
+    "TBD",
+    "<placeholder",
+    "REPLACE_ME",
+)
 
 # =============================================================================
 # MCP CLIENT MANAGEMENT
@@ -656,6 +684,571 @@ Which resources should I query to gather context for this action?"""
 
 
 # =============================================================================
+# ITERATIVE RESEARCH LOOP HELPERS
+# =============================================================================
+
+def format_tool_params(tool) -> str:
+    """
+    Format a tool's parameter schema as a human-readable multi-line string,
+    clearly marking REQUIRED vs optional parameters.
+
+    Shared between `plan_action` (single-shot path) and the iterative research
+    loop, so both use an identical representation of the tool surface.
+    """
+    try:
+        schema = None
+
+        if hasattr(tool, 'args_schema') and tool.args_schema is not None:
+            if hasattr(tool.args_schema, 'model_json_schema'):
+                schema = tool.args_schema.model_json_schema()
+            elif isinstance(tool.args_schema, dict):
+                schema = tool.args_schema
+
+        if schema and isinstance(schema, dict) and 'properties' in schema:
+            required_set = set(schema.get('required', []))
+            props = schema.get('properties', {})
+            param_strs = []
+            for name, info in props.items():
+                param_type = info.get('type', 'any')
+                desc = info.get('description', '')
+                if name in required_set:
+                    param_strs.append(f"{name} (REQUIRED, {param_type}): {desc}")
+                else:
+                    default = info.get('default', 'None')
+                    param_strs.append(f"{name} (optional, {param_type}, default={default}): {desc}")
+            return "\n    ".join(param_strs) if param_strs else str(tool.args)
+
+        if hasattr(tool, 'args') and isinstance(tool.args, dict):
+            param_strs = []
+            for name, info in tool.args.items():
+                if isinstance(info, dict):
+                    param_type = info.get('type', 'any')
+                    desc = info.get('description', '')
+                    is_optional = False
+                    if 'anyOf' in info or 'oneOf' in info:
+                        types = info.get('anyOf', info.get('oneOf', []))
+                        is_optional = any(t.get('type') == 'null' for t in types)
+                    if 'default' in info:
+                        is_optional = True
+                    if is_optional:
+                        param_strs.append(f"{name} (optional, {param_type}): {desc}")
+                    else:
+                        param_strs.append(f"{name} (REQUIRED, {param_type}): {desc}")
+                else:
+                    param_strs.append(f"{name}: {info}")
+            return "\n    ".join(param_strs) if param_strs else str(tool.args)
+
+        return str(tool.args)
+    except Exception:
+        return str(getattr(tool, 'args', ''))
+
+
+def _tool_required_params(tool) -> List[str]:
+    """
+    Return the list of REQUIRED parameter names for an MCP tool.
+
+    Mirrors the logic in `format_tool_params()` / `execute_action()`:
+      1. Prefer `tool.args_schema.model_json_schema()["required"]` if available.
+      2. Otherwise walk `tool.args` (JSON schema dict) and treat a param as
+         required unless it has a `default` or its anyOf/oneOf contains `null`.
+    """
+    try:
+        schema = None
+        if hasattr(tool, 'args_schema') and tool.args_schema is not None:
+            if hasattr(tool.args_schema, 'model_json_schema'):
+                schema = tool.args_schema.model_json_schema()
+            elif isinstance(tool.args_schema, dict):
+                schema = tool.args_schema
+        if schema and isinstance(schema, dict):
+            return list(schema.get('required', []) or [])
+
+        if hasattr(tool, 'args') and isinstance(tool.args, dict):
+            required = []
+            for name, info in tool.args.items():
+                if not isinstance(info, dict):
+                    required.append(name)
+                    continue
+                if 'default' in info:
+                    continue
+                types = info.get('anyOf', info.get('oneOf', []))
+                if any(isinstance(t, dict) and t.get('type') == 'null' for t in types):
+                    continue
+                required.append(name)
+            return required
+    except Exception as e:
+        log.warning(f"⚠️ Could not introspect required params for tool {getattr(tool, 'name', '?')}: {e}")
+    return []
+
+
+_VARIABLE_REF_RE = re.compile(r'\{\{\$(\d+)\.(\w+)\}\}')
+
+
+def _contains_forbidden_placeholder(value: Any) -> Optional[str]:
+    """Return the first forbidden marker found in a string-like value, else None."""
+    if not isinstance(value, str):
+        return None
+    for marker in FORBIDDEN_PLACEHOLDER_MARKERS:
+        if marker in value:
+            return marker
+    return None
+
+
+def _is_empty_value(value: Any) -> bool:
+    """A param counts as empty if it's None, or an empty string/list/dict after stripping."""
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    if isinstance(value, (list, dict)) and len(value) == 0:
+        return True
+    return False
+
+
+def _validate_plan(actions: List[Dict[str, Any]], tool_lookup: Dict[str, Any]) -> List[str]:
+    """
+    Strict programmatic validation of a drafted plan.
+
+    Returns a list of human-readable issues. Empty list means the plan passes.
+
+    Rules:
+      1. Every action must have a known tool_name.
+      2. Every REQUIRED parameter of that tool must be present, non-empty, and
+         free of forbidden placeholder markers (FILL IN, TODO, TBD, etc.).
+      3. Cross-step refs `{{$N.field}}` are permitted, but must reference a
+         strictly earlier step AND a field declared passable by that step's
+         tool (per `get_passable_outputs()`).
+    """
+    issues: List[str] = []
+    if not actions:
+        return ["Plan contains no actions."]
+
+    # Precompute each step's passable output keys so we can validate $N.field refs.
+    step_passable_keys: Dict[int, set] = {}
+
+    for idx, action in enumerate(actions, start=1):
+        step_id = action.get("step_id", idx)
+        prefix = f"Step {step_id}"
+
+        tool_name = action.get("tool_name")
+        if not tool_name:
+            issues.append(f"{prefix}: missing `tool_name`.")
+            continue
+
+        tool = tool_lookup.get(tool_name)
+        if tool is None:
+            issues.append(f"{prefix}: unknown tool `{tool_name}`.")
+            continue
+
+        params = action.get("parameters") or {}
+        if not isinstance(params, dict):
+            issues.append(f"{prefix}: `parameters` must be an object.")
+            continue
+
+        # Required-param validation.
+        required = _tool_required_params(tool)
+        for req in required:
+            if req not in params:
+                issues.append(
+                    f"{prefix} ({tool_name}): missing required parameter `{req}`."
+                )
+                continue
+            value = params[req]
+            if _is_empty_value(value):
+                issues.append(
+                    f"{prefix} ({tool_name}): required parameter `{req}` is empty."
+                )
+                continue
+            marker = _contains_forbidden_placeholder(value)
+            if marker:
+                issues.append(
+                    f"{prefix} ({tool_name}): required parameter `{req}` contains "
+                    f"forbidden placeholder `{marker}`. Look up the real value via a "
+                    "read-only resource or write the final content."
+                )
+
+        # Placeholder scan across ALL params (not just required), since optional
+        # text fields with placeholders would also be broken if submitted.
+        for pname, pvalue in params.items():
+            marker = _contains_forbidden_placeholder(pvalue)
+            if marker and pname not in required:
+                issues.append(
+                    f"{prefix} ({tool_name}): parameter `{pname}` contains forbidden "
+                    f"placeholder `{marker}`."
+                )
+
+        # Cross-step variable reference validation.
+        def _walk_for_refs(node):
+            if isinstance(node, str):
+                for m in _VARIABLE_REF_RE.finditer(node):
+                    yield int(m.group(1)), m.group(2), m.group(0)
+            elif isinstance(node, dict):
+                for v in node.values():
+                    yield from _walk_for_refs(v)
+            elif isinstance(node, list):
+                for v in node:
+                    yield from _walk_for_refs(v)
+
+        for ref_step, ref_field, ref_literal in _walk_for_refs(params):
+            if ref_step >= step_id:
+                issues.append(
+                    f"{prefix} ({tool_name}): reference `{ref_literal}` points to a "
+                    f"non-earlier step (step {ref_step} must be < {step_id})."
+                )
+                continue
+            allowed = step_passable_keys.get(ref_step)
+            if allowed is None:
+                issues.append(
+                    f"{prefix} ({tool_name}): reference `{ref_literal}` points to "
+                    f"step {ref_step} which does not exist earlier in the plan."
+                )
+                continue
+            if ref_field not in allowed:
+                issues.append(
+                    f"{prefix} ({tool_name}): reference `{ref_literal}` uses field "
+                    f"`{ref_field}` which is not a declared passable output of step "
+                    f"{ref_step}. Allowed fields: {sorted(allowed) or '(none)'}."
+                )
+
+        # Record this step's passable outputs for any later-step refs.
+        try:
+            declared = get_passable_outputs(tool_name) or []
+            step_passable_keys[step_id] = {o.key for o in declared}
+        except Exception as e:
+            log.warning(f"⚠️ Could not fetch passable outputs for {tool_name}: {e}")
+            step_passable_keys[step_id] = set()
+
+    return issues
+
+
+def _truncate(text: str, n: int) -> str:
+    """Truncate a string to at most n chars, with a marker suffix when clipped."""
+    if text is None:
+        return ""
+    if len(text) <= n:
+        return text
+    return text[:n] + f"\n... [truncated, total chars={len(text)}]"
+
+
+def _scratchpad_as_text(scratchpad: List[str]) -> str:
+    """Join scratchpad entries with a hard cap to keep the prompt bounded."""
+    joined = "\n\n".join(scratchpad)
+    if len(joined) <= SCRATCHPAD_TOTAL_CHARS:
+        return joined
+    # Keep the tail (most recent entries matter most for the next decision).
+    return "... [earlier scratchpad truncated]\n\n" + joined[-SCRATCHPAD_TOTAL_CHARS:]
+
+
+def _format_resource_descriptions(resources: list) -> str:
+    """Format resources for the research prompt with scheme-level guidance."""
+    tavily = []
+    perplexity = []
+    other = []
+    for r in resources:
+        line = f"- {r.name}: {r.description}\n  URI: {r.uri_template}"
+        uri = (r.uri_template or "").lower()
+        if uri.startswith("tavily://"):
+            tavily.append(line)
+        elif uri.startswith("perplexity://"):
+            perplexity.append(line)
+        else:
+            other.append(line)
+
+    sections = []
+    if tavily:
+        sections.append("FAST WEB SEARCH (preferred, sub-second):\n" + "\n".join(tavily))
+    if perplexity:
+        sections.append(
+            "DEEP RESEARCH (slow, use sparingly — 15s+ per call):\n"
+            + "\n".join(perplexity)
+        )
+    if other:
+        sections.append("OTHER READ-ONLY RESOURCES:\n" + "\n".join(other))
+    return "\n\n".join(sections) if sections else "(no resources available)"
+
+
+async def _read_resource_safely(
+    client,
+    resource_lookup: Dict[str, Any],
+    decision: Dict[str, Any],
+) -> str:
+    """
+    Execute a single resource read and return its textual body.
+
+    Never raises - on failure, returns an error string that gets appended to
+    the scratchpad so the LLM can react.
+    """
+    resource_name = decision.get("name", "")
+    params = decision.get("parameters") or {}
+
+    resource_item = resource_lookup.get(resource_name)
+    if resource_item is None:
+        return f"ERROR: resource `{resource_name}` not found."
+
+    try:
+        uri = _expand_uri_template(resource_item.uri_template, params)
+    except Exception as e:
+        return f"ERROR: failed to expand URI for `{resource_name}` with params={params}: {e}"
+
+    log.info(f"📖 Reading resource: {resource_name} -> {uri}")
+
+    try:
+        async with client.session("covalent") as session:
+            read_result = await session.read_resource(uri)
+            if read_result.contents:
+                content = read_result.contents[0]
+                text = content.text if hasattr(content, 'text') else str(content)
+            else:
+                text = ""
+    except Exception as e:
+        log.warning(f"⚠️ Resource read failed for {resource_name}: {e}")
+        return f"ERROR: resource read for `{resource_name}` failed: {e}"
+
+    # Pretty-print the big search responses for easier log scanning (same policy
+    # as the single-shot gather_context used for perplexity).
+    if uri.startswith("perplexity://") or uri.startswith("tavily://"):
+        _max = 24_000
+        try:
+            _parsed = json.loads(text)
+            _body = json.dumps(_parsed, indent=2, default=str)
+        except (json.JSONDecodeError, TypeError):
+            _body = text
+        if len(_body) > _max:
+            _body = _body[:_max] + f"\n... [truncated for log, total chars={len(text)}]"
+        scheme = "tavily" if uri.startswith("tavily://") else "pplx"
+        log.info(
+            f"[research/{scheme}] response from read_resource — "
+            f"name={resource_name!r} uri={uri!r}\n{_body}"
+        )
+
+    return text
+
+
+def _parse_research_decision(response_text: str) -> Dict[str, Any]:
+    """
+    Parse one turn's LLM output.
+
+    Expected shape:
+      {
+        "thought": "...",
+        "action": {
+          "type": "read_resource",
+          "name": "...",
+          "parameters": {...},
+          "reason": "..."
+        }
+      }
+    OR:
+      {
+        "thought": "...",
+        "action": {
+          "type": "draft_plan",
+          "actions": [ {tool_name, parameters, reasoning}, ... ],
+          "overall_reasoning": "..."
+        }
+      }
+
+    Returns a dict with at least `{"type": ...}`; on parse failure returns
+    `{"type": "invalid", "raw": <text>}` so the loop can re-prompt.
+    """
+    # Try fenced JSON block first.
+    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+    if json_match:
+        json_str = json_match.group(1)
+    else:
+        start = response_text.find('{')
+        end = response_text.rfind('}')
+        if start == -1 or end == -1 or end <= start:
+            return {"type": "invalid", "raw": response_text}
+        json_str = response_text[start:end + 1]
+
+    try:
+        parsed = json.loads(json_str)
+    except json.JSONDecodeError:
+        return {"type": "invalid", "raw": response_text}
+
+    action = parsed.get("action") if isinstance(parsed, dict) else None
+    if not isinstance(action, dict):
+        return {"type": "invalid", "raw": response_text}
+
+    atype = action.get("type")
+    thought = parsed.get("thought", "") if isinstance(parsed, dict) else ""
+
+    if atype == "read_resource":
+        return {
+            "type": "read_resource",
+            "thought": thought,
+            "name": action.get("name", ""),
+            "parameters": action.get("parameters", {}) or {},
+            "reason": action.get("reason", ""),
+        }
+    if atype == "draft_plan":
+        raw_actions = action.get("actions") or []
+        normalized = []
+        for i, a in enumerate(raw_actions, start=1):
+            if not isinstance(a, dict):
+                continue
+            normalized.append({
+                "step_id": a.get("step_id", i),
+                "tool_name": a.get("tool_name"),
+                "parameters": a.get("parameters", {}) or {},
+                "reasoning": a.get("reasoning", f"Step {i}"),
+            })
+        return {
+            "type": "draft_plan",
+            "thought": thought,
+            "actions": normalized,
+            "overall_reasoning": action.get("overall_reasoning", ""),
+        }
+
+    return {"type": "invalid", "raw": response_text}
+
+
+def _build_research_system_prompt() -> str:
+    """System prompt used for every turn of the iterative research loop."""
+    return """You are an agentic research + action planner.
+
+Each turn you must emit EXACTLY ONE of two actions, as JSON:
+
+1. Read a read-only resource to gather more context:
+   {
+     "thought": "<why you're reading this>",
+     "action": {
+       "type": "read_resource",
+       "name": "<resource name>",
+       "parameters": { ... },
+       "reason": "<what you hope to learn>"
+     }
+   }
+
+2. Draft the final plan (only when you have EVERYTHING you need):
+   {
+     "thought": "<why the plan is complete>",
+     "action": {
+       "type": "draft_plan",
+       "actions": [
+         {
+           "tool_name": "<tool>",
+           "parameters": { ... },
+           "reasoning": "<brief explanation>"
+         }
+       ],
+       "overall_reasoning": "<brief overall plan>"
+     }
+   }
+
+STRICT PLAN POLICY:
+- Every REQUIRED parameter MUST be a concrete, final value.
+- Placeholders such as [FILL IN ...], [Content to be generated], TODO, TBD, <placeholder>, REPLACE_ME are FORBIDDEN and will cause the plan to be rejected.
+- If you don't know a value, CALL A READ-ONLY RESOURCE to look it up before drafting the plan.
+- For long-form content (email bodies, doc bodies), write the full final text.
+- Cross-step variables use the syntax {{$N.field}} where N is a strictly-earlier step and `field` is a declared passable output of that step's tool.
+
+SEARCH POLICY:
+- For web/fact lookups, PREFER `tavily://search/...` — it returns in <1s and is the default.
+- Use `perplexity://search/...` ONLY for deep research that benefits from multi-source synthesis (e.g., market analysis, biographies, literature reviews). It takes 15+ seconds per call. Use Perplexity calls sparingly.
+- Before planning, exhaust cheap Tavily lookups first; only escalate to Perplexity when Tavily results are insufficient.
+
+EMAIL FORMATTING (when the plan includes send_email / create_draft):
+- Email body content must be PLAIN TEXT (no markdown, no bullet points with '-').
+- Use simple line breaks; keep it professional.
+
+Output ONLY the JSON object. No prose outside it."""
+
+
+def _build_research_user_prompt(
+    action_text: str,
+    initial_context: str,
+    relevant_resources: list,
+    relevant_tools: list,
+    scratchpad: List[str],
+    reads_done: int,
+    reads_budget: int,
+    turns_left: int,
+    last_issues: List[str],
+) -> str:
+    """Assemble the user-message for one turn of the loop."""
+    if len(initial_context) > MAX_CONTEXT_CHARS:
+        initial_context = initial_context[:MAX_CONTEXT_CHARS] + "\n\n[... context truncated ...]"
+
+    resource_block = _format_resource_descriptions(relevant_resources)
+
+    def _format_tool(tool):
+        return f"- {tool.name}: {tool.description}\n  Parameters:\n    {format_tool_params(tool)}"
+
+    tool_block = "\n".join(_format_tool(t) for t in relevant_tools)
+
+    passable_info = format_passable_outputs_for_prompt()
+    scratchpad_text = _scratchpad_as_text(scratchpad) if scratchpad else "(empty)"
+    issues_block = (
+        "\n".join(f"- {i}" for i in last_issues)
+        if last_issues else "(none — last draft either passed or there was none)"
+    )
+
+    return f"""USER ACTION TO ACCOMPLISH:
+{action_text}
+
+EXISTING CONTEXT:
+{initial_context if initial_context else "(none)"}
+
+READ-ONLY RESOURCES YOU CAN CALL (choose ONE per read_resource turn):
+{resource_block}
+
+WRITE TOOLS YOU CAN PROPOSE IN THE FINAL PLAN:
+{tool_block}
+
+PASSABLE OUTPUTS BY TOOL (for cross-step {{{{$N.field}}}} references):
+{passable_info}
+
+BUDGET:
+- Turns remaining (including this one): {turns_left}
+- Resource reads remaining: {reads_budget - reads_done}
+
+SCRATCHPAD (chronological notes from previous turns):
+{scratchpad_text}
+
+LATEST VALIDATION ISSUES FROM YOUR PREVIOUS DRAFT (address these before retrying):
+{issues_block}
+
+Now emit ONE JSON object per the system prompt's schema."""
+
+
+async def _llm_research_turn(
+    action_text: str,
+    initial_context: str,
+    relevant_resources: list,
+    relevant_tools: list,
+    scratchpad: List[str],
+    reads_done: int,
+    reads_budget: int,
+    turns_left: int,
+    last_issues: List[str],
+) -> Dict[str, Any]:
+    """Run a single LLM turn of the research loop and return the parsed decision."""
+    system_prompt = _build_research_system_prompt()
+    user_prompt = _build_research_user_prompt(
+        action_text=action_text,
+        initial_context=initial_context,
+        relevant_resources=relevant_resources,
+        relevant_tools=relevant_tools,
+        scratchpad=scratchpad,
+        reads_done=reads_done,
+        reads_budget=reads_budget,
+        turns_left=turns_left,
+        last_issues=last_issues,
+    )
+
+    gateway = get_gateway_client()
+    response = gateway.generate(
+        prompt=user_prompt,
+        system_prompt=system_prompt,
+        max_tokens=3072,
+        temperature=0.0,
+    )
+    log.debug(f"\n{'='*60}\nLLM OUTPUT (RESEARCH TURN)\n{'='*60}\n{response.content}\n{'='*60}\n")
+    return _parse_research_decision(response.content)
+
+
+# =============================================================================
 # ACTION PLANNING AND EXECUTION
 # =============================================================================
 
@@ -791,65 +1384,6 @@ async def plan_action(action_text: str, context_data: str) -> Dict[str, Any]:
                 "error": "No relevant tools found for this action"
             }
         
-        # Build tool descriptions for the prompt with explicit required/optional marking
-        def format_tool_params(tool):
-            """Format tool parameters, clearly marking required vs optional."""
-            try:
-                schema = None
-                
-                # Try to get schema from args_schema
-                if hasattr(tool, 'args_schema') and tool.args_schema is not None:
-                    if hasattr(tool.args_schema, 'model_json_schema'):
-                        # It's a Pydantic model class
-                        schema = tool.args_schema.model_json_schema()
-                    elif isinstance(tool.args_schema, dict):
-                        # It's already a dict schema
-                        schema = tool.args_schema
-                
-                # If we have a proper schema with properties, format nicely
-                if schema and isinstance(schema, dict) and 'properties' in schema:
-                    required_set = set(schema.get('required', []))
-                    props = schema.get('properties', {})
-                    
-                    param_strs = []
-                    for name, info in props.items():
-                        param_type = info.get('type', 'any')
-                        desc = info.get('description', '')
-                        if name in required_set:
-                            param_strs.append(f"{name} (REQUIRED, {param_type}): {desc}")
-                        else:
-                            default = info.get('default', 'None')
-                            param_strs.append(f"{name} (optional, {param_type}, default={default}): {desc}")
-                    
-                    return "\n    ".join(param_strs) if param_strs else str(tool.args)
-                
-                # Fallback: try to format tool.args directly
-                if hasattr(tool, 'args') and isinstance(tool.args, dict):
-                    param_strs = []
-                    for name, info in tool.args.items():
-                        if isinstance(info, dict):
-                            param_type = info.get('type', 'any')
-                            desc = info.get('description', '')
-                            # Check if optional via anyOf/oneOf with null
-                            is_optional = False
-                            if 'anyOf' in info or 'oneOf' in info:
-                                types = info.get('anyOf', info.get('oneOf', []))
-                                is_optional = any(t.get('type') == 'null' for t in types)
-                            if 'default' in info:
-                                is_optional = True
-                            
-                            if is_optional:
-                                param_strs.append(f"{name} (optional, {param_type}): {desc}")
-                            else:
-                                param_strs.append(f"{name} (REQUIRED, {param_type}): {desc}")
-                        else:
-                            param_strs.append(f"{name}: {info}")
-                    return "\n    ".join(param_strs) if param_strs else str(tool.args)
-                
-                return str(tool.args)
-            except Exception:
-                return str(tool.args)
-        
         tool_descriptions = "\n".join([
             f"- {tool.name}: {tool.description}\n  Parameters:\n    {format_tool_params(tool)}"
             for tool in relevant_tools
@@ -884,12 +1418,15 @@ ENSURE THAT THE ENTIRE CHAIN OF ACTIONS IS COMPLETE. THERE'S NO MISSING PARAMETE
 Every parameter that an action requires either must be provided directly or should be passed in as a cross-step dependency
 unless this is something that the user is expected to fill in directly.
 
-CRITICAL - KEEP OUTPUT CONCISE:
-- Keep ALL parameters SHORT and compact (under 500 chars each)
-- For document content: provide a BRIEF outline/summary (2-3 sentences max), NOT full document text
-- For text/content parameters: use "[Content to be generated]" placeholder if content is long
-- The user will fill in detailed content after reviewing the plan
-- Prefer SINGLE actions when possible - avoid multi-step plans unless absolutely necessary
+STRICT PLAN POLICY:
+- Every REQUIRED parameter MUST be a concrete, final value.
+- Placeholders such as [FILL IN ...], [Content to be generated], TODO, TBD, <placeholder>, REPLACE_ME are FORBIDDEN and will cause the plan to be rejected.
+- For long-form content (email bodies, doc bodies), write the full final text.
+- Prefer SINGLE actions when possible - avoid multi-step plans unless absolutely necessary.
+
+SEARCH POLICY (for context gathering, if any is done upstream):
+- Fast lookups belong on `tavily://search/...` (sub-second).
+- `perplexity://search/...` is for deep multi-source synthesis only (15s+ per call); use sparingly.
 
 EMAIL FORMATTING:
 - For email body content (send_email, create_draft), use PLAIN TEXT only
@@ -901,9 +1438,9 @@ IMPORTANT INSTRUCTIONS:
 1. Analyze if the action requires ONE or MULTIPLE tools
 2. If the action involves multiple distinct operations (e.g., "create a doc AND add content to it"), propose MULTIPLE actions
 3. If the action is simple and requires only one tool, propose just that one
-4. **CRITICAL**: You MUST fill in ALL parameters marked as REQUIRED - the action WILL FAIL if any required parameter is missing
+4. **CRITICAL**: You MUST fill in ALL parameters marked as REQUIRED with concrete, final values - placeholders are forbidden
 5. Use the context data to infer missing information (emails, names, dates, etc.)
-6. If a REQUIRED parameter's value is unknown, use a placeholder like "[FILL IN: description]" - NEVER omit it
+6. If a REQUIRED parameter's value is unknown, do NOT invent a placeholder - the plan will be rejected. Instead, the calling code should have already gathered that context upstream.
 7. DO NOT execute any tools - just propose them with all parameters filled
 
 PARAMETER REQUIREMENTS:
@@ -1438,18 +1975,253 @@ async def execute_action_chain(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
 # COMBINED FLOW FUNCTIONS
 # =============================================================================
 
+def _build_research_error_payload(
+    reason: str,
+    resources_read: List[str],
+    scratchpad: List[str],
+    last_draft: Optional[Dict[str, Any]],
+    last_issues: List[str],
+) -> Dict[str, Any]:
+    """Construct the error payload returned when the loop exhausts a budget."""
+    reason_messages = {
+        "turns": "Research loop exhausted its turn budget before producing a valid plan.",
+        "reads": "Research loop exhausted its read-resource budget. Aborting without forcing an incomplete plan.",
+        "wall_clock": "Research loop exceeded its wall-clock budget before producing a valid plan.",
+        "drafts": "Research loop produced too many invalid drafts in a row.",
+    }
+    human = reason_messages.get(reason, f"Research loop aborted: {reason}.")
+    if last_issues:
+        human = f"{human} Last validation issues: {'; '.join(last_issues[:5])}"
+
+    return {
+        "status": "error",
+        "research": {
+            "resources_read": resources_read,
+            "context_gathered": _scratchpad_as_text(scratchpad),
+        },
+        "proposed_actions": None,
+        "is_multi_action": False,
+        "overall_reasoning": "",
+        "error": human,
+        "error_reason": reason,
+        "last_draft": last_draft,
+        "last_issues": last_issues,
+    }
+
+
+async def iterative_research_and_plan(
+    action_text: str,
+    initial_context: str = "",
+) -> Dict[str, Any]:
+    """
+    Agentic research + planning loop.
+
+    Each turn, the LLM picks ONE of:
+      - `read_resource`: read a read-only MCP resource, append to scratchpad.
+      - `draft_plan`: propose a final plan; we validate it programmatically.
+
+    The loop exits successfully when a drafted plan passes strict validation
+    (all REQUIRED parameters present, no forbidden placeholders, cross-step
+    refs valid). It exits with an error when ANY of the four budgets is
+    exhausted — we never silently force an incomplete plan.
+    """
+    log.info("=" * 40)
+    log.info("🔁 ITERATIVE RESEARCH + PLANNING LOOP")
+    log.info("=" * 40)
+
+    try:
+        client, tools, resources = await get_mcp_client()
+    except Exception as e:
+        log.error(f"❌ MCP connection error: {e}")
+        return {
+            "status": "error",
+            "research": {"resources_read": [], "context_gathered": initial_context},
+            "proposed_actions": None,
+            "is_multi_action": False,
+            "overall_reasoning": "",
+            "error": f"Connection error: {str(e)}",
+        }
+
+    if not tool_router._initialized:
+        tool_router.initialize(tools, resources)
+
+    routing_query = action_text + " " + initial_context[:500]
+    relevant_resources = tool_router.get_relevant_resources(routing_query, top_k=TOP_K_TOOLS)
+    relevant_tools = tool_router.get_relevant_tools(routing_query, top_k=TOP_K_TOOLS)
+
+    log.info(f"📚 Shortlisted {len(relevant_resources)} resources for research:")
+    for i, res in enumerate(relevant_resources, 1):
+        log.info(f"   {i}. {res.name}")
+    log.info(f"🔧 Shortlisted {len(relevant_tools)} tools for planning:")
+    for i, tool in enumerate(relevant_tools, 1):
+        log.info(f"   {i}. {tool.name}")
+
+    resource_lookup = {r.name: r for r in resources}
+    tool_lookup = {t.name: t for t in tools}
+
+    scratchpad: List[str] = []
+    resources_read: List[str] = []
+    reads_done = 0
+    draft_attempts = 0
+    last_draft: Optional[Dict[str, Any]] = None
+    last_issues: List[str] = []
+    start = time.monotonic()
+
+    for turn in range(1, MAX_RESEARCH_TURNS + 1):
+        elapsed = time.monotonic() - start
+        if elapsed > RESEARCH_WALL_CLOCK_S:
+            log.warning(
+                f"⛔ Wall-clock budget exhausted after {elapsed:.1f}s "
+                f"(>{RESEARCH_WALL_CLOCK_S}s). Aborting."
+            )
+            return _build_research_error_payload(
+                "wall_clock", resources_read, scratchpad, last_draft, last_issues,
+            )
+
+        turns_left = MAX_RESEARCH_TURNS - turn + 1
+        log.info(
+            f"🔁 Turn {turn}/{MAX_RESEARCH_TURNS} — "
+            f"reads_done={reads_done}/{MAX_RESOURCE_READS}, "
+            f"drafts={draft_attempts}/{MAX_DRAFT_ATTEMPTS}, "
+            f"elapsed={elapsed:.1f}s"
+        )
+
+        try:
+            decision = await _llm_research_turn(
+                action_text=action_text,
+                initial_context=initial_context,
+                relevant_resources=relevant_resources,
+                relevant_tools=relevant_tools,
+                scratchpad=scratchpad,
+                reads_done=reads_done,
+                reads_budget=MAX_RESOURCE_READS,
+                turns_left=turns_left,
+                last_issues=last_issues,
+            )
+        except GatewayError as e:
+            log.error(f"❌ Gateway error during research turn: {e}")
+            return {
+                "status": "error",
+                "research": {
+                    "resources_read": resources_read,
+                    "context_gathered": _scratchpad_as_text(scratchpad),
+                },
+                "proposed_actions": None,
+                "is_multi_action": False,
+                "overall_reasoning": "",
+                "error": f"Gateway error: {str(e)}",
+            }
+        except Exception as e:
+            log.error(f"❌ Unexpected error during research turn: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "status": "error",
+                "research": {
+                    "resources_read": resources_read,
+                    "context_gathered": _scratchpad_as_text(scratchpad),
+                },
+                "proposed_actions": None,
+                "is_multi_action": False,
+                "overall_reasoning": "",
+                "error": f"Research turn error: {str(e)}",
+            }
+
+        dtype = decision.get("type")
+
+        if dtype == "read_resource":
+            if reads_done >= MAX_RESOURCE_READS:
+                log.warning("⛔ Read budget exhausted. Aborting without forcing a plan.")
+                return _build_research_error_payload(
+                    "reads", resources_read, scratchpad, last_draft, last_issues,
+                )
+            log.info(
+                f"   ↪ read_resource name={decision.get('name')!r} "
+                f"params={decision.get('parameters')} "
+                f"reason={(decision.get('reason') or '')[:120]!r}"
+            )
+            text = await _read_resource_safely(client, resource_lookup, decision)
+            scratchpad.append(
+                f"TURN {turn} READ {decision.get('name')}({decision.get('parameters')}) ->\n"
+                f"{_truncate(text, SCRATCHPAD_PER_READ_CHARS)}"
+            )
+            resources_read.append(decision.get("name", ""))
+            reads_done += 1
+            continue
+
+        if dtype == "draft_plan":
+            actions = decision.get("actions") or []
+            last_draft = {
+                "actions": actions,
+                "overall_reasoning": decision.get("overall_reasoning", ""),
+            }
+            last_issues = _validate_plan(actions, tool_lookup)
+            log.info(f"   ↪ draft_plan with {len(actions)} action(s) — issues={len(last_issues)}")
+
+            if not last_issues:
+                log.info(
+                    f"✅ Plan validated after {turn} turn(s), {reads_done} read(s). "
+                    f"{len(actions)} action(s) proposed."
+                )
+                return {
+                    "status": "success",
+                    "research": {
+                        "resources_read": resources_read,
+                        "context_gathered": _scratchpad_as_text(scratchpad),
+                    },
+                    "proposed_actions": actions,
+                    "is_multi_action": len(actions) > 1,
+                    "overall_reasoning": decision.get("overall_reasoning", ""),
+                    "error": None,
+                }
+
+            draft_attempts += 1
+            log.warning(
+                f"   ✗ Draft rejected (attempt {draft_attempts}/{MAX_DRAFT_ATTEMPTS}). Issues:"
+            )
+            for issue in last_issues:
+                log.warning(f"     - {issue}")
+
+            if draft_attempts >= MAX_DRAFT_ATTEMPTS:
+                return _build_research_error_payload(
+                    "drafts", resources_read, scratchpad, last_draft, last_issues,
+                )
+
+            scratchpad.append(
+                f"TURN {turn} DRAFT REJECTED — issues:\n- "
+                + "\n- ".join(last_issues)
+                + "\nResolve by reading more resources or rewriting the plan. "
+                "Placeholders like [FILL IN ...] are FORBIDDEN."
+            )
+            continue
+
+        # Invalid / unparseable output — tell the LLM to retry on the next turn.
+        log.warning(
+            "   ✗ Invalid turn output (not a valid read_resource/draft_plan JSON); "
+            "nudging LLM to retry."
+        )
+        raw = (decision.get("raw") or "")[:500]
+        scratchpad.append(
+            f"TURN {turn} INVALID OUTPUT — your previous response was not valid JSON "
+            f"matching the schema. Emit exactly one action per the system prompt. "
+            f"First 500 chars of your output were:\n{raw}"
+        )
+
+    # Turn budget exhausted.
+    log.warning(f"⛔ Turn budget exhausted after {MAX_RESEARCH_TURNS} turn(s).")
+    return _build_research_error_payload(
+        "turns", resources_read, scratchpad, last_draft, last_issues,
+    )
+
+
 async def research_and_plan(action_text: str, initial_context: str = "") -> Dict[str, Any]:
     """
     Combined research + planning flow.
-    
-    This is the main entry point for the action executor.
-    1. Gathers context by reading relevant resources
-    2. Plans the action(s) using gathered context
-    
-    Args:
-        action_text: The action description from the user
-        initial_context: Any context already available (from graph, etc.)
-        
+
+    Thin wrapper over `iterative_research_and_plan` — preserves the public
+    contract consumed by `server/fastapi_app/routers/actions.py` and
+    `server/app.py`.
+
     Returns:
         {
             "status": "success" | "error",
@@ -1467,52 +2239,18 @@ async def research_and_plan(action_text: str, initial_context: str = "") -> Dict
             ] | None,
             "is_multi_action": bool,
             "overall_reasoning": str,
-            "error": str | None
+            "error": str | None,
+            # Present on loop-exhaustion errors:
+            "error_reason": "turns" | "reads" | "wall_clock" | "drafts",
+            "last_draft": {...} | None,
+            "last_issues": list[str] | None,
         }
     """
-    # Phase 0: Research
-    log.info("=" * 40)
-    log.info("🔍 PHASE 0: RESEARCH")
-    log.info("=" * 40)
-    
-    research_result = await gather_context(action_text, initial_context)
-    
-    research_info = {
-        "resources_read": research_result.get("resources_read", []),
-        "context_gathered": research_result.get("context", initial_context)
-    }
-    
-    if research_result["status"] == "error":
-        log.warning(f"⚠️ Research had issues (continuing): {research_result['error']}")
-    
-    # Phase 1: Planning
-    log.info("\n" + "=" * 40)
-    log.info("📋 PHASE 1: PLANNING")
-    log.info("=" * 40)
-    
-    plan_result = await plan_action(action_text, research_info["context_gathered"])
-    
-    if plan_result["status"] == "error":
-        return {
-            "status": "error",
-            "research": research_info,
-            "proposed_actions": None,
-            "is_multi_action": False,
-            "overall_reasoning": "",
-            "error": plan_result["error"]
-        }
-    
-    num_actions = len(plan_result.get("proposed_actions", []))
-    log.info(f"✅ Planning complete: {num_actions} action(s) proposed")
-    
-    return {
-        "status": "success",
-        "research": research_info,
-        "proposed_actions": plan_result["proposed_actions"],
-        "is_multi_action": plan_result.get("is_multi_action", False),
-        "overall_reasoning": plan_result.get("overall_reasoning", ""),
-        "error": None
-    }
+    result = await iterative_research_and_plan(action_text, initial_context)
+    if result.get("status") == "success":
+        num_actions = len(result.get("proposed_actions") or [])
+        log.info(f"✅ Planning complete: {num_actions} action(s) proposed")
+    return result
 
 
 # =============================================================================
@@ -1581,86 +2319,71 @@ async def health_check():
 # =============================================================================
 
 async def main():
-    """Test the action executor with full 3-phase flow (multi-action support)."""
-    
-    # Test action - this one could trigger multi-action
+    """Exercise the iterative research + planning loop end-to-end."""
+
     action_text = "Reply to Ritesh's latest email about the project update"
-    
-    # Initial context (could come from the graph or be empty)
     initial_context = """
     Known information:
     - Ritesh is a team member (ritesh@example.com)
     - We're working on Q1 roadmap
     """
-    
+
     log.info("=" * 60)
-    log.info("PHASE 0: RESEARCH (Context Gathering)")
+    log.info("ITERATIVE RESEARCH + PLANNING")
     log.info("=" * 60)
-    
-    # Phase 0: Gather context by reading relevant resources
-    research_result = await gather_context(action_text, initial_context)
-    
-    if research_result["status"] == "error":
-        log.warning(f"⚠️ Research had issues: {research_result['error']}")
-        # Continue anyway with whatever context we have
-    
-    log.info(f"\n📚 Resources read: {research_result['resources_read']}")
-    log.info(f"   Context length: {len(research_result['context'])} chars")
-    
-    log.info("\n" + "=" * 60)
-    log.info("PHASE 1: PLANNING")
-    log.info("=" * 60)
-    
-    # Phase 1: Plan the action(s) using gathered context
-    plan_result = await plan_action(action_text, research_result["context"])
-    
-    if plan_result["status"] == "error":
-        log.error(f"❌ Planning failed: {plan_result['error']}")
+
+    result = await research_and_plan(action_text, initial_context)
+
+    research = result.get("research") or {}
+    log.info(f"\n📚 Resources read: {research.get('resources_read', [])}")
+    log.info(f"   Scratchpad length: {len(research.get('context_gathered') or '')} chars")
+
+    if result["status"] == "error":
+        log.error(f"❌ Research + planning failed: {result.get('error')}")
+        if result.get("error_reason"):
+            log.error(f"   Reason: {result['error_reason']}")
+        if result.get("last_issues"):
+            log.error("   Last validation issues:")
+            for issue in result["last_issues"]:
+                log.error(f"     - {issue}")
+        if result.get("last_draft"):
+            log.error(f"   Last draft actions: {json.dumps(result['last_draft'], indent=2, default=str)[:1000]}")
         return
-    
-    proposed_actions = plan_result["proposed_actions"]
-    is_multi = plan_result.get("is_multi_action", False)
-    
+
+    proposed_actions = result.get("proposed_actions") or []
+    is_multi = result.get("is_multi_action", False)
+
     log.info(f"\n📋 Proposed Actions ({len(proposed_actions)} action(s), multi={is_multi}):")
     for action in proposed_actions:
         log.info(f"\n   Step {action['step_id']}: {action['tool_name']}")
         log.info(f"   Parameters: {json.dumps(action['parameters'], indent=4)}")
         log.info(f"   Reasoning: {action['reasoning']}")
-    
+
     log.info("\n" + "=" * 60)
-    log.info("PHASE 2: EXECUTION (simulated approval)")
+    log.info("EXECUTION (simulated approval)")
     log.info("=" * 60)
-    
-    # In real app, we'd wait for user approval here
     log.info("⏸️  [In real app: User reviews and approves/edits parameters here]")
-    
-    # Phase 2: Execute the action(s)
+
     if len(proposed_actions) == 1:
-        # Single action
         action = proposed_actions[0]
         exec_result = await execute_action(action['tool_name'], action['parameters'])
-        
         if exec_result["status"] == "error":
             log.error(f"❌ Execution failed: {exec_result['error']}")
             return
-        
         log.info(f"\n✅ Action executed successfully!")
         log.info(f"   Result: {exec_result['result']}")
     else:
-        # Multi-action chain
         chain_result = await execute_action_chain(proposed_actions)
-        
         log.info(f"\n📊 Chain execution complete:")
         log.info(f"   Status: {chain_result['status']}")
         log.info(f"   Summary: {chain_result['summary']['succeeded']}/{chain_result['summary']['total']} succeeded")
-        
-        for result in chain_result['results']:
-            status_icon = "✅" if result['status'] == "success" else "❌"
-            log.info(f"\n   {status_icon} Step {result['step_id']} ({result['tool_name']}): {result['status']}")
-            if result['status'] == 'success':
-                log.info(f"      Result: {str(result.get('result', ''))[:100]}...")
+        for r in chain_result['results']:
+            status_icon = "✅" if r['status'] == "success" else "❌"
+            log.info(f"\n   {status_icon} Step {r['step_id']} ({r['tool_name']}): {r['status']}")
+            if r['status'] == 'success':
+                log.info(f"      Result: {str(r.get('result', ''))[:100]}...")
             else:
-                log.info(f"      Error: {result.get('error', 'Unknown')}")
+                log.info(f"      Error: {r.get('error', 'Unknown')}")
 
 
 if __name__ == "__main__":

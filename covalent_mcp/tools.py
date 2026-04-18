@@ -35,6 +35,7 @@ from covalent_mcp.toolclasses import (
     docs_module,
     filesystem_module,
     perplexity_search_module,
+    tavily_search_module,
     notion_module,
 )
 
@@ -46,6 +47,7 @@ TOOL_MODULES: list[MCPToolModule] = [
     docs_module,
     filesystem_module,
     perplexity_search_module,
+    tavily_search_module,
     notion_module,
 ]
 

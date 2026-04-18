@@ -13,6 +13,7 @@ from covalent_mcp.toolclasses.google.drive import drive_module
 from covalent_mcp.toolclasses.google.docs import docs_module
 from covalent_mcp.toolclasses.filesystem import filesystem_module
 from covalent_mcp.toolclasses.perplexity_search import perplexity_search_module
+from covalent_mcp.toolclasses.tavily_search import tavily_search_module
 from covalent_mcp.toolclasses.notion import notion_module
 
-__all__ = ["github_module", "calendar_module", "gmail_module", "drive_module", "docs_module", "filesystem_module", "perplexity_search_module", "notion_module"]
+__all__ = ["github_module", "calendar_module", "gmail_module", "drive_module", "docs_module", "filesystem_module", "perplexity_search_module", "tavily_search_module", "notion_module"]
