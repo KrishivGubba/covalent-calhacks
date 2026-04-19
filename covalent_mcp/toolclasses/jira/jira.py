@@ -6,9 +6,10 @@ import json
 from typing import Any, Dict, List, Optional
 
 from covalent_mcp.toolclasses.base import DisplayField, MCPToolModule, PassableOutput, ToolDisplaySchema
-from covalent_mcp.toolclasses.jira.auth import get_jira_connection
-from covalent_mcp.toolclasses.jira.jira_client import JiraClient
 from fastmcp import FastMCP
+
+from .auth import get_jira_connection
+from .jira_client import JiraClient
 
 
 class JiraToolModule(MCPToolModule):
