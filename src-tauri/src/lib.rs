@@ -2,7 +2,7 @@
 pub mod ai_provider;
 pub mod screen_context;
 pub mod tab_completion;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, Emitter};
 use std::process::{Child, Command};
@@ -59,6 +59,12 @@ pub struct ContextState {
 #[derive(Clone)]
 pub struct ActionsStore {
     actions: Arc<Mutex<Vec<SuggestedAction>>>,
+}
+
+#[derive(Clone)]
+struct TrayMenuState {
+    pause_item: MenuItem<tauri::Wry>,
+    pin_item: CheckMenuItem<tauri::Wry>,
 }
 
 impl ActionsStore {
@@ -527,22 +533,27 @@ fn toggle_link_mcps() {
 
 // Context collection control commands
 #[tauri::command]
-fn toggle_context_collection(state: tauri::State<ContextState>) -> bool {
-    state.toggle()
+fn toggle_context_collection(app: tauri::AppHandle, state: tauri::State<ContextState>) -> bool {
+    let new_state = state.toggle();
+    state.user_paused.store(!new_state, Ordering::Relaxed);
+    sync_context_collection_ui(&app, &state);
+    new_state
 }
 
 #[tauri::command]
-fn enable_context_collection(state: tauri::State<ContextState>) {
+fn enable_context_collection(app: tauri::AppHandle, state: tauri::State<ContextState>) {
     // Clear user_paused flag when user explicitly resumes
     state.user_paused.store(false, Ordering::Relaxed);
     state.enable();
+    sync_context_collection_ui(&app, &state);
 }
 
 #[tauri::command]
-fn disable_context_collection(state: tauri::State<ContextState>) {
+fn disable_context_collection(app: tauri::AppHandle, state: tauri::State<ContextState>) {
     // Set user_paused flag when user explicitly pauses
     state.user_paused.store(true, Ordering::Relaxed);
     state.disable();
+    sync_context_collection_ui(&app, &state);
 }
 
 #[tauri::command]
@@ -551,8 +562,9 @@ fn get_context_collection_status(state: tauri::State<ContextState>) -> bool {
 }
 
 #[tauri::command]
-fn enable_context_collection_if_not_user_paused(state: tauri::State<ContextState>) {
+fn enable_context_collection_if_not_user_paused(app: tauri::AppHandle, state: tauri::State<ContextState>) {
     state.enable_if_not_user_paused();
+    sync_context_collection_ui(&app, &state);
 }
 
 #[tauri::command]
@@ -622,6 +634,39 @@ fn read_onboarding_state(settings: &serde_json::Value) -> (bool, i64, Option<Str
 
 const SUGGESTED_ACTIONS_ALWAYS_ON_TOP_KEY: &str = "suggested_actions_always_on_top";
 const SUGGESTED_ACTIONS_PINNING_CHANGED_EVENT: &str = "suggested-actions-pinning-changed";
+const CONTEXT_COLLECTION_CHANGED_EVENT: &str = "context-collection-changed";
+
+fn emit_context_collection_changed(app: &tauri::AppHandle, state: &ContextState) {
+    let _ = app.emit(
+        CONTEXT_COLLECTION_CHANGED_EVENT,
+        serde_json::json!({
+            "is_enabled": state.is_enabled(),
+            "user_paused": state.is_user_paused(),
+        }),
+    );
+}
+
+fn sync_tray_context_menu(app: &tauri::AppHandle, state: &ContextState) {
+    if let Some(tray_menu) = app.try_state::<TrayMenuState>() {
+        let label = if state.is_enabled() {
+            "Pause Covalent"
+        } else {
+            "Resume Covalent"
+        };
+        let _ = tray_menu.pause_item.set_text(label);
+    }
+}
+
+fn sync_context_collection_ui(app: &tauri::AppHandle, state: &ContextState) {
+    sync_tray_context_menu(app, state);
+    emit_context_collection_changed(app, state);
+}
+
+fn sync_tray_pinning_menu(app: &tauri::AppHandle, always_on_top: bool) {
+    if let Some(tray_menu) = app.try_state::<TrayMenuState>() {
+        let _ = tray_menu.pin_item.set_checked(always_on_top);
+    }
+}
 
 fn read_suggested_actions_always_on_top(settings: &serde_json::Value) -> bool {
     settings
@@ -653,6 +698,7 @@ fn set_suggested_actions_always_on_top_internal(
         serde_json::Value::Bool(always_on_top),
     );
     apply_suggested_actions_always_on_top(app, always_on_top);
+    sync_tray_pinning_menu(app, always_on_top);
     let _ = app.emit(
         SUGGESTED_ACTIONS_PINNING_CHANGED_EVENT,
         serde_json::json!({ "always_on_top": always_on_top }),
@@ -718,6 +764,7 @@ fn set_onboarding_completed(
     } else {
         state.disable();
     }
+    sync_context_collection_ui(&app, &state);
     if completed {
         if let Some(window) = app.get_webview_window("onboarding") {
             let _ = window.hide();
@@ -764,6 +811,7 @@ fn notify_onboarding_change(completed: bool, app: tauri::AppHandle, state: tauri
     } else {
         state.disable();
     }
+    sync_context_collection_ui(&app, &state);
     let _ = app.emit("onboarding-changed", serde_json::json!({ "completed": completed }));
 }
 
@@ -1051,6 +1099,7 @@ fn toggle_tab_completion(
 async fn plan_action(
     action_uuid: String,
     action_override: Option<serde_json::Value>,
+    app: tauri::AppHandle,
     state: tauri::State<'_, ContextState>
 ) -> Result<serde_json::Value, String> {
     use screen_context::ContextApiClient;
@@ -1059,6 +1108,7 @@ async fn plan_action(
     
     // Disable context collection during planning
     state.disable();
+    sync_context_collection_ui(&app, &state);
     
     let api_client = ContextApiClient::new();
     
@@ -1076,6 +1126,7 @@ async fn plan_action(
             println!("❌ Action planning failed: {}", e);
             // Re-enable on error only if user hasn't manually paused
             state.enable_if_not_user_paused();
+            sync_context_collection_ui(&app, &state);
         }
     }
     
@@ -1096,6 +1147,7 @@ async fn execute_action(
     parameters: Option<serde_json::Value>,
     // New multi-action parameters (optional)
     actions: Option<Vec<serde_json::Value>>,
+    app: tauri::AppHandle,
     state: tauri::State<'_, ContextState>
 ) -> Result<serde_json::Value, String> {
     use screen_context::ContextApiClient;
@@ -1139,7 +1191,8 @@ async fn execute_action(
     // Re-enable context collection after action completes, but only if user hasn't manually paused
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     state.enable_if_not_user_paused();
-    
+    sync_context_collection_ui(&app, &state);
+
     result
 }
 
@@ -1927,6 +1980,7 @@ pub fn run() {
             } else {
                 // Keep data collection locked until onboarding is done.
                 context_state.disable();
+                sync_context_collection_ui(&app.handle(), &context_state);
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
                 }
@@ -1974,16 +2028,47 @@ pub fn run() {
             app.set_menu(menu)?;
 
             // Create tray/menu-bar icon and menu
-            let tray_show_dashboard = MenuItem::with_id(app, "tray_show_dashboard", "Show Dashboard", true, None::<&str>)?;
-            let tray_toggle_pin = MenuItem::with_id(
+            let tray_show_dashboard = MenuItem::with_id(app, "tray_show_dashboard", "Dashboard", true, None::<&str>)?;
+            let tray_section_controls = MenuItem::with_id(app, "tray_section_controls", "Controls", false, None::<&str>)?;
+            let tray_toggle_pause = MenuItem::with_id(
                 app,
-                "tray_toggle_suggested_pin",
-                "Toggle Suggested Actions Always-On-Top",
+                "tray_toggle_context_collection",
+                if context_state.is_enabled() {
+                    "Pause Covalent"
+                } else {
+                    "Resume Covalent"
+                },
                 true,
                 None::<&str>,
             )?;
+            let tray_toggle_pin = CheckMenuItem::with_id(
+                app,
+                "tray_toggle_suggested_pin",
+                "Keep on Top",
+                true,
+                get_suggested_actions_always_on_top_setting(&app.handle()),
+                None::<&str>,
+            )?;
             let tray_quit = PredefinedMenuItem::quit(app, Some("Quit"))?;
-            let tray_menu = Menu::with_items(app, &[&tray_show_dashboard, &tray_toggle_pin, &tray_quit])?;
+            let tray_menu = Menu::with_items(
+                app,
+                &[
+                    &tray_show_dashboard,
+                    &PredefinedMenuItem::separator(app)?,
+                    &tray_section_controls,
+                    &tray_toggle_pause,
+                    &tray_toggle_pin,
+                    &PredefinedMenuItem::separator(app)?,
+                    &tray_quit,
+                ],
+            )?;
+
+            app.manage(TrayMenuState {
+                pause_item: tray_toggle_pause.clone(),
+                pin_item: tray_toggle_pin.clone(),
+            });
+            sync_context_collection_ui(&app.handle(), &context_state);
+            sync_tray_pinning_menu(&app.handle(), get_suggested_actions_always_on_top_setting(&app.handle()));
 
             let mut tray_builder = TrayIconBuilder::with_id("covalent-menu-bar")
                 .menu(&tray_menu)
@@ -2000,6 +2085,16 @@ pub fn run() {
                 match event.id().as_ref() {
                     "open_dashboard" | "tray_show_dashboard" => {
                         open_dashboard_or_onboarding(app);
+                    }
+                    "tray_toggle_context_collection" => {
+                        if context_state.is_enabled() {
+                            context_state.user_paused.store(true, Ordering::Relaxed);
+                            context_state.disable();
+                        } else {
+                            context_state.user_paused.store(false, Ordering::Relaxed);
+                            context_state.enable();
+                        }
+                        sync_context_collection_ui(app, &context_state);
                     }
                     "tray_toggle_suggested_pin" => {
                         let current = get_suggested_actions_always_on_top_setting(app);
