@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, Optional
 from covalent_mcp.toolclasses.issue_tracker.common import extract_external_references
 from covalent_mcp.toolclasses.jira.auth import get_jira_connection
 from covalent_mcp.toolclasses.jira.jira_client import JiraClient
+from logger import get_logger
 from server.integration_dao import IntegrationDAO
 
 from ..models import (
@@ -20,6 +21,8 @@ from ..models import (
     SnapshotPerson,
 )
 from .base import LargeContextProvider
+
+log = get_logger()
 
 
 class JiraLargeContextProvider(LargeContextProvider):
@@ -65,6 +68,10 @@ class JiraLargeContextProvider(LargeContextProvider):
 
         issues_by_key: dict[str, dict[str, Any]] = {}
         since_for_jql = self._format_jql_datetime(since)
+        log.info(
+            f"Jira large-context fetch starting for site={metadata.get('site_name') or cloud_id} "
+            f"projects={project_keys} since={since}"
+        )
         for project_key in project_keys:
             queries = [
                 f'project = "{project_key}" AND statusCategory != Done ORDER BY updated DESC',
@@ -88,6 +95,10 @@ class JiraLargeContextProvider(LargeContextProvider):
             )
             for issue_key in sorted(issues_by_key)
         ]
+        log.info(
+            f"Jira large-context fetch collected {len(detailed_issues)} unique issues "
+            f"across {len(project_keys)} configured projects"
+        )
         return ProviderFetchResult(
             records=[
                 {

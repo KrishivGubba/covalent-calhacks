@@ -63,16 +63,23 @@ class LargeContextSyncScheduler:
             now = datetime.now(timezone.utc)
             interval_seconds = max(config.interval_minutes, 30) * 60
             self.next_run_at = (now + timedelta(seconds=interval_seconds)).isoformat()
+            log.info(
+                f"Large context sync waiting {max(config.interval_minutes, 30)} minutes "
+                f"for next run at {self.next_run_at}"
+            )
             woke_early = await self._wait_for_wake(timeout_seconds=interval_seconds)
             if woke_early:
+                log.info("Large context sync scheduler woke early due to config change or shutdown")
                 continue
 
             self.last_started_at = datetime.now(timezone.utc).isoformat()
+            log.info(f"Large context sync scheduled run starting at {self.last_started_at}")
             try:
                 await asyncio.to_thread(self.engine.sync_once)
             except Exception as exc:
                 log.error(f"Large context scheduler run failed: {exc}")
             self.last_completed_at = datetime.now(timezone.utc).isoformat()
+            log.info(f"Large context sync scheduled run completed at {self.last_completed_at}")
 
         log.info("Large context sync scheduler stopped")
 
