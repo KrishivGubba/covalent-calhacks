@@ -21,6 +21,10 @@ Endpoints:
     POST /integrations/notion/exchange - Exchange auth code for tokens
     POST /integrations/notion/refresh - Refresh access token
 
+    Jira OAuth (protected by Auth0 JWT):
+    POST /integrations/jira/exchange - Exchange auth code for tokens
+    POST /integrations/jira/refresh - Refresh access token
+
 Expected request body for /invoke:
 {
     "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",  # Bedrock inference profile ID
@@ -123,6 +127,10 @@ GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 # Notion OAuth configuration (for token exchange - uses Basic Auth with client_id:client_secret)
 NOTION_CLIENT_ID = os.environ.get("NOTION_CLIENT_ID", "")
 NOTION_CLIENT_SECRET = os.environ.get("NOTION_CLIENT_SECRET", "")
+
+# Jira OAuth configuration (for token exchange - uses client_id/client_secret)
+JIRA_CLIENT_ID = os.environ.get("JIRA_CLIENT_ID", "")
+JIRA_CLIENT_SECRET = os.environ.get("JIRA_CLIENT_SECRET", "")
 
 # GitHub PAT for proxying private release assets to the Tauri updater
 GITHUB_PAT = os.environ.get("GITHUB_PAT", "")

@@ -757,6 +757,306 @@ async def notion_disconnect(integration_dao=Depends(integration_dao_dependency))
     return {"ok": True, "deleted": deleted > 0}
 
 
+class JiraStartRequest(BaseModel):
+    state: Optional[str] = None
+    auth_token: Optional[str] = None
+
+
+class JiraConfigUpdateRequest(BaseModel):
+    cloud_id: str
+    project_keys: list[str]
+
+
+@router.post("/jira/start")
+async def jira_start(body: JiraStartRequest):
+    """
+    Called by frontend before opening Jira OAuth.
+    Stores the state and auth token so backend can exchange via Lambda.
+    """
+    if not body.state:
+        return JSONResponse(status_code=400, content={"error": "state is required"})
+    if not body.auth_token:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "auth_token is required (user must be logged in)"},
+        )
+
+    jira_auth_pending[body.state] = {
+        "auth_token": body.auth_token,
+        "status": "pending",
+    }
+    log.info(f"🎫 Jira auth start: stored state={body.state[:8]}...")
+    return {"ok": True}
+
+
+@router.get("/jira/callback")
+async def jira_callback(
+    code: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    error_description: Optional[str] = Query(None),
+    integration_dao=Depends(integration_dao_dependency),
+):
+    """
+    Jira OAuth redirect target. Exchanges code for tokens via Lambda.
+    """
+
+    def render_error(message: str, status_code: int = 200) -> HTMLResponse:
+        return HTMLResponse(content=f"""
+            <html><body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fff;">
+                <div style="text-align: center;">
+                    <h1 style="color: #ef4444;">Jira Login Failed</h1>
+                    <p style="color: #a1a1aa;">{message}</p>
+                </div>
+            </body></html>
+        """, status_code=status_code)
+
+    if not state:
+        return render_error("Missing state parameter", status_code=400)
+    if state not in jira_auth_pending:
+        return render_error("Invalid or expired state. Please try again.", status_code=400)
+    if error:
+        jira_auth_pending[state]["status"] = "error"
+        jira_auth_pending[state]["error"] = error
+        jira_auth_pending[state]["error_description"] = error_description or error
+        return render_error(error_description or error)
+    if not code:
+        jira_auth_pending[state]["status"] = "error"
+        jira_auth_pending[state]["error"] = "no_code"
+        jira_auth_pending[state]["error_description"] = "No authorization code received"
+        return render_error("No authorization code received")
+
+    auth_token = jira_auth_pending[state].get("auth_token")
+    if not auth_token:
+        jira_auth_pending[state]["status"] = "error"
+        jira_auth_pending[state]["error"] = "no_auth_token"
+        jira_auth_pending[state]["error_description"] = "Auth token not found - user must be logged in"
+        return render_error("Please log in first.")
+
+    try:
+        token_response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/jira/exchange",
+            json={
+                "code": code,
+                "redirect_uri": JIRA_REDIRECT_URI,
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
+        )
+        token_data = token_response.json()
+        if not token_response.ok or "error" in token_data:
+            err = token_data.get("error", "token_exchange_failed")
+            err_desc = token_data.get("error_description", "Token exchange failed")
+            jira_auth_pending[state]["status"] = "error"
+            jira_auth_pending[state]["error"] = err
+            jira_auth_pending[state]["error_description"] = err_desc
+            log.error(f"🎫 Jira token exchange failed: {err} - {err_desc}")
+            return render_error(err_desc)
+
+        expires_in = token_data.get("expires_in", 3600)
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+        resources = [_normalize_jira_resource(resource) for resource in token_data.get("accessible_resources", [])]
+        provider_metadata = {
+            "accessible_resources": resources,
+            "account_id": token_data.get("account_id"),
+            "email": token_data.get("email"),
+            "display_name": token_data.get("display_name"),
+            "site_id": None,
+            "cloud_id": None,
+            "site_name": None,
+            "site_url": None,
+            "project_keys": [],
+            "project_names_by_key": {},
+        }
+        integration_dao.save_token(
+            provider="jira",
+            access_token=token_data.get("access_token"),
+            refresh_token=token_data.get("refresh_token"),
+            expires_at=expires_at,
+            scopes=token_data.get("scope") or JIRA_SCOPES,
+            provider_metadata=provider_metadata,
+        )
+
+        jira_auth_pending[state]["status"] = "ready"
+        jira_auth_pending[state]["resource_count"] = len(resources)
+
+        return HTMLResponse(content="""
+            <html><body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fff;">
+                <div style="text-align: center;">
+                    <h1 style="color: #C5F467;">Jira Connected!</h1>
+                    <p style="color: #a1a1aa;">Return to Covalent to choose a Jira site and project set.</p>
+                </div>
+            </body></html>
+        """)
+    except Exception as e:
+        log.error(f"Jira OAuth error: {e}")
+        jira_auth_pending[state]["status"] = "error"
+        jira_auth_pending[state]["error"] = "exception"
+        jira_auth_pending[state]["error_description"] = str(e)
+        return render_error(f"An error occurred: {e}")
+
+
+@router.get("/jira/check")
+async def jira_check(state: Optional[str] = Query(None)):
+    """
+    Polled by frontend after starting Jira OAuth.
+    """
+    if not state:
+        return JSONResponse(status_code=400, content={"status": "error", "error": "missing state"})
+    if state not in jira_auth_pending:
+        return JSONResponse(status_code=400, content={"status": "error", "error": "invalid_state"})
+
+    pending = jira_auth_pending[state]
+    status = pending.get("status", "pending")
+    if status == "ready":
+        resource_count = pending.get("resource_count", 0)
+        del jira_auth_pending[state]
+        return {"status": "ready", "resource_count": resource_count, "needs_configuration": True}
+    if status == "error":
+        error = pending.get("error")
+        error_desc = pending.get("error_description")
+        del jira_auth_pending[state]
+        return {"status": "error", "error": error, "error_description": error_desc}
+    return {"status": "pending"}
+
+
+@router.get("/jira/config")
+async def jira_get_config(integration_dao=Depends(integration_dao_dependency)):
+    """
+    Get current Jira configuration, including available Jira sites.
+    """
+    try:
+        _, metadata, resources = _load_jira_resources(integration_dao)
+    except RuntimeError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    return {
+        "ok": True,
+        "connected": True,
+        "configured": bool((metadata.get("cloud_id") or metadata.get("site_id")) and (metadata.get("project_keys") or [])),
+        "config": {
+            "cloud_id": metadata.get("cloud_id") or metadata.get("site_id"),
+            "site_name": metadata.get("site_name"),
+            "site_url": metadata.get("site_url"),
+            "project_keys": metadata.get("project_keys") or [],
+            "project_names_by_key": metadata.get("project_names_by_key") or {},
+            "accessible_resources": resources,
+        },
+    }
+
+
+@router.get("/jira/projects")
+async def jira_list_projects(
+    cloud_id: Optional[str] = Query(None),
+    integration_dao=Depends(integration_dao_dependency),
+):
+    """
+    List Jira projects for a specific accessible resource.
+    """
+    try:
+        token_data, metadata, resources = _load_jira_resources(integration_dao)
+    except RuntimeError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+
+    selected_cloud_id = cloud_id or metadata.get("cloud_id") or metadata.get("site_id")
+    if not selected_cloud_id:
+        return JSONResponse(status_code=400, content={"error": "cloud_id is required"})
+    if selected_cloud_id not in {resource["cloud_id"] for resource in resources}:
+        return JSONResponse(status_code=400, content={"error": "cloud_id is not available for this Jira connection"})
+
+    client = JiraClient(token_data["access_token"], cloud_id=selected_cloud_id)
+    projects = client.list_projects()
+    return {
+        "ok": True,
+        "cloud_id": selected_cloud_id,
+        "projects": [
+            {
+                "id": project.get("id"),
+                "key": project.get("key"),
+                "name": project.get("name"),
+                "projectTypeKey": project.get("projectTypeKey"),
+            }
+            for project in projects
+        ],
+    }
+
+
+@router.put("/jira/config")
+async def jira_update_config(
+    body: JiraConfigUpdateRequest,
+    integration_dao=Depends(integration_dao_dependency),
+):
+    """
+    Select the Jira site and project allowlist used for sync and MCP operations.
+    """
+    requested_project_keys = [key.strip().upper() for key in body.project_keys if key and key.strip()]
+    if not requested_project_keys:
+        return JSONResponse(status_code=400, content={"error": "At least one project key is required"})
+
+    try:
+        token_data, metadata, resources = _load_jira_resources(integration_dao)
+    except RuntimeError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+
+    resource_lookup = {resource["cloud_id"]: resource for resource in resources}
+    resource = resource_lookup.get(body.cloud_id)
+    if resource is None:
+        return JSONResponse(status_code=400, content={"error": "cloud_id is not available for this Jira connection"})
+
+    client = JiraClient(token_data["access_token"], cloud_id=body.cloud_id)
+    projects = client.list_projects()
+    project_names_by_key = {
+        project.get("key"): project.get("name")
+        for project in projects
+        if project.get("key")
+    }
+    invalid_keys = [key for key in requested_project_keys if key not in project_names_by_key]
+    if invalid_keys:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Unknown Jira project keys for selected site: {', '.join(invalid_keys)}"},
+        )
+
+    updated_metadata = {
+        **metadata,
+        "site_id": body.cloud_id,
+        "cloud_id": body.cloud_id,
+        "site_name": resource.get("site_name"),
+        "site_url": resource.get("site_url"),
+        "project_keys": requested_project_keys,
+        "project_names_by_key": {
+            key: project_names_by_key[key]
+            for key in requested_project_keys
+        },
+    }
+    integration_dao.update_provider_metadata("jira", updated_metadata)
+    return {
+        "ok": True,
+        "configured": True,
+        "config": {
+            "cloud_id": updated_metadata["cloud_id"],
+            "site_name": updated_metadata.get("site_name"),
+            "site_url": updated_metadata.get("site_url"),
+            "project_keys": updated_metadata.get("project_keys") or [],
+            "project_names_by_key": updated_metadata.get("project_names_by_key") or {},
+            "accessible_resources": updated_metadata.get("accessible_resources") or [],
+        },
+    }
+
+
+@router.post("/jira/disconnect")
+@router.delete("/jira/disconnect")
+async def jira_disconnect(integration_dao=Depends(integration_dao_dependency)):
+    """
+    Disconnect Jira integration.
+    """
+    deleted = integration_dao.delete_token("jira")
+    log.info(f"🔌 Jira disconnected (deleted={deleted})")
+    return {"ok": True, "deleted": deleted > 0}
+
+
 class TokenRefreshRequest(BaseModel):
     auth_token: Optional[str] = None
 
@@ -892,6 +1192,70 @@ async def notion_refresh_token(
                 expires_at=expires_at,
             )
 
+        return {"access_token": new_access_token, "expires_at": expires_at}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "exception", "error_description": str(e)},
+        )
+
+
+@router.post("/jira/refresh")
+async def jira_refresh_token(
+    body: TokenRefreshRequest,
+    integration_dao=Depends(integration_dao_dependency),
+    auth_dao=Depends(auth_dao_dependency),
+):
+    """
+    Refresh Jira access token using the refresh token via Lambda.
+    """
+    auth_token = _resolve_auth_token(auth_dao, body.auth_token)
+    if not auth_token:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "auth_token is required and no active session found"},
+        )
+
+    token_data = integration_dao.get_token("jira")
+    if not token_data:
+        return JSONResponse(status_code=404, content={"error": "Jira not connected"})
+
+    refresh_token = token_data.get("refresh_token")
+    if not refresh_token:
+        return JSONResponse(status_code=400, content={"error": "No refresh token available"})
+
+    try:
+        token_response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/jira/refresh",
+            json={"refresh_token": refresh_token},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
+        )
+        new_token_data = token_response.json()
+        if not token_response.ok or "error" in new_token_data:
+            err = new_token_data.get("error", "refresh_failed")
+            err_desc = new_token_data.get("error_description", "Token refresh failed")
+            return JSONResponse(
+                status_code=400,
+                content={"error": err, "error_description": err_desc},
+            )
+
+        new_access_token = new_token_data.get("access_token")
+        new_refresh_token = new_token_data.get("refresh_token") or refresh_token
+        expires_in = new_token_data.get("expires_in", 3600)
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+
+        integration_dao.save_token(
+            provider="jira",
+            access_token=new_access_token,
+            refresh_token=new_refresh_token,
+            expires_at=expires_at,
+            scopes=token_data.get("scopes"),
+            provider_metadata=token_data.get("provider_metadata"),
+        )
         return {"access_token": new_access_token, "expires_at": expires_at}
     except Exception as e:
         return JSONResponse(
