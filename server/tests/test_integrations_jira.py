@@ -40,6 +40,8 @@ def _make_app(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("GRAPH_DB_PATH", str(db_path))
     monkeypatch.setenv("COVALENT_DATA_DIR", str(data_dir))
     monkeypatch.setenv("MOUNT_MCP_SERVER", "false")
+    monkeypatch.setenv("JIRA_CLIENT_ID", "jira-client-id")
+    monkeypatch.setenv("JIRA_CLIENT_SECRET", "jira-client-secret")
 
     import security.key_manager as key_manager
 
@@ -53,7 +55,9 @@ def _make_app(tmp_path: Path, monkeypatch):
             monkeypatch.setattr(module, "get_db_encryption_key", lambda: "0" * 64)
 
     import server.fastapi_app.dependencies as dependencies
+    import covalent_mcp.toolclasses.jira.auth as jira_auth
 
+    importlib.reload(jira_auth)
     importlib.reload(dependencies)
     dependencies.reset_cached_dependencies()
     _prepare_db(db_path)
@@ -112,6 +116,74 @@ def test_jira_oauth_callback_persists_connection_and_requires_configuration(tmp_
         assert jira_status["configured"] is False
         assert jira_status["needs_configuration"] is True
         assert jira_status["configuration"]["accessible_resources"][0]["cloud_id"] == "cloud-1"
+
+
+def test_jira_oauth_callback_falls_back_to_direct_exchange_when_lambda_is_outdated(tmp_path, monkeypatch):
+    app, integration_dao, _ = _make_app(tmp_path, monkeypatch)
+
+    import covalent_mcp.toolclasses.jira.auth as jira_auth
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: A002
+        if url.endswith("/integrations/jira/exchange"):
+            return FakeResponse(
+                {
+                    "error": "validation_error",
+                    "error_description": "messages field is required and must be a list",
+                },
+                ok=False,
+                status_code=400,
+            )
+        if url == "https://auth.atlassian.com/oauth/token":
+            return FakeResponse(
+                {
+                    "access_token": "jira-access",
+                    "refresh_token": "jira-refresh",
+                    "expires_in": 3600,
+                    "scope": "offline_access read:jira-work write:jira-work",
+                    "token_type": "Bearer",
+                }
+            )
+        raise AssertionError(f"Unexpected POST URL: {url}")
+
+    def fake_get(url, headers=None, timeout=None):
+        if url == "https://api.atlassian.com/oauth/token/accessible-resources":
+            return FakeResponse(
+                [
+                    {
+                        "id": "cloud-1",
+                        "name": "Acme Jira",
+                        "url": "https://acme.atlassian.net",
+                        "scopes": ["read:jira-work"],
+                    }
+                ]
+            )
+        if url == "https://api.atlassian.com/me":
+            return FakeResponse(
+                {
+                    "account_id": "acct-1",
+                    "email": "jira@example.com",
+                    "name": "Jira User",
+                }
+            )
+        raise AssertionError(f"Unexpected GET URL: {url}")
+
+    monkeypatch.setattr(jira_auth.http_requests, "post", fake_post)
+    monkeypatch.setattr(jira_auth.http_requests, "get", fake_get)
+
+    with TestClient(app) as client:
+        start = client.post(
+            "/integrations/jira/start",
+            json={"state": "jira-state", "auth_token": "auth-jwt"},
+        )
+        assert start.status_code == 200
+
+        callback = client.get("/integrations/jira/callback?code=oauth-code&state=jira-state")
+        assert callback.status_code == 200
+
+    token_data = integration_dao.get_token("jira")
+    assert token_data is not None
+    assert token_data["access_token"] == "jira-access"
+    assert token_data["refresh_token"] == "jira-refresh"
 
 
 def test_jira_configuration_round_trip_and_project_listing(tmp_path, monkeypatch):
@@ -210,6 +282,50 @@ def test_jira_refresh_endpoint_updates_saved_token(tmp_path, monkeypatch):
         refresh = client.post("/integrations/jira/refresh", json={})
         assert refresh.status_code == 200
         assert refresh.json()["access_token"] == "new-access"
+
+    token_data = integration_dao.get_token("jira")
+    assert token_data["access_token"] == "new-access"
+    assert token_data["refresh_token"] == "new-refresh"
+
+
+def test_jira_refresh_helper_falls_back_to_direct_refresh(tmp_path, monkeypatch):
+    _, integration_dao, _ = _make_app(tmp_path, monkeypatch)
+    integration_dao.save_token(
+        provider="jira",
+        access_token="old-access",
+        refresh_token="jira-refresh",
+        expires_at=None,
+        scopes="offline_access",
+        provider_metadata={"accessible_resources": [], "project_keys": [], "project_names_by_key": {}},
+    )
+
+    import covalent_mcp.toolclasses.jira.auth as jira_auth
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: A002
+        if url.endswith("/integrations/jira/refresh"):
+            return FakeResponse(
+                {
+                    "error": "validation_error",
+                    "error_description": "messages field is required and must be a list",
+                },
+                ok=False,
+                status_code=400,
+            )
+        if url == "https://auth.atlassian.com/oauth/token":
+            return FakeResponse(
+                {
+                    "access_token": "new-access",
+                    "refresh_token": "new-refresh",
+                    "expires_in": 7200,
+                }
+            )
+        raise AssertionError(f"Unexpected POST URL: {url}")
+
+    monkeypatch.setattr(jira_auth, "get_auth0_jwt", lambda _db_path: "auth-jwt")
+    monkeypatch.setattr(jira_auth.http_requests, "post", fake_post)
+
+    refreshed = jira_auth.refresh_jira_token_via_lambda(integration_dao)
+    assert refreshed["access_token"] == "new-access"
 
     token_data = integration_dao.get_token("jira")
     assert token_data["access_token"] == "new-access"

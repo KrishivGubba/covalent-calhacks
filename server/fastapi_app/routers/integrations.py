@@ -14,7 +14,6 @@ from covalent_mcp.toolclasses.jira.auth import (
     exchange_jira_code,
     get_jira_connection,
     refresh_jira_token_direct,
-    refresh_jira_token_via_lambda,
 )
 from covalent_mcp.toolclasses.jira.jira_client import JiraClient
 from ..dependencies import integration_dao_dependency, auth_dao_dependency
