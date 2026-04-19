@@ -64,7 +64,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   const [integrations, setIntegrations] = useState<IntegrationStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [connectingId, setConnectingId] = useState<string | null>(null);
-  const [expandedIntegrationId, setExpandedIntegrationId] = useState<string | null>(null);
+  const [activeConfigId, setActiveConfigId] = useState<string | null>(null);
   const [jiraConfig, setJiraConfig] = useState<JiraConfigResponse | null>(null);
   const [jiraProjects, setJiraProjects] = useState<JiraProject[]>([]);
   const [jiraCloudId, setJiraCloudId] = useState('');
@@ -122,7 +122,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
 
   const openJiraConfiguration = async () => {
     setError(null);
-    setExpandedIntegrationId('jira');
+    setActiveConfigId('jira');
     setJiraBusy(true);
     try {
       const config = await fetchJiraConfig();
@@ -174,7 +174,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
       const ok = await disconnectIntegration(id);
       if (!ok) throw new Error(`Failed to disconnect ${id}`);
       if (id === 'jira') {
-        setExpandedIntegrationId(null);
+        setActiveConfigId(null);
         setJiraConfig(null);
         setJiraProjects([]);
         setJiraCloudId('');
@@ -248,6 +248,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   }
 
   const jiraAccessibleResources = jiraConfig?.config.accessible_resources || [];
+  const showingJiraConfiguration = activeConfigId === 'jira';
 
   return (
     <div style={styles.container}>
@@ -264,98 +265,88 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
 
       {error && <div style={styles.errorBox}>{error}</div>}
 
-      <div style={styles.grid}>
-        {integrations.map((integration) => (
-          <div key={integration.id} style={styles.card}>
-            <div style={styles.cardHeader}>
-              <div style={styles.cardTitleRow}>
-                <h3 style={styles.cardTitle}>{integration.name}</h3>
-                <div
-                  style={{
-                    ...styles.statusText,
-                    color: integration.connected ? '#166534' : '#B42318',
-                  }}
-                >
-                  {integration.connected ? 'Connected' : 'Not Connected'}
+      {!showingJiraConfiguration ? (
+        <div style={styles.grid}>
+          {integrations.map((integration) => (
+            <div key={integration.id} style={styles.card}>
+              <div style={styles.cardHeader}>
+                <div style={styles.cardTitleRow}>
+                  <h3 style={styles.cardTitle}>{integration.name}</h3>
+                  <div
+                    style={{
+                      ...styles.statusText,
+                      color: integration.connected ? '#166534' : '#B42318',
+                    }}
+                  >
+                    {integration.connected ? 'Connected' : 'Not Connected'}
+                  </div>
                 </div>
+                <p style={styles.cardDescription}>{integration.description}</p>
+                {renderIntegrationMeta(integration)}
               </div>
-              <p style={styles.cardDescription}>{integration.description}</p>
-              {renderIntegrationMeta(integration)}
-            </div>
 
-            <div style={styles.cardActions}>
-              {integration.included ? (
-                <div style={styles.includedBadge}>Included</div>
-              ) : !integration.connected ? (
-                <button
-                  style={{
-                    ...styles.connectButton,
-                    ...((!isAuthenticated && integration.id !== 'filesystem') ||
-                    connectingId === integration.id
-                      ? styles.buttonDisabled
-                      : {}),
-                  }}
-                  onClick={() => void handleConnect(integration.id)}
-                  disabled={
-                    (!isAuthenticated && integration.id !== 'filesystem') ||
-                    connectingId === integration.id
-                  }
-                  title={
-                    !isAuthenticated && integration.id !== 'filesystem'
-                      ? 'Please log in first'
-                      : undefined
-                  }
-                >
-                  {connectingId === integration.id
-                    ? 'Connecting...'
-                    : integration.id === 'filesystem'
-                    ? 'Choose Folder'
-                    : 'Connect'}
-                </button>
-              ) : (
-                <>
-                  {integration.configurable && (
-                    <button
-                      style={{
-                        ...styles.configureButton,
-                        ...(jiraBusy && expandedIntegrationId === integration.id
-                          ? styles.buttonDisabled
-                          : {}),
-                      }}
-                      onClick={() =>
-                        void (expandedIntegrationId === integration.id
-                          ? setExpandedIntegrationId(null)
-                          : openJiraConfiguration())
-                      }
-                      disabled={jiraBusy && expandedIntegrationId === integration.id}
-                    >
-                      {integration.needs_configuration
-                        ? 'Configure'
-                        : expandedIntegrationId === integration.id
-                        ? 'Hide Config'
-                        : 'Configure'}
-                    </button>
-                  )}
+              <div style={styles.cardActions}>
+                {integration.included ? (
+                  <div style={styles.includedBadge}>Included</div>
+                ) : !integration.connected ? (
                   <button
                     style={{
-                      ...styles.disconnectButton,
-                      ...(isAuthenticated || integration.id === 'filesystem'
-                        ? {}
-                        : styles.buttonDisabled),
+                      ...styles.connectButton,
+                      ...((!isAuthenticated && integration.id !== 'filesystem') ||
+                      connectingId === integration.id
+                        ? styles.buttonDisabled
+                        : {}),
                     }}
-                    onClick={() => void handleDisconnect(integration.id)}
-                    disabled={!isAuthenticated && integration.id !== 'filesystem'}
+                    onClick={() => void handleConnect(integration.id)}
+                    disabled={
+                      (!isAuthenticated && integration.id !== 'filesystem') ||
+                      connectingId === integration.id
+                    }
+                    title={
+                      !isAuthenticated && integration.id !== 'filesystem'
+                        ? 'Please log in first'
+                        : undefined
+                    }
                   >
-                    {connectingId === integration.id ? 'Disconnecting...' : 'Disconnect'}
+                    {connectingId === integration.id
+                      ? 'Connecting...'
+                      : integration.id === 'filesystem'
+                      ? 'Choose Folder'
+                      : 'Connect'}
                   </button>
-                </>
-              )}
+                ) : (
+                  <>
+                    {integration.configurable && (
+                      <button
+                        style={{
+                          ...styles.configureButton,
+                          ...(jiraBusy ? styles.buttonDisabled : {}),
+                        }}
+                        onClick={() => void openJiraConfiguration()}
+                        disabled={jiraBusy}
+                      >
+                        Configure
+                      </button>
+                    )}
+                    <button
+                      style={{
+                        ...styles.disconnectButton,
+                        ...(isAuthenticated || integration.id === 'filesystem'
+                          ? {}
+                          : styles.buttonDisabled),
+                      }}
+                      onClick={() => void handleDisconnect(integration.id)}
+                      disabled={!isAuthenticated && integration.id !== 'filesystem'}
+                    >
+                      {connectingId === integration.id ? 'Disconnecting...' : 'Disconnect'}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
-
-      {expandedIntegrationId === 'jira' && (
+          ))}
+        </div>
+      ) : (
         <div style={styles.configPanel}>
           <div style={styles.configHeader}>
             <div>
@@ -365,6 +356,13 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
                 sync.
               </p>
             </div>
+            <button
+              style={styles.backButton}
+              onClick={() => setActiveConfigId(null)}
+              disabled={jiraBusy}
+            >
+              Back
+            </button>
           </div>
 
           <div style={styles.configGroup}>
@@ -628,6 +626,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     marginBottom: '20px',
+    gap: '16px',
   },
   configTitle: {
     margin: 0,
@@ -639,6 +638,18 @@ const styles: { [key: string]: React.CSSProperties } = {
     fontSize: '0.88rem',
     color: '#5A5A5A',
     lineHeight: 1.5,
+  },
+  backButton: {
+    padding: '9px 16px',
+    backgroundColor: 'transparent',
+    border: '1px solid #D8D1C7',
+    borderRadius: '999px',
+    color: '#4B4338',
+    fontSize: '0.82rem',
+    fontWeight: 600,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    fontFamily: 'inherit',
   },
   configGroup: {
     marginBottom: '18px',
