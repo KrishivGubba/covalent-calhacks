@@ -57,6 +57,11 @@ class LargeContextSyncEngine:
                 status="running",
             )
             self.dao.create_run(run)
+            log.info(
+                f"Large context sync run {run.run_id} starting "
+                f"(providers={','.join(provider.provider_id for provider in providers)}, "
+                f"interval_minutes={config.interval_minutes})"
+            )
             provider_states = self.dao.get_provider_states()
             any_success = False
             errors: dict[str, str] = {}
@@ -64,6 +69,7 @@ class LargeContextSyncEngine:
             for provider in providers:
                 run.providers_attempted.append(provider.provider_id)
                 started_at = datetime.now(timezone.utc).isoformat()
+                log.info(f"Large context sync provider {provider.provider_id} starting")
                 self.dao.mark_provider_started(
                     provider.provider_id,
                     supports_live_sync=provider.supports_live_sync,
@@ -72,6 +78,10 @@ class LargeContextSyncEngine:
 
                 if not provider.supports_live_sync:
                     completed_at = datetime.now(timezone.utc).isoformat()
+                    log.info(
+                        f"Large context sync provider {provider.provider_id} skipped "
+                        "(placeholder adapter)"
+                    )
                     self.dao.mark_provider_completed(
                         provider.provider_id,
                         supports_live_sync=False,
@@ -83,6 +93,10 @@ class LargeContextSyncEngine:
 
                 if not provider.is_connected(self.integration_dao):
                     completed_at = datetime.now(timezone.utc).isoformat()
+                    log.info(
+                        f"Large context sync provider {provider.provider_id} skipped "
+                        "(integration disconnected or not configured)"
+                    )
                     self.dao.mark_provider_completed(
                         provider.provider_id,
                         supports_live_sync=True,
@@ -98,6 +112,10 @@ class LargeContextSyncEngine:
                     since_ts = (cursor or {}).get("since") or (
                         datetime.now(timezone.utc) - timedelta(days=self.INITIAL_BACKFILL_DAYS)
                     ).isoformat()
+                    log.info(
+                        f"Large context sync provider {provider.provider_id} fetching delta "
+                        f"since {since_ts}"
+                    )
                     fetch_result = provider.fetch_delta(cursor, since_ts)
                     snapshot = provider.build_snapshot(fetch_result)
                     snapshot_path = self.storage.write_snapshot(
@@ -105,7 +123,17 @@ class LargeContextSyncEngine:
                         provider.file_name,
                         markdown_root=config.markdown_root,
                     )
+                    log.info(
+                        f"Large context sync provider {provider.provider_id} wrote snapshot "
+                        f"to {snapshot_path} "
+                        f"(containers={len(snapshot.containers)}, entities={len(snapshot.entities)}, "
+                        f"people={len(snapshot.relevant_people)}, links={len(snapshot.cross_links)})"
+                    )
                     provider.project_to_graph(snapshot, self.projector, snapshot_path, run.run_id)
+                    log.info(
+                        f"Large context sync provider {provider.provider_id} projected snapshot "
+                        f"to graph from {snapshot_path}"
+                    )
                     completed_at = datetime.now(timezone.utc).isoformat()
                     self.dao.mark_provider_completed(
                         provider.provider_id,
@@ -118,6 +146,7 @@ class LargeContextSyncEngine:
                     )
                     run.providers_succeeded.append(provider.provider_id)
                     any_success = True
+                    log.info(f"Large context sync provider {provider.provider_id} completed successfully")
                 except Exception as exc:
                     completed_at = datetime.now(timezone.utc).isoformat()
                     message = f"{exc.__class__.__name__}: {exc}"
@@ -142,4 +171,9 @@ class LargeContextSyncEngine:
             if errors:
                 run.error_json = errors
             self.dao.update_run(run)
+            log.info(
+                f"Large context sync run {run.run_id} finished with status={run.status} "
+                f"(attempted={len(run.providers_attempted)}, "
+                f"succeeded={len(run.providers_succeeded)}, failed={len(run.providers_failed)})"
+            )
             return run

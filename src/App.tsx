@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import FloatingAssistant from './components/FloatingAssistant';
 import CompletionPopup from './components/CompletionPopup';
 import type { Action } from './components/SuggestedActions';
@@ -86,6 +87,24 @@ function App() {
 
     // Cleanup interval on unmount
     return () => clearInterval(pollInterval);
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+
+    const subscribe = async () => {
+      unlisten = await listen<{ is_enabled?: boolean }>('context-collection-changed', (event) => {
+        if (typeof event.payload?.is_enabled === 'boolean') {
+          setIsRunning(event.payload.is_enabled);
+        }
+      });
+    };
+
+    void subscribe();
+
+    return () => {
+      if (unlisten) unlisten();
+    };
   }, []);
 
   const onStart = async () => {
