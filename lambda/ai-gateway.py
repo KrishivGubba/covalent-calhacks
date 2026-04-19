@@ -1635,6 +1635,34 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 return create_response(400, {"error": "Invalid JSON in request body"})
         
         return handle_notion_refresh(body)
+
+    # Jira OAuth token exchange
+    if path == "/integrations/jira/exchange" or path.endswith("/integrations/jira/exchange"):
+        if http_method != "POST":
+            return create_response(405, {"error": "Method not allowed. Use POST."})
+
+        body = event.get("body", "{}")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except json.JSONDecodeError:
+                return create_response(400, {"error": "Invalid JSON in request body"})
+
+        return handle_jira_exchange(body)
+
+    # Jira OAuth token refresh
+    if path == "/integrations/jira/refresh" or path.endswith("/integrations/jira/refresh"):
+        if http_method != "POST":
+            return create_response(405, {"error": "Method not allowed. Use POST."})
+
+        body = event.get("body", "{}")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except json.JSONDecodeError:
+                return create_response(400, {"error": "Invalid JSON in request body"})
+
+        return handle_jira_refresh(body)
     
     # Default: treat as invoke for backward compatibility
     if http_method == "POST":
