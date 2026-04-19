@@ -106,7 +106,14 @@ def build_integration_statuses(integration_dao) -> List[Dict[str, Any]]:
         if config.included:
             results.append(
                 {
-                    **asdict(config),
+                    "id": config.provider_id,
+                    "name": config.name,
+                    "description": config.description,
+                    "icon": config.icon,
+                    "auth_kind": config.auth_kind,
+                    "included": config.included,
+                    "required_onboarding": config.required_onboarding,
+                    "configurable": config.configurable,
                     "connected": True,
                     "configured": True,
                     "needs_configuration": False,
