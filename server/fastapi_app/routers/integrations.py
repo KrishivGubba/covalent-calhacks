@@ -10,7 +10,12 @@ from typing import Any, Dict, Optional
 
 import requests as http_requests
 
-from covalent_mcp.toolclasses.jira.auth import get_jira_connection, refresh_jira_token_via_lambda
+from covalent_mcp.toolclasses.jira.auth import (
+    exchange_jira_code,
+    get_jira_connection,
+    refresh_jira_token_direct,
+    refresh_jira_token_via_lambda,
+)
 from covalent_mcp.toolclasses.jira.jira_client import JiraClient
 from ..dependencies import integration_dao_dependency, auth_dao_dependency
 from ..services.integration_registry import build_integration_statuses
@@ -839,27 +844,7 @@ async def jira_callback(
         return render_error("Please log in first.")
 
     try:
-        token_response = http_requests.post(
-            f"{LAMBDA_GATEWAY_URL}/integrations/jira/exchange",
-            json={
-                "code": code,
-                "redirect_uri": JIRA_REDIRECT_URI,
-            },
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {auth_token}",
-            },
-            timeout=15,
-        )
-        token_data = token_response.json()
-        if not token_response.ok or "error" in token_data:
-            err = token_data.get("error", "token_exchange_failed")
-            err_desc = token_data.get("error_description", "Token exchange failed")
-            jira_auth_pending[state]["status"] = "error"
-            jira_auth_pending[state]["error"] = err
-            jira_auth_pending[state]["error_description"] = err_desc
-            log.error(f"🎫 Jira token exchange failed: {err} - {err_desc}")
-            return render_error(err_desc)
+        token_data = exchange_jira_code(auth_token, code, JIRA_REDIRECT_URI)
 
         expires_in = token_data.get("expires_in", 3600)
         expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
@@ -1241,12 +1226,15 @@ async def jira_refresh_token(
         )
         new_token_data = token_response.json()
         if not token_response.ok or "error" in new_token_data:
-            err = new_token_data.get("error", "refresh_failed")
-            err_desc = new_token_data.get("error_description", "Token refresh failed")
-            return JSONResponse(
-                status_code=400,
-                content={"error": err, "error_description": err_desc},
-            )
+            try:
+                new_token_data = refresh_jira_token_direct(refresh_token)
+            except Exception:
+                err = new_token_data.get("error", "refresh_failed")
+                err_desc = new_token_data.get("error_description", "Token refresh failed")
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": err, "error_description": err_desc},
+                )
 
         new_access_token = new_token_data.get("access_token")
         new_refresh_token = new_token_data.get("refresh_token") or refresh_token
