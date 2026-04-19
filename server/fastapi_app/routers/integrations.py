@@ -773,6 +773,11 @@ async def jira_start(body: JiraStartRequest):
     Called by frontend before opening Jira OAuth.
     Stores the state and auth token so backend can exchange via Lambda.
     """
+    if not JIRA_CLIENT_ID:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Jira OAuth is not configured on the server (missing JIRA_CLIENT_ID)"},
+        )
     if not body.state:
         return JSONResponse(status_code=400, content={"error": "state is required"})
     if not body.auth_token:

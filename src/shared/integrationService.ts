@@ -93,6 +93,22 @@ const PKCE_PROVIDERS: OAuthProvider[] = ['google', 'github'];
 const POLL_INTERVAL_MS = 1500;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
+function getMissingOAuthConfigError(provider: OAuthProvider): string | null {
+  if (provider === 'google' && !GOOGLE_CLIENT_ID) {
+    return 'Google OAuth is not configured. Set VITE_GOOGLE_CLIENT_ID and rebuild the app.';
+  }
+  if (provider === 'github' && !GITHUB_CLIENT_ID) {
+    return 'GitHub OAuth is not configured. Set VITE_GITHUB_CLIENT_ID and rebuild the app.';
+  }
+  if (provider === 'notion' && !NOTION_CLIENT_ID) {
+    return 'Notion OAuth is not configured. Set VITE_NOTION_CLIENT_ID and rebuild the app.';
+  }
+  if (provider === 'jira' && !JIRA_CLIENT_ID) {
+    return 'Jira OAuth is not configured. Set VITE_JIRA_CLIENT_ID and rebuild the app.';
+  }
+  return null;
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -229,6 +245,11 @@ export async function connectOAuthIntegration(
   provider: OAuthProvider,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
+    const configError = getMissingOAuthConfigError(provider);
+    if (configError) {
+      return { ok: false, error: configError };
+    }
+
     const authToken = await getValidAuthToken();
     if (!authToken) {
       return { ok: false, error: 'Please log in first.' };
