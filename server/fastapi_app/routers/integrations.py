@@ -2,16 +2,18 @@
 Integration management endpoints (Google, GitHub, Notion, Filesystem).
 """
 import os
-import json
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import requests as http_requests
 
+from covalent_mcp.toolclasses.jira.auth import get_jira_connection, refresh_jira_token_via_lambda
+from covalent_mcp.toolclasses.jira.jira_client import JiraClient
 from ..dependencies import integration_dao_dependency, auth_dao_dependency
+from ..services.integration_registry import build_integration_statuses
 from logger import get_logger
 
 log = get_logger()
@@ -33,6 +35,11 @@ GITHUB_SCOPES = 'repo read:user'
 NOTION_CLIENT_ID = os.environ.get('NOTION_CLIENT_ID', '')
 NOTION_REDIRECT_URI = f'http://localhost:{FLASK_PORT}/integrations/notion/callback'
 
+# Jira OAuth config
+JIRA_CLIENT_ID = os.environ.get('JIRA_CLIENT_ID', '')
+JIRA_REDIRECT_URI = f'http://127.0.0.1:{FLASK_PORT}/integrations/jira/callback'
+JIRA_SCOPES = 'offline_access read:me read:jira-user read:jira-work write:jira-work'
+
 # Lambda Gateway URL
 LAMBDA_GATEWAY_URL = os.environ.get('LAMBDA_GATEWAY_URL', 'https://gtfrn4otol.execute-api.us-east-1.amazonaws.com')
 
@@ -40,6 +47,7 @@ LAMBDA_GATEWAY_URL = os.environ.get('LAMBDA_GATEWAY_URL', 'https://gtfrn4otol.ex
 google_auth_pending = {}
 github_auth_pending = {}
 notion_auth_pending = {}
+jira_auth_pending = {}
 
 
 def _get_filesystem_description(integration_dao) -> str:
@@ -51,6 +59,39 @@ def _get_filesystem_description(integration_dao) -> str:
             display_path = "..." + display_path[-47:]
         return f"Access local files and directories ({display_path})"
     return "Access local files and directories"
+
+
+def _resolve_auth_token(auth_dao, provided_auth_token: Optional[str] = None) -> Optional[str]:
+    if provided_auth_token:
+        return provided_auth_token
+    sessions = auth_dao.get_all_sessions()
+    if not sessions:
+        return None
+    session = auth_dao.get_session(sessions[0]["user_id"])
+    return session.get("access_token") if session else None
+
+
+def _normalize_jira_resource(resource: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "cloud_id": resource.get("id"),
+        "site_name": resource.get("name"),
+        "site_url": resource.get("url"),
+        "avatar_url": resource.get("avatarUrl"),
+        "scopes": resource.get("scopes") or [],
+    }
+
+
+def _load_jira_resources(integration_dao) -> tuple[Dict[str, Any], Dict[str, Any], list[Dict[str, Any]]]:
+    token_data, metadata = get_jira_connection(integration_dao, require_configured=False)
+    client = JiraClient(token_data["access_token"])
+    resources = [_normalize_jira_resource(resource) for resource in client.get_accessible_resources()]
+    if resources != (metadata.get("accessible_resources") or []):
+        metadata = {
+            **metadata,
+            "accessible_resources": resources,
+        }
+        integration_dao.update_provider_metadata("jira", metadata)
+    return token_data, metadata, resources
 
 
 class FilesystemConnectRequest(BaseModel):
@@ -66,48 +107,7 @@ async def get_integrations_status(integration_dao=Depends(integration_dao_depend
     """
     Get the connection status of all integrations.
     """
-    statuses = integration_dao.get_all_statuses()
-    
-    integrations = [
-        {
-            "id": "filesystem",
-            "name": "Filesystem",
-            "description": _get_filesystem_description(integration_dao),
-            "icon": "📁",
-            "connected": statuses.get("filesystem", False),
-        },
-        {
-            "id": "github",
-            "name": "GitHub",
-            "description": "Access repositories, issues, and pull requests",
-            "icon": "🐙",
-            "connected": statuses.get("github", False),
-        },
-        {
-            "id": "perplexity",
-            "name": "Perplexity Search",
-            "connected": True,
-            "description": "AI-powered web search",
-            "icon": "🔍",
-            "included": True,
-        },
-        {
-            "id": "notion",
-            "name": "Notion",
-            "description": "Access Notion workspaces and pages",
-            "icon": "📝",
-            "connected": statuses.get("notion", False),
-        },
-        {
-            "id": "google",
-            "name": "Google Workspace",
-            "description": "Calendar, Drive, Mail",
-            "icon": "🔷",
-            "connected": statuses.get("google", False),
-        },
-    ]
-    
-    return {"integrations": integrations}
+    return {"integrations": build_integration_statuses(integration_dao)}
 
 
 # ==================== Filesystem ====================
