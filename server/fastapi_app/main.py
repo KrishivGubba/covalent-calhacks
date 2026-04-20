@@ -33,6 +33,7 @@ log = get_logger()
 
 from .dependencies import get_db_path, get_encrypted_conn, get_tree, get_auth_dao, get_integration_dao
 from init_db import create_schema, ensure_parent_dir
+from .services.large_context_sync import LargeContextSyncService
 
 # Import routers
 from .routers import (
@@ -45,6 +46,7 @@ from .routers import (
     integrations,
     onboarding,
     mcp as mcp_router,
+    large_context_sync,
 )
 
 # Check if MCP should be mounted (controlled by env var, default: enabled)
@@ -91,114 +93,129 @@ def create_mcp_server():
         return None
 
 
-# IMPORTANT: FastMCP's http_app() returns a Starlette app whose own `lifespan`
-# starts the StreamableHTTPSessionManager's anyio task group. That lifespan
-# MUST be entered by the parent ASGI app, otherwise every request to /mcp/
-# fails with:
-#   RuntimeError: Task group is not initialized. Make sure to use run().
-# We therefore build `mcp_http_app` here (before FastAPI is constructed) and
-# nest its lifespan inside our own lifespan below.
-_mcp_server_instance = create_mcp_server() if MOUNT_MCP else None
-_mcp_http_app = _mcp_server_instance.http_app(path="/") if _mcp_server_instance else None
+def create_app(*, large_context_provider_registry=None) -> FastAPI:
+    # IMPORTANT: FastMCP's http_app() returns a Starlette app whose own `lifespan`
+    # starts the StreamableHTTPSessionManager's anyio task group. That lifespan
+    # MUST be entered by the parent ASGI app, otherwise every request to /mcp/
+    # fails with:
+    #   RuntimeError: Task group is not initialized. Make sure to use run().
+    # We therefore build `mcp_http_app` here (before FastAPI is constructed) and
+    # nest its lifespan inside our own lifespan below.
+    mcp_server_instance = create_mcp_server() if MOUNT_MCP else None
+    mcp_http_app = mcp_server_instance.http_app(path="/") if mcp_server_instance else None
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """
+        Application lifespan handler for startup and shutdown events.
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    Application lifespan handler for startup and shutdown events.
+        When MCP is mounted we nest `mcp_http_app.lifespan(app)` so FastMCP's
+        StreamableHTTPSessionManager task group is live for the lifetime of the
+        FastAPI process.
+        """
+        log.info("🚀 FastAPI application starting up...")
 
-    When MCP is mounted we nest `_mcp_http_app.lifespan(app)` so FastMCP's
-    StreamableHTTPSessionManager task group is live for the lifetime of the
-    FastAPI process.
-    """
-    # Startup
-    log.info("🚀 FastAPI application starting up...")
-    # #region agent log
-    _dbg("server/fastapi_app/main.py:lifespan", "lifespan entered",
-         {"mount_mcp": MOUNT_MCP, "mcp_http_app_present": _mcp_http_app is not None})
-    # #endregion
+        db_path = get_db_path()
+        ensure_parent_dir(db_path)
+        with get_encrypted_conn() as conn:
+            create_schema(conn)
+            conn.execute("DELETE FROM integration_tokens WHERE provider = 'filesystem' AND provider_metadata = '{\"type\": \"local_filesystem\"}'")
+            conn.commit()
+        log.info(f"✅ Database schema ensured at: {db_path}")
+        os.environ.setdefault('GRAPH_DB_PATH', db_path)
 
-    # Initialize database schema
-    db_path = get_db_path()
-    ensure_parent_dir(db_path)
-    with get_encrypted_conn() as conn:
-        create_schema(conn)
-        conn.execute("DELETE FROM integration_tokens WHERE provider = 'filesystem' AND provider_metadata = '{\"type\": \"local_filesystem\"}'")
-        conn.commit()
-    log.info(f"✅ Database schema ensured at: {db_path}")
-    os.environ.setdefault('GRAPH_DB_PATH', db_path)
-    
-    # Pre-initialize DAOs (lightweight)
-    get_auth_dao()
-    get_integration_dao()
+        get_auth_dao()
+        integration_dao = get_integration_dao()
 
-    # Note: Tree is NOT initialized here - it's lazy-loaded on first request
-    # This enables sub-second startup times
+        app.state.large_context_sync_service = LargeContextSyncService(
+            db_path=db_path,
+            integration_dao=integration_dao,
+            provider_registry=large_context_provider_registry,
+        )
+        await app.state.large_context_sync_service.start()
 
-    if _mcp_http_app is not None:
-        # Nest MCP's lifespan so its session-manager task group is initialized.
-        async with _mcp_http_app.lifespan(app):
-            log.info("✅ MCP server mounted at /mcp (lifespan active)")
-            # #region agent log
-            _dbg("server/fastapi_app/main.py:lifespan", "mcp_http_app.lifespan entered",
-                 {"path": "/mcp"})
-            # #endregion
+        async def _shutdown():
+            log.info("👋 FastAPI application shutting down...")
+            service = getattr(app.state, "large_context_sync_service", None)
+            if service is not None:
+                await service.stop()
+
+        if mcp_http_app is not None:
+            async with mcp_http_app.lifespan(app):
+                log.info("✅ MCP server mounted at /mcp (lifespan active)")
+                log.info("✅ FastAPI application ready to serve requests")
+                try:
+                    yield
+                finally:
+                    await _shutdown()
+        else:
+            log.info("ℹ️ MCP server not mounted (MOUNT_MCP_SERVER=false)")
             log.info("✅ FastAPI application ready to serve requests")
             try:
                 yield
             finally:
-                # #region agent log
-                _dbg("server/fastapi_app/main.py:lifespan", "mcp_http_app.lifespan exiting", {})
-                # #endregion
-                log.info("👋 FastAPI application shutting down...")
-    else:
-        log.info("ℹ️ MCP server not mounted (MOUNT_MCP_SERVER=false)")
-        log.info("✅ FastAPI application ready to serve requests")
+                await _shutdown()
+
+    app = FastAPI(
+        title="Covalent Context Engine",
+        description="API server for Covalent proactive AI agent",
+        version="1.0.0",
+        lifespan=lifespan,
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.middleware("http")
+    async def add_process_time_header(request: Request, call_next):
+        """Add X-Process-Time header to all responses."""
+        start_time = time.perf_counter()
+        response = await call_next(request)
+        process_time = time.perf_counter() - start_time
+        response.headers["X-Process-Time"] = f"{process_time:.3f}s"
+        log.info(f"Request {request.method} {request.url.path} completed in {process_time * 1000:.3f}ms")
+        return response
+
+    app.include_router(health.router, tags=["Health"])
+    app.include_router(graph.router, prefix="/graph", tags=["Graph"])
+    app.include_router(screen.router, tags=["Screen Context"])
+    app.include_router(actions.router, tags=["Actions"])
+    app.include_router(tab_completion.router, tags=["Tab Completion"])
+    app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
+    app.include_router(integrations.router, prefix="/integrations", tags=["Integrations"])
+    app.include_router(large_context_sync.router, prefix="/integrations/large-context-sync", tags=["Large Context Sync"])
+    app.include_router(onboarding.router, tags=["Onboarding"])
+    app.include_router(mcp_router.router, tags=["MCP"])
+
+    # Mount the pre-built MCP HTTP app (constructed above so its lifespan could
+    # be nested into FastAPI's lifespan). The external URL must be exactly /mcp:
+    # if we set path="/mcp" on http_app() AND mount at "/mcp", the effective
+    # route becomes "/mcp/mcp", which breaks action_executor parity.
+    if mcp_http_app is not None:
         try:
-            yield
-        finally:
-            log.info("👋 FastAPI application shutting down...")
+            app.mount("/mcp", mcp_http_app)
+        except Exception as e:
+            log.warning(f"⚠️ Failed to mount MCP server: {e}")
+
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        log.error(f"Unhandled exception: {exc}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(exc)},
+        )
+
+    return app
 
 
-# Create FastAPI application
-app = FastAPI(
-    title="Covalent Context Engine",
-    description="API server for Covalent proactive AI agent",
-    version="1.0.0",
-    lifespan=lifespan,
-)
-
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.middleware("http")
-async def add_process_time_header(request: Request, call_next):
-    """Add X-Process-Time header to all responses."""
-    start_time = time.perf_counter()
-    response = await call_next(request)
-    process_time = time.perf_counter() - start_time
-    response.headers["X-Process-Time"] = f"{process_time:.3f}s"
-    log.info(f"Request {request.method} {request.url.path} completed in {process_time * 1000:.3f}ms")
-    return response
-
-
-# Include routers
-app.include_router(health.router, tags=["Health"])
-app.include_router(graph.router, prefix="/graph", tags=["Graph"])
-app.include_router(screen.router, tags=["Screen Context"])
-app.include_router(actions.router, tags=["Actions"])
-app.include_router(tab_completion.router, tags=["Tab Completion"])
-app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
-app.include_router(integrations.router, prefix="/integrations", tags=["Integrations"])
-app.include_router(onboarding.router, tags=["Onboarding"])
-app.include_router(mcp_router.router, tags=["MCP"])
+app = create_app()
 
 
 # Auth0 callback endpoint (at root level for redirect URI)
@@ -341,33 +358,6 @@ async def auth_callback(
         traceback.print_exc()
         auth_dao.save_auth_result(state, error="exception", error_description=str(e))
         return render_error(f"An error occurred: {e}")
-
-# Mount the pre-built MCP HTTP app (created above so its lifespan could be
-# nested into FastAPI's lifespan). The external URL must be exactly /mcp:
-# if we set path="/mcp" on http_app() AND mount at "/mcp", the effective
-# route becomes "/mcp/mcp", which breaks action_executor parity.
-if _mcp_http_app is not None:
-    try:
-        app.mount("/mcp", _mcp_http_app)
-        # #region agent log
-        _dbg("server/fastapi_app/main.py:mount", "mcp_http_app mounted at /mcp",
-             {"mcp_http_app_type": type(_mcp_http_app).__name__})
-        # #endregion
-    except Exception as e:
-        log.warning(f"⚠️ Failed to mount MCP server: {e}")
-
-
-# Global exception handler
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    log.error(f"Unhandled exception: {exc}")
-    import traceback
-    traceback.print_exc()
-    return JSONResponse(
-        status_code=500,
-        content={"error": str(exc)},
-    )
-
 
 def run_server():
     """Run the FastAPI server using uvicorn."""

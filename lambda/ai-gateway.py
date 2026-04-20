@@ -21,6 +21,10 @@ Endpoints:
     POST /integrations/notion/exchange - Exchange auth code for tokens
     POST /integrations/notion/refresh - Refresh access token
 
+    Jira OAuth (protected by Auth0 JWT):
+    POST /integrations/jira/exchange - Exchange auth code for tokens
+    POST /integrations/jira/refresh - Refresh access token
+
 Expected request body for /invoke:
 {
     "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",  # Bedrock inference profile ID
@@ -123,6 +127,10 @@ GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 # Notion OAuth configuration (for token exchange - uses Basic Auth with client_id:client_secret)
 NOTION_CLIENT_ID = os.environ.get("NOTION_CLIENT_ID", "")
 NOTION_CLIENT_SECRET = os.environ.get("NOTION_CLIENT_SECRET", "")
+
+# Jira OAuth configuration (for token exchange - uses client_id/client_secret)
+JIRA_CLIENT_ID = os.environ.get("JIRA_CLIENT_ID", "")
+JIRA_CLIENT_SECRET = os.environ.get("JIRA_CLIENT_SECRET", "")
 
 # GitHub PAT for proxying private release assets to the Tauri updater
 GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
@@ -1098,6 +1106,168 @@ def handle_notion_refresh(body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ========================
+# Jira OAuth Handlers
+# ========================
+
+def _jira_fetch_accessible_resources(access_token: str) -> list[Dict[str, Any]]:
+    req = urllib.request.Request(
+        "https://api.atlassian.com/oauth/token/accessible-resources",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _jira_fetch_identity(access_token: str) -> Dict[str, Any]:
+    req = urllib.request.Request(
+        "https://api.atlassian.com/me",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def handle_jira_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Exchange Jira auth code for access and refresh tokens.
+    """
+    if not JIRA_CLIENT_ID or not JIRA_CLIENT_SECRET:
+        return create_response(500, {"error": "Jira OAuth not configured on server"})
+
+    code = body.get("code")
+    redirect_uri = body.get("redirect_uri")
+    if not code or not redirect_uri:
+        return create_response(400, {"error": "code and redirect_uri are required"})
+
+    token_data = json.dumps({
+        "grant_type": "authorization_code",
+        "client_id": JIRA_CLIENT_ID,
+        "client_secret": JIRA_CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            "https://auth.atlassian.com/oauth/token",
+            data=token_data,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        if "error" in result:
+            logger.error(f"Jira token exchange error: {result}")
+            return create_response(400, {
+                "error": result.get("error"),
+                "error_description": result.get("error_description", result.get("error")),
+            })
+
+        access_token = result.get("access_token")
+        accessible_resources = _jira_fetch_accessible_resources(access_token)
+        identity = {}
+        try:
+            identity = _jira_fetch_identity(access_token)
+        except Exception as exc:
+            logger.warning(f"Could not fetch Jira identity: {exc}")
+
+        logger.info("Jira token exchange successful")
+        return create_response(200, {
+            "access_token": access_token,
+            "refresh_token": result.get("refresh_token"),
+            "expires_in": result.get("expires_in"),
+            "scope": result.get("scope"),
+            "token_type": result.get("token_type"),
+            "accessible_resources": accessible_resources,
+            "account_id": identity.get("account_id") or identity.get("accountId"),
+            "email": identity.get("email"),
+            "display_name": identity.get("name") or identity.get("displayName"),
+        })
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        logger.error(f"Jira token exchange failed: {e.code} - {error_body}")
+        try:
+            error_json = json.loads(error_body)
+            return create_response(400, {
+                "error": error_json.get("error", "token_exchange_failed"),
+                "error_description": error_json.get("error_description", error_json.get("message", "Token exchange failed")),
+            })
+        except json.JSONDecodeError:
+            return create_response(400, {"error": "token_exchange_failed", "error_description": error_body})
+    except Exception as e:
+        logger.error(f"Jira token exchange error: {e}")
+        return create_response(500, {"error": "internal_error", "error_description": str(e)})
+
+
+def handle_jira_refresh(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Refresh Jira access token using the refresh token.
+    """
+    if not JIRA_CLIENT_ID or not JIRA_CLIENT_SECRET:
+        return create_response(500, {"error": "Jira OAuth not configured on server"})
+
+    refresh_token = body.get("refresh_token")
+    if not refresh_token:
+        return create_response(400, {"error": "refresh_token is required"})
+
+    token_data = json.dumps({
+        "grant_type": "refresh_token",
+        "client_id": JIRA_CLIENT_ID,
+        "client_secret": JIRA_CLIENT_SECRET,
+        "refresh_token": refresh_token,
+    }).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            "https://auth.atlassian.com/oauth/token",
+            data=token_data,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        if "error" in result:
+            logger.error(f"Jira token refresh error: {result}")
+            return create_response(400, {
+                "error": result.get("error", "refresh_failed"),
+                "error_description": result.get("error_description", result.get("message", "Token refresh failed")),
+            })
+
+        logger.info("Jira token refresh successful")
+        return create_response(200, {
+            "access_token": result.get("access_token"),
+            "refresh_token": result.get("refresh_token"),
+            "expires_in": result.get("expires_in"),
+            "scope": result.get("scope"),
+            "token_type": result.get("token_type"),
+        })
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        logger.error(f"Jira token refresh failed: {e.code} - {error_body}")
+        try:
+            error_json = json.loads(error_body)
+            return create_response(400, {
+                "error": error_json.get("error", "refresh_failed"),
+                "error_description": error_json.get("error_description", error_json.get("message", "Token refresh failed")),
+            })
+        except json.JSONDecodeError:
+            return create_response(400, {"error": "refresh_failed", "error_description": error_body})
+    except Exception as e:
+        logger.error(f"Jira token refresh error: {e}")
+        return create_response(500, {"error": "internal_error", "error_description": str(e)})
+
+
+# ========================
 # App Update Proxy
 # ========================
 
@@ -1465,6 +1635,34 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 return create_response(400, {"error": "Invalid JSON in request body"})
         
         return handle_notion_refresh(body)
+
+    # Jira OAuth token exchange
+    if path == "/integrations/jira/exchange" or path.endswith("/integrations/jira/exchange"):
+        if http_method != "POST":
+            return create_response(405, {"error": "Method not allowed. Use POST."})
+
+        body = event.get("body", "{}")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except json.JSONDecodeError:
+                return create_response(400, {"error": "Invalid JSON in request body"})
+
+        return handle_jira_exchange(body)
+
+    # Jira OAuth token refresh
+    if path == "/integrations/jira/refresh" or path.endswith("/integrations/jira/refresh"):
+        if http_method != "POST":
+            return create_response(405, {"error": "Method not allowed. Use POST."})
+
+        body = event.get("body", "{}")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except json.JSONDecodeError:
+                return create_response(400, {"error": "Invalid JSON in request body"})
+
+        return handle_jira_refresh(body)
     
     # Default: treat as invoke for backward compatibility
     if http_method == "POST":

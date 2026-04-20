@@ -37,6 +37,7 @@ from covalent_mcp.toolclasses import (
     perplexity_search_module,
     tavily_search_module,
     notion_module,
+    jira_module,
 )
 
 TOOL_MODULES: list[MCPToolModule] = [
@@ -49,6 +50,7 @@ TOOL_MODULES: list[MCPToolModule] = [
     perplexity_search_module,
     tavily_search_module,
     notion_module,
+    jira_module,
 ]
 
 

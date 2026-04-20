@@ -33,7 +33,7 @@ from security.key_manager import get_db_encryption_key
 
 
 # Known integration providers
-PROVIDERS = ["google", "github", "notion", "filesystem"]
+PROVIDERS = ["google", "github", "notion", "jira", "filesystem"]
 
 
 class IntegrationDAO:
@@ -232,3 +232,17 @@ class IntegrationDAO:
             ]
         finally:
             conn.close()
+
+    def update_provider_metadata(self, provider: str, provider_metadata: Dict[str, Any]) -> None:
+        """Update provider metadata while preserving existing token fields."""
+        token = self.get_token(provider)
+        if not token:
+            raise ValueError(f"{provider} is not connected")
+        self.save_token(
+            provider=provider,
+            access_token=token["access_token"],
+            refresh_token=token.get("refresh_token"),
+            expires_at=token.get("expires_at"),
+            scopes=token.get("scopes"),
+            provider_metadata=provider_metadata,
+        )

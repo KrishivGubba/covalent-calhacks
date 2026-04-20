@@ -119,6 +119,58 @@ def create_schema(conn: sqlite3.Connection) -> None:
         """
     )
 
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS large_context_sync_config (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL DEFAULT 1,
+            interval_minutes INTEGER NOT NULL DEFAULT 60,
+            projection_mode TEXT NOT NULL DEFAULT 'provider_subtree',
+            markdown_root TEXT,
+            last_scheduler_heartbeat TEXT
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS large_context_provider_state (
+            provider TEXT PRIMARY KEY,
+            supports_live_sync INTEGER NOT NULL,
+            cursor_json TEXT,
+            last_started_at TEXT,
+            last_completed_at TEXT,
+            last_success_at TEXT,
+            last_error TEXT,
+            status TEXT,
+            last_snapshot_path TEXT
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS large_context_sync_runs (
+            run_id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            status TEXT NOT NULL,
+            providers_attempted TEXT,
+            providers_succeeded TEXT,
+            providers_failed TEXT,
+            error_json TEXT
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO large_context_sync_config
+            (id, enabled, interval_minutes, projection_mode, markdown_root, last_scheduler_heartbeat)
+        VALUES (1, 1, 60, 'provider_subtree', NULL, NULL);
+        """
+    )
+
     # OAuth callback polling: state -> code_verifier, tokens, etc. for frontend to pick up
     conn.execute(
         """
