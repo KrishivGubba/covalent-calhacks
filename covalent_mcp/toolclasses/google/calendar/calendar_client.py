@@ -149,12 +149,14 @@ class CalendarService:
                     'description': event.get('description'),
                     'start': event.get('start'),
                     'end': event.get('end'),
+                    'updated': event.get('updated'),
                     'status': event.get('status'),
                     'creator': event.get('creator'),
                     'organizer': event.get('organizer'),
                     'attendees': event.get('attendees'),
                     'location': event.get('location'),
                     'hangoutLink': event.get('hangoutLink'),
+                    'htmlLink': event.get('htmlLink'),
                     'conferenceData': event.get('conferenceData'),
                     'recurringEventId': event.get('recurringEventId')
                 }
@@ -189,12 +191,14 @@ class CalendarService:
                 'description': event.get('description'),
                 'start': event.get('start'),
                 'end': event.get('end'),
+                'updated': event.get('updated'),
                 'status': event.get('status'),
                 'creator': event.get('creator'),
                 'organizer': event.get('organizer'),
                 'attendees': event.get('attendees'),
                 'location': event.get('location'),
                 'hangoutLink': event.get('hangoutLink'),
+                'htmlLink': event.get('htmlLink'),
                 'conferenceData': event.get('conferenceData'),
                 'recurringEventId': event.get('recurringEventId')
             }

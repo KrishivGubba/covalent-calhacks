@@ -83,7 +83,7 @@ class GmailService:
                         userId='me',
                         id=msg['id'],
                         format='metadata',
-                        metadataHeaders=['From', 'To', 'Subject', 'Date']
+                        metadataHeaders=['From', 'To', 'Cc', 'Subject', 'Date']
                     ).execute()
                     
                     # Extract headers
@@ -95,8 +95,10 @@ class GmailService:
                         'snippet': message.get('snippet', ''),
                         'from': headers.get('From', ''),
                         'to': headers.get('To', ''),
+                        'cc': headers.get('Cc', ''),
                         'subject': headers.get('Subject', ''),
                         'date': headers.get('Date', ''),
+                        'internalDate': message.get('internalDate'),
                         'labelIds': message.get('labelIds', [])
                     })
                 except Exception as e:
@@ -138,8 +140,10 @@ class GmailService:
                 'snippet': message.get('snippet', ''),
                 'from': headers.get('From', ''),
                 'to': headers.get('To', ''),
+                'cc': headers.get('Cc', ''),
                 'subject': headers.get('Subject', ''),
                 'date': headers.get('Date', ''),
+                'internalDate': message.get('internalDate'),
                 'body': body,
                 'labelIds': message.get('labelIds', [])
             }

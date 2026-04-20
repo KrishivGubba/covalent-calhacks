@@ -104,7 +104,7 @@ FULL CONTEXT DATA (JSON):
             {"id": "github", "name": "GitHub", "description": "Access repositories, issues, and pull requests", "connected": statuses.get("github", False)},
             {"id": "perplexity", "name": "Perplexity Search", "description": "AI-powered web search", "connected": True},
             {"id": "notion", "name": "Notion", "description": "Access Notion workspaces and pages", "connected": statuses.get("notion", False)},
-            {"id": "google", "name": "Google Workspace", "description": "Calendar, Drive, Mail", "connected": statuses.get("google", False)},
+            {"id": "google", "name": "Google Workspace", "description": "Docs, Drive, Mail, Calendar", "connected": statuses.get("google", False)},
         ]
         
         connected_mcps = [mcp for mcp in available_mcps if mcp["connected"]]

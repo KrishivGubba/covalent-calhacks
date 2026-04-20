@@ -57,7 +57,7 @@ PROVIDER_CONFIGS: Dict[str, IntegrationProviderConfig] = {
     "google": IntegrationProviderConfig(
         provider_id="google",
         name="Google Workspace",
-        description="Calendar, Drive, Mail",
+        description="Docs, Drive, Mail, Calendar",
         icon="🔷",
         auth_kind="oauth",
         required_onboarding=True,

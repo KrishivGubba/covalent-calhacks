@@ -45,10 +45,10 @@ Live in v1:
 - `github`
 - `google_workspace`
 - `notion`
+- `jira`
 
 Placeholders in v1:
 - `slack`
-- `jira`
 
 ## Storage Contract
 Markdown is the canonical long-term store.
@@ -219,6 +219,11 @@ Cross-links:
 - page/item -> tickets/PRs/threads/docs
 
 ### Google Workspace
+Single provider/file for now:
+- `google_workspace`
+- `google_workspace.md`
+- active slices run every sync, with broader bootstrap backfills on the first 3 successful runs
+
 Containers:
 - account
 - shared drive/folder/mailbox/calendar
@@ -258,6 +263,10 @@ People:
 
 Cross-links:
 - email/doc/event -> GitHub/Jira/Slack/Notion entities
+
+Heuristic sync policy:
+- every run syncs recent inbox threads, recently modified Drive/Docs artifacts, and near-future calendar events
+- the first 3 successful runs also include broader Gmail/Drive/Calendar backfills so the local graph can learn the user's org context early
 
 ## Graph Projection Schema
 Reuse the existing root node and create or upsert:

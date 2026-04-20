@@ -85,7 +85,7 @@ const NOTION_REDIRECT_URI = `http://localhost:${FLASK_PORT}/integrations/notion/
 const JIRA_REDIRECT_URI = `http://127.0.0.1:${FLASK_PORT}/integrations/jira/callback`;
 
 const GOOGLE_SCOPES =
-  'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email';
+  'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/userinfo.email';
 const GITHUB_SCOPES = 'repo read:user';
 const JIRA_SCOPES = 'offline_access read:me read:jira-user read:jira-work write:jira-work';
 

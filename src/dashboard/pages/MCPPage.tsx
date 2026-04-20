@@ -47,7 +47,7 @@ const FALLBACK_INTEGRATIONS: IntegrationStatus[] = [
     id: 'google',
     name: 'Google Workspace',
     connected: false,
-    description: 'Calendar, Drive, Mail',
+    description: 'Docs, Drive, Mail, Calendar',
   },
   {
     id: 'jira',
