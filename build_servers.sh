@@ -88,6 +88,9 @@ pyinstaller server/run_fastapi.py \
   --hidden-import=anyio._backends._asyncio \
   --hidden-import=h11 \
   --hidden-import=httptools \
+  --collect-all=lupa \
+  --collect-all=fakeredis \
+  --collect-all=docket \
   --add-data="server/htmlstuff:server/htmlstuff" \
   --add-data="model_config.yml:." \
   --copy-metadata=fastapi \
@@ -98,7 +101,9 @@ pyinstaller server/run_fastapi.py \
   --copy-metadata=langchain \
   --copy-metadata=langchain-core \
   --copy-metadata=langchain-openai \
-  --copy-metadata=openai
+  --copy-metadata=openai \
+  --copy-metadata=fakeredis \
+  --copy-metadata=pydocket
 
 echo ""
 echo "=== Build complete ==="
