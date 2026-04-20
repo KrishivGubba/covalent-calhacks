@@ -414,8 +414,8 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
             latest_stub = sorted_messages[-1]
             latest_full = gmail.get_message(latest_stub["id"]) or {}
             latest_message = {
-                **latest_stub,
                 **latest_full,
+                **latest_stub,
             }
             if latest_message.get("body"):
                 latest_message["body"] = latest_message["body"][: self.MAX_EMAIL_BODY_CHARS]
