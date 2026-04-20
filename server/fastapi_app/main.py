@@ -53,28 +53,6 @@ from .routers import (
 MOUNT_MCP = os.environ.get('MOUNT_MCP_SERVER', 'true').lower() in ('true', '1', 'yes')
 
 
-# #region agent log
-def _dbg(location: str, message: str, data: dict = None, hypothesis: str = "H1"):
-    """Write one NDJSON line to the debug log so we can verify the MCP lifespan wiring."""
-    try:
-        import time as _t
-        import json as _j
-        _payload = {
-            "sessionId": "784dc2",
-            "runId": "post-fix",
-            "hypothesisId": hypothesis,
-            "location": location,
-            "message": message,
-            "data": data or {},
-            "timestamp": int(_t.time() * 1000),
-        }
-        with open("/Users/Patron/Desktop/covalent-calhacks/.cursor/debug-784dc2.log", "a") as _f:
-            _f.write(_j.dumps(_payload) + "\n")
-    except Exception:
-        pass
-# #endregion
-
-
 def create_mcp_server():
     """Create and configure the MCP server for mounting."""
     try:
