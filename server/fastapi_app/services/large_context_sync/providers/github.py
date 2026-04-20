@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from covalent_mcp.toolclasses.github.github_client import GitHubClient
 from server.integration_dao import IntegrationDAO
@@ -27,6 +27,46 @@ class GitHubLargeContextProvider(LargeContextProvider):
     file_name = "github.md"
     integration_provider_key = "github"
 
+    # Cap how many repos we pull per run. Sorted by recency so inactive repos drop
+    # out first. Tune here if you start hitting rate limits or want wider coverage.
+    MAX_REPOS = 25
+
+    _GH_URL_RE = re.compile(
+        r"https?://github\.com/(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)/(?P<kind>issues|pull)/(?P<number>\d+)"
+    )
+    _CROSS_REPO_ISSUE_RE = re.compile(
+        r"(?<![\w/])(?P<owner>[A-Za-z0-9][\w.-]*)/(?P<repo>[A-Za-z0-9][\w.-]*)#(?P<number>\d+)"
+    )
+    _SAME_REPO_ISSUE_RE = re.compile(
+        r"(?:(?P<verb>close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+)?#(?P<number>\d+)",
+        re.IGNORECASE,
+    )
+    _JIRA_URL_RE = re.compile(
+        r"https?://[\w.-]+\.atlassian\.net/browse/([A-Z][A-Z0-9]{1,9}-\d+)"
+    )
+    # Project keys: 2-10 uppercase alphanumerics starting with a letter, hyphen, digits.
+    # Bounded by non-word chars so we don't pick up substrings of larger identifiers.
+    _JIRA_KEY_RE = re.compile(r"(?<![\w-])([A-Z]{2}[A-Z0-9]{0,8}-\d+)(?![\w-])")
+    _SLACK_URL_RE = re.compile(
+        r"https?://[\w.-]+\.slack\.com/archives/([A-Z0-9]+)/p(\d+)"
+    )
+    _NOTION_URL_RE = re.compile(
+        r"https?://(?:www\.)?notion\.so/[\w%/-]*?"
+        r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})"
+    )
+    _GDOC_URL_RE = re.compile(
+        r"https?://docs\.google\.com/(?:document|spreadsheets|presentation|forms)/d/([A-Za-z0-9_-]{10,})"
+    )
+    _GDRIVE_URL_RE = re.compile(
+        r"https?://drive\.google\.com/(?:file/d/|open\?id=)([A-Za-z0-9_-]{10,})"
+    )
+    _GCAL_URL_RE = re.compile(
+        r"https?://(?:www\.)?google\.com/calendar/event\?eid=([A-Za-z0-9_-]+)"
+    )
+    _GMAIL_URL_RE = re.compile(
+        r"https?://mail\.google\.com/mail/[^/]+/#[\w-]+/([A-Za-z0-9]+)"
+    )
+
     def __init__(self, integration_dao: IntegrationDAO):
         self.integration_dao = integration_dao
 
@@ -37,10 +77,19 @@ class GitHubLargeContextProvider(LargeContextProvider):
 
         client = GitHubClient(token["access_token"])
         since = (cursor or {}).get("since") or since_ts
-        repos = client.list_repos(type="all")[:10]
+
+        all_repos = client.list_repos(type="all")
+        sorted_repos = sorted(
+            all_repos,
+            key=lambda repo: repo.get("pushed_at") or repo.get("updated_at") or "",
+            reverse=True,
+        )
+        selected_repos = sorted_repos[: self.MAX_REPOS]
+
         records: List[dict] = []
-        for repo in repos:
-            owner = repo.get("owner", {}).get("login") or ""
+        for repo in selected_repos:
+            owner_info = repo.get("owner") or {}
+            owner = owner_info.get("login") or ""
             repo_name = repo.get("name") or ""
             if not owner or not repo_name:
                 continue
@@ -50,50 +99,88 @@ class GitHubLargeContextProvider(LargeContextProvider):
             records.append({
                 "repo": repo,
                 "repo_key": repo_key,
+                "owner": owner,
+                "owner_type": owner_info.get("type") or "User",
+                "owner_html_url": owner_info.get("html_url"),
                 "issues": issues,
                 "pulls": pulls,
             })
+
         return ProviderFetchResult(
             records=records,
             next_cursor={"since": datetime.now(timezone.utc).isoformat()},
-            metadata={"backfill_since": since},
+            metadata={
+                "backfill_since": since,
+                "repos_available": len(all_repos),
+                "repos_synced": len(records),
+                "repo_cap": self.MAX_REPOS,
+            },
         )
 
     def build_snapshot(self, fetch_result: ProviderFetchResult, previous_snapshot: ProviderSnapshot | None = None) -> ProviderSnapshot:
-        containers: list[SnapshotContainer] = []
+        owner_containers: Dict[str, SnapshotContainer] = {}
+        repo_containers: list[SnapshotContainer] = []
         entities: list[SnapshotEntity] = []
         people_map: Dict[str, SnapshotPerson] = {}
         cross_links: list[SnapshotCrossLink] = []
+        seen_cross_links: set[tuple[str, str, str]] = set()
 
         for record in fetch_result.records:
             repo = record["repo"]
             repo_key = record["repo_key"]
-            containers.append(
+            owner = record["owner"]
+            owner_type = (record.get("owner_type") or "User").lower()
+            owner_container_type = "organization" if owner_type == "organization" else "user"
+
+            if owner and owner not in owner_containers:
+                owner_containers[owner] = SnapshotContainer(
+                    container_type=owner_container_type,
+                    container_id=owner,
+                    title=owner,
+                    source_url=record.get("owner_html_url"),
+                )
+
+            repo_containers.append(
                 SnapshotContainer(
                     container_type="repository",
                     container_id=repo_key,
                     title=repo_key,
                     summary=repo.get("description"),
+                    parent_id=owner or None,
                     source_url=repo.get("html_url"),
                 )
             )
 
             for pull in record.get("pulls", []):
                 author = (pull.get("user") or {}).get("login")
-                reviewers = [reviewer.get("login") for reviewer in pull.get("requested_reviewers", []) if reviewer.get("login")]
+                reviewers = [
+                    reviewer.get("login")
+                    for reviewer in pull.get("requested_reviewers", [])
+                    if reviewer.get("login")
+                ]
                 labels = [label.get("name") for label in pull.get("labels", []) if label.get("name")]
-                linked_issue_ids = self._extract_linked_issue_ids(pull.get("body", ""))
+                body = pull.get("body") or ""
+                title_text = pull.get("title") or ""
+
+                pr_external_id = f"{repo_key}#PR{pull.get('number')}"
+                linked_issue_numbers = self._extract_body_issue_numbers(body)
+                related_entities, pr_cross_links = self._extract_references(
+                    f"{title_text}\n{body}",
+                    source_entity_id=pr_external_id,
+                    current_repo_key=repo_key,
+                )
+
                 entities.append(
                     SnapshotEntity(
                         entity_type="pull_request",
-                        external_id=f"{repo_key}#PR{pull.get('number')}",
-                        title=pull.get("title") or f"PR #{pull.get('number')}",
+                        external_id=pr_external_id,
+                        title=title_text or f"PR #{pull.get('number')}",
                         status=pull.get("state") or "open",
-                        summary=pull.get("body") or pull.get("title") or "",
+                        summary=body or title_text,
                         project=repo_key,
                         feature_tags=labels,
                         people=[person for person in [author, *reviewers] if person],
-                        related_entities=[f"{repo_key}#ISSUE{number}" for number in linked_issue_ids],
+                        related_entities=related_entities,
                         updated_at=pull.get("updated_at"),
                         source_url=pull.get("html_url"),
                         container_id=repo_key,
@@ -105,35 +192,43 @@ class GitHubLargeContextProvider(LargeContextProvider):
                             "labels": labels,
                             "base_branch": ((pull.get("base") or {}).get("ref") or ""),
                             "head_branch": ((pull.get("head") or {}).get("ref") or ""),
-                            "linked_issue_ids": linked_issue_ids,
+                            "linked_issue_ids": linked_issue_numbers,
                         },
                     )
                 )
-                self._upsert_people(people_map, [author, *reviewers], f"{repo_key}#PR{pull.get('number')}")
-                for issue_number in linked_issue_ids:
-                    cross_links.append(
-                        SnapshotCrossLink(
-                            source_entity_id=f"{repo_key}#PR{pull.get('number')}",
-                            target_entity_id=f"{repo_key}#ISSUE{issue_number}",
-                            relationship="references",
-                        )
-                    )
+                self._upsert_people(people_map, [author, *reviewers], pr_external_id)
+                self._merge_cross_links(cross_links, seen_cross_links, pr_cross_links)
 
             for issue in record.get("issues", []):
-                assignees = [assignee.get("login") for assignee in issue.get("assignees", []) if assignee.get("login")]
+                assignees = [
+                    assignee.get("login")
+                    for assignee in issue.get("assignees", [])
+                    if assignee.get("login")
+                ]
                 labels = [label.get("name") for label in issue.get("labels", []) if label.get("name")]
-                linked_pr_ids = self._extract_linked_pr_ids(issue.get("body", ""), repo_key)
+                body = issue.get("body") or ""
+                title_text = issue.get("title") or ""
+
+                issue_external_id = f"{repo_key}#ISSUE{issue.get('number')}"
+                linked_numbers = self._extract_body_issue_numbers(body)
+                linked_pr_ids = [f"{repo_key}#PR{number}" for number in linked_numbers]
+                related_entities, issue_cross_links = self._extract_references(
+                    f"{title_text}\n{body}",
+                    source_entity_id=issue_external_id,
+                    current_repo_key=repo_key,
+                )
+
                 entities.append(
                     SnapshotEntity(
                         entity_type="issue",
-                        external_id=f"{repo_key}#ISSUE{issue.get('number')}",
-                        title=issue.get("title") or f"Issue #{issue.get('number')}",
+                        external_id=issue_external_id,
+                        title=title_text or f"Issue #{issue.get('number')}",
                         status=issue.get("state") or "open",
-                        summary=issue.get("body") or issue.get("title") or "",
+                        summary=body or title_text,
                         project=repo_key,
                         feature_tags=labels,
                         people=[person for person in assignees if person],
-                        related_entities=linked_pr_ids,
+                        related_entities=related_entities,
                         updated_at=issue.get("updated_at"),
                         source_url=issue.get("html_url"),
                         container_id=repo_key,
@@ -147,7 +242,10 @@ class GitHubLargeContextProvider(LargeContextProvider):
                         },
                     )
                 )
-                self._upsert_people(people_map, assignees, f"{repo_key}#ISSUE{issue.get('number')}")
+                self._upsert_people(people_map, assignees, issue_external_id)
+                self._merge_cross_links(cross_links, seen_cross_links, issue_cross_links)
+
+        containers: list[SnapshotContainer] = list(owner_containers.values()) + repo_containers
 
         return ProviderSnapshot(
             provider_id=self.provider_id,
@@ -161,23 +259,122 @@ class GitHubLargeContextProvider(LargeContextProvider):
             cross_links=cross_links,
         )
 
-    def _extract_linked_issue_ids(self, body: str) -> list[str]:
-        linked_numbers: list[str] = []
-        for token in body.replace(",", " ").split():
-            if token.startswith("#") and token[1:].isdigit():
-                linked_numbers.append(token[1:])
-        return linked_numbers
+    def _extract_body_issue_numbers(self, text: str) -> list[str]:
+        if not text:
+            return []
+        scrubbed = self._CROSS_REPO_ISSUE_RE.sub(" ", text)
+        scrubbed = self._GH_URL_RE.sub(" ", scrubbed)
+        numbers: list[str] = []
+        for match in self._SAME_REPO_ISSUE_RE.finditer(scrubbed):
+            number = match.group("number")
+            if number not in numbers:
+                numbers.append(number)
+        return numbers
 
-    def _extract_linked_pr_ids(self, body: str, repo_key: str) -> list[str]:
-        return [f"{repo_key}#PR{number}" for number in self._extract_linked_issue_ids(body)]
+    def _extract_references(
+        self,
+        text: str,
+        *,
+        source_entity_id: str,
+        current_repo_key: str,
+    ) -> Tuple[List[str], List[SnapshotCrossLink]]:
+        if not text:
+            return [], []
 
-    def _upsert_people(self, people_map: Dict[str, SnapshotPerson], handles: List[Optional[str]], related_entity: str) -> None:
+        related_ids: list[str] = []
+        links: list[SnapshotCrossLink] = []
+        seen: set[tuple[str, str]] = set()
+
+        def add(target_id: str, relationship: str) -> None:
+            if not target_id or target_id == source_entity_id:
+                return
+            key = (target_id, relationship)
+            if key in seen:
+                return
+            seen.add(key)
+            links.append(
+                SnapshotCrossLink(
+                    source_entity_id=source_entity_id,
+                    target_entity_id=target_id,
+                    relationship=relationship,
+                )
+            )
+            if target_id not in related_ids:
+                related_ids.append(target_id)
+
+        for match in self._GH_URL_RE.finditer(text):
+            kind = "PR" if match.group("kind") == "pull" else "ISSUE"
+            target = f"{match.group('owner')}/{match.group('repo')}#{kind}{match.group('number')}"
+            add(target, "references")
+
+        for match in self._CROSS_REPO_ISSUE_RE.finditer(text):
+            target = f"{match.group('owner')}/{match.group('repo')}#ISSUE{match.group('number')}"
+            add(target, "references")
+
+        scrubbed = self._CROSS_REPO_ISSUE_RE.sub(" ", text)
+        scrubbed = self._GH_URL_RE.sub(" ", scrubbed)
+        for match in self._SAME_REPO_ISSUE_RE.finditer(scrubbed):
+            verb = (match.group("verb") or "").lower()
+            relationship = "fixes" if verb else "references"
+            target = f"{current_repo_key}#ISSUE{match.group('number')}"
+            add(target, relationship)
+
+        for match in self._JIRA_URL_RE.finditer(text):
+            add(f"jira:{match.group(1)}", "references")
+        for match in self._JIRA_KEY_RE.finditer(text):
+            add(f"jira:{match.group(1)}", "references")
+
+        for match in self._SLACK_URL_RE.finditer(text):
+            channel = match.group(1)
+            ts_raw = match.group(2)
+            ts = f"{ts_raw[:-6]}.{ts_raw[-6:]}" if len(ts_raw) > 6 else ts_raw
+            add(f"slack:{channel}:{ts}", "references")
+
+        for match in self._NOTION_URL_RE.finditer(text):
+            raw = match.group(1).replace("-", "").lower()
+            add(f"notion:{raw}", "references")
+
+        for match in self._GDOC_URL_RE.finditer(text):
+            add(f"gdrive:{match.group(1)}", "references")
+        for match in self._GDRIVE_URL_RE.finditer(text):
+            add(f"gdrive:{match.group(1)}", "references")
+        for match in self._GCAL_URL_RE.finditer(text):
+            add(f"calendar:{match.group(1)}", "references")
+        for match in self._GMAIL_URL_RE.finditer(text):
+            add(f"gmail:{match.group(1)}", "references")
+
+        return related_ids, links
+
+    def _merge_cross_links(
+        self,
+        accumulator: list[SnapshotCrossLink],
+        seen: set[tuple[str, str, str]],
+        new_links: list[SnapshotCrossLink],
+    ) -> None:
+        for link in new_links:
+            key = (link.source_entity_id, link.target_entity_id, link.relationship)
+            if key in seen:
+                continue
+            seen.add(key)
+            accumulator.append(link)
+
+    def _upsert_people(
+        self,
+        people_map: Dict[str, SnapshotPerson],
+        handles: List[Optional[str]],
+        related_entity: str,
+    ) -> None:
         for handle in handles:
             if not handle:
                 continue
             person = people_map.get(handle)
             if person is None:
-                person = SnapshotPerson(identifier=handle, display_name=handle, role="github_user", related_entities=[])
+                person = SnapshotPerson(
+                    identifier=handle,
+                    display_name=handle,
+                    role="github_user",
+                    related_entities=[],
+                )
                 people_map[handle] = person
             if related_entity not in person.related_entities:
                 person.related_entities.append(related_entity)
