@@ -11,6 +11,7 @@ import {
   saveOnboardingProfile,
   type OnboardingProfile,
 } from '../../shared/onboardingProfileService';
+import { formatSystemTimestamp } from '../../shared/dateTime';
 
 interface AuthPageProps {
   onAuthChange: (authenticated: boolean) => void;
@@ -354,7 +355,7 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthChange }) => {
 
             {profileSavedAt && (
               <div style={styles.savedAtText}>
-                Last updated {new Date(profileSavedAt).toLocaleString()}
+                Last updated {formatSystemTimestamp(profileSavedAt)}
               </div>
             )}
           </div>
