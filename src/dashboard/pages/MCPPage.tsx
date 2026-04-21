@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   connectFilesystem,
@@ -6,16 +6,39 @@ import {
   disconnectIntegration,
   fetchIntegrationsStatus,
   fetchJiraConfig,
+  fetchLargeContextSyncStatus,
   listJiraProjects,
+  runLargeContextIntegrationSync,
+  updateLargeContextIntegrationConfig,
   updateJiraConfig,
+  type LargeContextIntegrationStatus,
+  type LargeContextSyncStatusResponse,
   type IntegrationStatus,
   type JiraConfigResponse,
   type JiraProject,
 } from '../../shared/integrationService';
+import { formatSystemTimestamp, getSystemTimeZone } from '../../shared/dateTime';
 
 interface MCPPageProps {
   isAuthenticated: boolean;
 }
+
+type SyncDraft = {
+  enabled: boolean;
+  intervalMinutes: number;
+};
+
+const SYNC_INTERVAL_OPTIONS = [
+  { label: '30 min', value: 30 },
+  { label: '1 hour', value: 60 },
+  { label: '2 hours', value: 120 },
+  { label: '6 hours', value: 360 },
+  { label: '12 hours', value: 720 },
+  { label: '24 hours', value: 1440 },
+];
+
+const FAST_STATUS_POLL_MS = 1500;
+const IDLE_STATUS_POLL_MS = 10000;
 
 const FALLBACK_INTEGRATIONS: IntegrationStatus[] = [
   {
@@ -62,9 +85,16 @@ const FALLBACK_INTEGRATIONS: IntegrationStatus[] = [
 
 const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   const [integrations, setIntegrations] = useState<IntegrationStatus[]>([]);
+  const [largeContextStatus, setLargeContextStatus] = useState<LargeContextSyncStatusResponse | null>(
+    null,
+  );
   const [loading, setLoading] = useState(true);
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [activeConfigId, setActiveConfigId] = useState<string | null>(null);
+  const [syncTrayOpenId, setSyncTrayOpenId] = useState<string | null>(null);
+  const [syncStartingId, setSyncStartingId] = useState<string | null>(null);
+  const [syncSavingId, setSyncSavingId] = useState<string | null>(null);
+  const [syncDrafts, setSyncDrafts] = useState<Record<string, SyncDraft>>({});
   const [jiraConfig, setJiraConfig] = useState<JiraConfigResponse | null>(null);
   const [jiraProjects, setJiraProjects] = useState<JiraProject[]>([]);
   const [jiraCloudId, setJiraCloudId] = useState('');
@@ -73,20 +103,60 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void loadIntegrations();
+    void loadPageData({ showLoader: true });
   }, []);
 
-  const loadIntegrations = async () => {
-    setLoading(true);
-    setError(null);
+  const integrationSyncMap = useMemo(() => {
+    const entries = (largeContextStatus?.integrations || []).map((integrationStatus) => [
+      integrationStatus.integration_id,
+      integrationStatus,
+    ]);
+    return Object.fromEntries(entries) as Record<string, LargeContextIntegrationStatus>;
+  }, [largeContextStatus]);
+
+  const anySyncRunning = useMemo(
+    () => (largeContextStatus?.integrations || []).some((integrationStatus) => integrationStatus.status === 'running'),
+    [largeContextStatus],
+  );
+
+  useEffect(() => {
+    if (loading) return undefined;
+    const timeout = window.setTimeout(() => {
+      void loadPageData({ silent: true });
+    }, anySyncRunning || syncStartingId ? FAST_STATUS_POLL_MS : IDLE_STATUS_POLL_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [anySyncRunning, largeContextStatus, loading, syncStartingId]);
+
+  const loadPageData = async ({
+    showLoader = false,
+    silent = false,
+  }: {
+    showLoader?: boolean;
+    silent?: boolean;
+  } = {}) => {
+    if (showLoader) {
+      setLoading(true);
+    }
+    if (!silent) {
+      setError(null);
+    }
     try {
-      const statuses = await fetchIntegrationsStatus();
+      const [statuses, syncStatus] = await Promise.all([
+        fetchIntegrationsStatus(),
+        fetchLargeContextSyncStatus(),
+      ]);
       setIntegrations(statuses);
+      setLargeContextStatus(syncStatus);
     } catch (e) {
       setIntegrations(FALLBACK_INTEGRATIONS);
-      setError(e instanceof Error ? e.message : 'Failed to fetch integrations');
+      if (!silent) {
+        setError(e instanceof Error ? e.message : 'Failed to fetch integrations');
+      }
     } finally {
-      setLoading(false);
+      if (showLoader) {
+        setLoading(false);
+      }
     }
   };
 
@@ -159,7 +229,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
       } else {
         throw new Error(`${id} integration is not supported yet`);
       }
-      await loadIntegrations();
+      await loadPageData();
     } catch (e) {
       setError(e instanceof Error ? e.message : `Failed to connect ${id}`);
     } finally {
@@ -180,7 +250,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
         setJiraCloudId('');
         setJiraProjectKeys([]);
       }
-      await loadIntegrations();
+      await loadPageData();
     } catch (e) {
       setError(e instanceof Error ? e.message : `Failed to disconnect ${id}`);
     } finally {
@@ -209,12 +279,226 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
     try {
       const config = await updateJiraConfig(jiraCloudId, jiraProjectKeys);
       setJiraConfig(config);
-      await loadIntegrations();
+      await loadPageData();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to save Jira configuration');
     } finally {
       setJiraBusy(false);
     }
+  };
+
+  const ensureSyncDraft = (integrationStatus: LargeContextIntegrationStatus) => {
+    setSyncDrafts((prev) => {
+      if (prev[integrationStatus.integration_id]) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [integrationStatus.integration_id]: {
+          enabled: integrationStatus.enabled,
+          intervalMinutes: integrationStatus.interval_minutes,
+        },
+      };
+    });
+  };
+
+  const toggleSyncTray = (integrationStatus: LargeContextIntegrationStatus) => {
+    ensureSyncDraft(integrationStatus);
+    setSyncTrayOpenId((prev) =>
+      prev === integrationStatus.integration_id ? null : integrationStatus.integration_id,
+    );
+  };
+
+  const updateSyncDraft = (
+    integrationId: string,
+    partial: Partial<SyncDraft>,
+  ) => {
+    setSyncDrafts((prev) => ({
+      ...prev,
+      [integrationId]: {
+        enabled: prev[integrationId]?.enabled ?? true,
+        intervalMinutes: prev[integrationId]?.intervalMinutes ?? 60,
+        ...partial,
+      },
+    }));
+  };
+
+  const saveSyncSettings = async (integrationStatus: LargeContextIntegrationStatus) => {
+    const draft = syncDrafts[integrationStatus.integration_id] || {
+      enabled: integrationStatus.enabled,
+      intervalMinutes: integrationStatus.interval_minutes,
+    };
+    setError(null);
+    setSyncSavingId(integrationStatus.integration_id);
+    try {
+      await updateLargeContextIntegrationConfig(
+        integrationStatus.integration_id,
+        draft.enabled,
+        draft.intervalMinutes,
+      );
+      await loadPageData({ silent: true });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to save sync settings');
+    } finally {
+      setSyncSavingId(null);
+    }
+  };
+
+  const startManualSync = async (integrationStatus: LargeContextIntegrationStatus) => {
+    setError(null);
+    setSyncStartingId(integrationStatus.integration_id);
+    try {
+      const runPromise = runLargeContextIntegrationSync(integrationStatus.integration_id);
+      await loadPageData({ silent: true });
+      const result = await runPromise;
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+      await loadPageData({ silent: true });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to start large context sync');
+    } finally {
+      setSyncStartingId(null);
+    }
+  };
+
+  const renderLargeContextControls = (integration: IntegrationStatus) => {
+    const integrationStatus = integrationSyncMap[integration.id];
+    if (!integrationStatus) {
+      return null;
+    }
+    const draft = syncDrafts[integrationStatus.integration_id] || {
+      enabled: integrationStatus.enabled,
+      intervalMinutes: integrationStatus.interval_minutes,
+    };
+    const trayOpen = syncTrayOpenId === integrationStatus.integration_id;
+    const syncRunning =
+      integrationStatus.status === 'running' || syncStartingId === integrationStatus.integration_id;
+    const controlsDisabled =
+      !integration.connected || connectingId === integration.id || syncSavingId === integrationStatus.integration_id;
+
+    return (
+      <div
+        style={{
+          ...styles.syncPanel,
+          ...(integration.connected ? {} : styles.syncPanelDisabled),
+        }}
+      >
+        <div style={styles.syncHeader}>
+          <div>
+            <div style={styles.syncTitle}>Large Context Sync</div>
+            <div style={styles.syncSubtitle}>
+              {integration.connected
+                ? `Last sync on ${
+                    integrationStatus.last_success_at
+                      ? formatSystemTimestamp(integrationStatus.last_success_at, {
+                          timeZoneName: 'short',
+                        })
+                      : 'Not synced yet'
+                  }`
+                : 'Connect this integration to enable large context sync'}
+            </div>
+            {integration.connected && integrationStatus.next_run_at && (
+              <div style={styles.syncHint}>
+                Next sync {formatSystemTimestamp(integrationStatus.next_run_at, { timeZoneName: 'short' })}
+              </div>
+            )}
+          </div>
+          <div
+            style={{
+              ...styles.syncStatusBadge,
+              ...(syncRunning ? styles.syncStatusRunning : styles.syncStatusIdle),
+            }}
+          >
+            {syncRunning ? (
+              <>
+                <span className="app-spinner" style={styles.spinner} />
+                Syncing
+              </>
+            ) : (
+              integrationStatus.enabled ? 'Auto-sync on' : 'Auto-sync off'
+            )}
+          </div>
+        </div>
+
+        {integration.connected && integrationStatus.last_error && integrationStatus.status === 'error' && (
+          <div style={styles.syncErrorText}>{integrationStatus.last_error}</div>
+        )}
+
+        <div style={styles.syncActionRow}>
+          <button
+            style={{
+              ...styles.syncButton,
+              ...(syncRunning || controlsDisabled ? styles.buttonDisabled : {}),
+            }}
+            onClick={() => void startManualSync(integrationStatus)}
+            disabled={syncRunning || controlsDisabled}
+          >
+            {syncRunning ? 'Syncing...' : 'Sync'}
+          </button>
+          <button
+            style={{
+              ...styles.syncTrayButton,
+              ...(syncSavingId === integrationStatus.integration_id ? styles.buttonDisabled : {}),
+            }}
+            onClick={() => toggleSyncTray(integrationStatus)}
+            disabled={syncSavingId === integrationStatus.integration_id}
+          >
+            {trayOpen ? 'Hide Settings' : 'Settings'}
+          </button>
+        </div>
+
+        {trayOpen && (
+          <div style={styles.syncTray}>
+            <label style={styles.syncToggleRow}>
+              <span style={styles.syncControlLabel}>Auto-sync</span>
+              <input
+                type="checkbox"
+                checked={draft.enabled}
+                onChange={(event) =>
+                  updateSyncDraft(integrationStatus.integration_id, {
+                    enabled: event.target.checked,
+                  })
+                }
+                disabled={controlsDisabled}
+              />
+            </label>
+            <label style={styles.syncField}>
+              <span style={styles.syncControlLabel}>Cadence</span>
+              <select
+                style={styles.select}
+                value={draft.intervalMinutes}
+                onChange={(event) =>
+                  updateSyncDraft(integrationStatus.integration_id, {
+                    intervalMinutes: Number(event.target.value),
+                  })
+                }
+                disabled={controlsDisabled}
+              >
+                {SYNC_INTERVAL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div style={styles.syncTrayFooter}>
+              <span style={styles.syncTimeZoneText}>Times shown in {getSystemTimeZone()}</span>
+              <button
+                style={{
+                  ...styles.configureButton,
+                  ...(controlsDisabled ? styles.buttonDisabled : {}),
+                }}
+                onClick={() => void saveSyncSettings(integrationStatus)}
+                disabled={controlsDisabled}
+              >
+                {syncSavingId === integrationStatus.integration_id ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   const renderIntegrationMeta = (integration: IntegrationStatus) => {
@@ -283,6 +567,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
                 </div>
                 <p style={styles.cardDescription}>{integration.description}</p>
                 {renderIntegrationMeta(integration)}
+                {renderLargeContextControls(integration)}
               </div>
 
               <div style={styles.cardActions}>
