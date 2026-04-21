@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { loadAuthStatus } from '../../shared/authService';
 import { BACKEND_URL } from '../../shared/backend';
+import { formatSystemTimestamp } from '../../shared/dateTime';
 import { getOnboardingProfile } from '../../shared/onboardingProfileService';
 
 interface DashboardPageProps {
@@ -27,7 +28,7 @@ function formatActionType(actionType: string): string {
 
 function formatTimestamp(timestamp: string): string {
   try {
-    return new Date(timestamp).toLocaleString(undefined, {
+    return formatSystemTimestamp(timestamp, {
       month: 'short',
       day: 'numeric',
       hour: 'numeric',

@@ -108,3 +108,9 @@ button:focus {
   outline: 2px solid rgba(100, 100, 100, 0.4);
   outline-offset: 2px;
 }
+
+.app-spinner {
+  display: inline-block;
+  border-radius: 999px;
+  animation: spin 0.9s linear infinite;
+}
