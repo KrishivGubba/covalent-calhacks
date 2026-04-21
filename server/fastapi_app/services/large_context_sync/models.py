@@ -27,6 +27,24 @@ class LargeContextProviderState(BaseModel):
     last_snapshot_path: Optional[str] = None
 
 
+class LargeContextIntegrationSyncState(BaseModel):
+    integration_id: str
+    enabled: bool = True
+    interval_minutes: int = Field(default=60, ge=30)
+    status: str = "idle"
+    last_started_at: Optional[str] = None
+    last_completed_at: Optional[str] = None
+    last_success_at: Optional[str] = None
+    last_error: Optional[str] = None
+
+
+class LargeContextIntegrationStatus(LargeContextIntegrationSyncState):
+    display_name: str
+    provider_ids: List[str] = Field(default_factory=list)
+    connected: bool = False
+    next_run_at: Optional[str] = None
+
+
 class LargeContextRunSummary(BaseModel):
     run_id: str
     started_at: str
@@ -116,5 +134,10 @@ class ManualRunRequest(BaseModel):
 
 
 class LargeContextSyncConfigUpdate(BaseModel):
+    enabled: bool
+    interval_minutes: int = Field(ge=30)
+
+
+class LargeContextIntegrationConfigUpdate(BaseModel):
     enabled: bool
     interval_minutes: int = Field(ge=30)
