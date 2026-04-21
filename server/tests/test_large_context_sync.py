@@ -23,11 +23,19 @@ class FakeLiveProvider(LargeContextProvider):
     file_name = "fake_live.md"
     integration_provider_key = "fake_live"
 
-    def __init__(self, provider_id: str = "fake_live", *, connected: bool = True, fail: bool = False):
+    def __init__(
+        self,
+        provider_id: str = "fake_live",
+        *,
+        connected: bool = True,
+        fail: bool = False,
+        integration_provider_key: str | None = None,
+    ):
         self.provider_id = provider_id
         self.display_name = provider_id.replace("_", " ").title()
         self.connected = connected
         self.fail = fail
+        self.integration_provider_key = integration_provider_key or provider_id
         self.received_cursors: list[dict | None] = []
         self.received_since: list[str] = []
         self.calls = 0
@@ -302,3 +310,38 @@ def test_incremental_cursor_and_status_endpoint(tmp_path, monkeypatch):
     assert provider.received_cursors[1] == {"since": "cursor-1"}
     stored_cursor = _fetch_one(db_path, "SELECT cursor_json FROM large_context_provider_state WHERE provider = ?", ("fake_live",))
     assert json.loads(stored_cursor[0]) == {"since": "cursor-2"}
+
+
+def test_manual_run_accepts_integration_key_alias_for_provider(tmp_path, monkeypatch):
+    google_provider = FakeLiveProvider(
+        provider_id="google_workspace",
+        integration_provider_key="google",
+    )
+    app, _, _ = _make_app(tmp_path, monkeypatch, [google_provider])
+
+    with TestClient(app) as client:
+        response = client.post("/integrations/large-context-sync/run", json={"providers": ["google"]})
+        assert response.status_code == 200
+        payload = response.json()["run"]
+        assert payload["providers_succeeded"] == ["google_workspace"]
+
+
+def test_legacy_github_only_request_expands_to_connected_live_providers(tmp_path, monkeypatch):
+    github_provider = FakeLiveProvider(provider_id="github", integration_provider_key="github")
+    google_provider = FakeLiveProvider(
+        provider_id="google_workspace",
+        integration_provider_key="google",
+    )
+    disconnected_provider = FakeLiveProvider(
+        provider_id="notion",
+        integration_provider_key="notion",
+        connected=False,
+    )
+    app, _, _ = _make_app(tmp_path, monkeypatch, [github_provider, google_provider, disconnected_provider])
+
+    with TestClient(app) as client:
+        response = client.post("/integrations/large-context-sync/run", json={"providers": ["github"]})
+        assert response.status_code == 200
+        payload = response.json()["run"]
+        assert payload["providers_attempted"] == ["github", "google_workspace"]
+        assert payload["providers_succeeded"] == ["github", "google_workspace"]

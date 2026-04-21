@@ -42,14 +42,7 @@ class LargeContextSyncEngine:
     def sync_once(self, provider_subset: Optional[list[str]] = None) -> LargeContextRunSummary:
         with self._run_lock:
             config = self.dao.get_config()
-            provider_lookup = {provider.provider_id: provider for provider in self.providers}
-            if provider_subset:
-                unknown = sorted(set(provider_subset) - set(provider_lookup))
-                if unknown:
-                    raise ValueError(f"Unknown providers requested: {', '.join(unknown)}")
-                providers = [provider_lookup[provider_id] for provider_id in provider_subset]
-            else:
-                providers = list(self.providers)
+            providers = self._resolve_requested_providers(provider_subset)
 
             run = LargeContextRunSummary(
                 run_id=str(uuid.uuid4()),
@@ -177,3 +170,60 @@ class LargeContextSyncEngine:
                 f"succeeded={len(run.providers_succeeded)}, failed={len(run.providers_failed)})"
             )
             return run
+
+    def _resolve_requested_providers(self, provider_subset: Optional[list[str]]) -> list:
+        provider_lookup = {provider.provider_id: provider for provider in self.providers}
+        integration_lookup: dict[str, list] = {}
+        for provider in self.providers:
+            if provider.integration_provider_key:
+                integration_lookup.setdefault(provider.integration_provider_key, []).append(provider)
+
+        if not provider_subset:
+            return list(self.providers)
+
+        resolved: list = []
+        seen_provider_ids: set[str] = set()
+        unknown: list[str] = []
+        requested_provider_ids: set[str] = set()
+        requested_integration_keys: set[str] = set()
+
+        for raw_id in provider_subset:
+            if raw_id in provider_lookup:
+                provider = provider_lookup[raw_id]
+                requested_provider_ids.add(provider.provider_id)
+                if provider.integration_provider_key:
+                    requested_integration_keys.add(provider.integration_provider_key)
+                if provider.provider_id not in seen_provider_ids:
+                    resolved.append(provider)
+                    seen_provider_ids.add(provider.provider_id)
+                continue
+
+            integration_matches = integration_lookup.get(raw_id) or []
+            if integration_matches:
+                requested_integration_keys.add(raw_id)
+                for provider in integration_matches:
+                    if provider.provider_id not in seen_provider_ids:
+                        resolved.append(provider)
+                        seen_provider_ids.add(provider.provider_id)
+                continue
+
+            unknown.append(raw_id)
+
+        if unknown:
+            raise ValueError(f"Unknown providers requested: {', '.join(sorted(set(unknown)))}")
+
+        # Compatibility shim for old clients that manually trigger only ["github"].
+        # Those clients predate provider IDs like "google_workspace", so expand to
+        # all connected live providers rather than silently excluding Google.
+        if requested_provider_ids == {"github"} and len(provider_subset) == 1:
+            for provider in self.providers:
+                if not provider.supports_live_sync:
+                    continue
+                if not provider.is_connected(self.integration_dao):
+                    continue
+                if provider.provider_id not in seen_provider_ids:
+                    resolved.append(provider)
+                    seen_provider_ids.add(provider.provider_id)
+            return resolved
+
+        return resolved
