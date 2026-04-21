@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -105,7 +105,13 @@ class ProviderSnapshot(BaseModel):
     watch_items: List[str] = Field(default_factory=list)
 
 
+ManualRunMode = Literal["all_connected_live", "providers", "integrations"]
+
+
 class ManualRunRequest(BaseModel):
+    mode: Optional[ManualRunMode] = None
+    provider_ids: List[str] = Field(default_factory=list)
+    integration_ids: List[str] = Field(default_factory=list)
     providers: Optional[List[str]] = None
 
 

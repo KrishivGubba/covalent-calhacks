@@ -39,7 +39,7 @@ async def get_large_context_sync_status(request: Request):
 async def run_large_context_sync(request: Request, body: ManualRunRequest | None = None):
     service = _get_service(request)
     try:
-        result = await service.run_now(body.providers if body else None)
+        result = await service.run_now(body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "run": result.model_dump()}

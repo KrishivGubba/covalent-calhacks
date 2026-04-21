@@ -320,13 +320,16 @@ def test_manual_run_accepts_integration_key_alias_for_provider(tmp_path, monkeyp
     app, _, _ = _make_app(tmp_path, monkeypatch, [google_provider])
 
     with TestClient(app) as client:
-        response = client.post("/integrations/large-context-sync/run", json={"providers": ["google"]})
+        response = client.post(
+            "/integrations/large-context-sync/run",
+            json={"mode": "integrations", "integration_ids": ["google"]},
+        )
         assert response.status_code == 200
         payload = response.json()["run"]
         assert payload["providers_succeeded"] == ["google_workspace"]
 
 
-def test_legacy_github_only_request_expands_to_connected_live_providers(tmp_path, monkeypatch):
+def test_all_connected_live_mode_runs_connected_live_providers_only(tmp_path, monkeypatch):
     github_provider = FakeLiveProvider(provider_id="github", integration_provider_key="github")
     google_provider = FakeLiveProvider(
         provider_id="google_workspace",
@@ -340,8 +343,47 @@ def test_legacy_github_only_request_expands_to_connected_live_providers(tmp_path
     app, _, _ = _make_app(tmp_path, monkeypatch, [github_provider, google_provider, disconnected_provider])
 
     with TestClient(app) as client:
+        response = client.post(
+            "/integrations/large-context-sync/run",
+            json={"mode": "all_connected_live"},
+        )
+        assert response.status_code == 200
+        payload = response.json()["run"]
+        assert payload["providers_attempted"] == ["github", "google_workspace"]
+        assert payload["providers_succeeded"] == ["github", "google_workspace"]
+
+
+def test_legacy_github_only_request_remains_backward_compatible(tmp_path, monkeypatch):
+    github_provider = FakeLiveProvider(provider_id="github", integration_provider_key="github")
+    google_provider = FakeLiveProvider(
+        provider_id="google_workspace",
+        integration_provider_key="google",
+    )
+    app, _, _ = _make_app(tmp_path, monkeypatch, [github_provider, google_provider])
+
+    with TestClient(app) as client:
         response = client.post("/integrations/large-context-sync/run", json={"providers": ["github"]})
         assert response.status_code == 200
         payload = response.json()["run"]
         assert payload["providers_attempted"] == ["github", "google_workspace"]
         assert payload["providers_succeeded"] == ["github", "google_workspace"]
+
+
+def test_provider_mode_requires_provider_ids_and_rejects_mixed_selectors(tmp_path, monkeypatch):
+    provider = FakeLiveProvider()
+    app, _, _ = _make_app(tmp_path, monkeypatch, [provider])
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/integrations/large-context-sync/run",
+            json={"mode": "providers", "integration_ids": ["fake_live"]},
+        )
+        assert response.status_code == 400
+        assert "mode='providers'" in response.json()["detail"]
+
+        response = client.post(
+            "/integrations/large-context-sync/run",
+            json={"providers": ["fake_live"], "provider_ids": ["fake_live"]},
+        )
+        assert response.status_code == 400
+        assert "legacy providers or provider_ids/integration_ids" in response.json()["detail"]

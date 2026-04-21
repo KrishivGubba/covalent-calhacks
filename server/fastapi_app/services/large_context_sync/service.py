@@ -10,8 +10,10 @@ from server.fastapi_app.dependencies import get_data_dir, get_encrypted_conn, re
 from .dao import LargeContextSyncDAO
 from .engine import LargeContextSyncEngine
 from .graph_projection import LargeContextGraphProjector
+from .models import ManualRunRequest
 from .providers import build_default_provider_registry
 from .scheduler import LargeContextSyncScheduler
+from .selection import resolve_manual_run_selection
 from .storage import LargeContextSnapshotStorage
 
 log = get_logger()
@@ -46,10 +48,19 @@ class LargeContextSyncService:
     async def stop(self) -> None:
         await self.scheduler.stop()
 
-    async def run_now(self, provider_subset: Optional[list[str]] = None):
+    async def run_now(self, request: ManualRunRequest | None = None):
         import asyncio
 
-        return await asyncio.to_thread(self.engine.sync_once, provider_subset)
+        selection = resolve_manual_run_selection(
+            request,
+            providers=self.providers,
+            integration_dao=self.integration_dao,
+        )
+        log.info(
+            f"Large context manual run selection resolved "
+            f"(mode={selection.selection_mode}, providers={selection.provider_ids or 'all_registry'})"
+        )
+        return await asyncio.to_thread(self.engine.sync_once, selection.provider_ids)
 
     def get_config(self):
         return self.dao.get_config()
