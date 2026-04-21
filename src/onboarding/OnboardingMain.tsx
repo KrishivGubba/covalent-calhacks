@@ -24,6 +24,7 @@ import {
   saveOnboardingProfile,
   type OnboardingProfile,
 } from '../shared/onboardingProfileService';
+import { formatSystemTimestamp } from '../shared/dateTime';
 import './onboarding.css';
 
 type StepId = 'sign-in' | 'permissions' | 'integrations' | 'profile' | 'finish';
@@ -858,7 +859,7 @@ const OnboardingApp: React.FC = () => {
 
         {profileError && <div className="onb-error">{profileError}</div>}
         {profileSavedAt && profileSaved && (
-          <div className="onb-success">Profile saved at {new Date(profileSavedAt).toLocaleString()}.</div>
+          <div className="onb-success">Profile saved at {formatSystemTimestamp(profileSavedAt)}.</div>
         )}
 
         <button className="onb-button primary" disabled={profileSaving} onClick={() => void saveProfile()}>
