@@ -464,26 +464,26 @@ def test_scheduler_resolves_due_enabled_connected_integrations(tmp_path, monkeyp
     past_completed_at = (datetime.now(timezone.utc) - timedelta(minutes=90)).isoformat()
     from server.fastapi_app.dependencies import get_encrypted_conn
 
-    with get_encrypted_conn(str(db_path)) as conn:
-        conn.execute(
-            """
-            UPDATE large_context_integration_controls
-            SET interval_minutes = CASE integration_id
-                WHEN 'github' THEN 30
-                WHEN 'google' THEN 120
-                ELSE interval_minutes
-            END,
-                last_completed_at = CASE integration_id
-                WHEN 'github' THEN ?
-                WHEN 'google' THEN ?
-                ELSE last_completed_at
-            END
-            """,
-            (past_completed_at, future_completed_at),
-        )
-        conn.commit()
-
     with TestClient(app) as client:
+        with get_encrypted_conn(str(db_path)) as conn:
+            conn.execute(
+                """
+                UPDATE large_context_integration_controls
+                SET interval_minutes = CASE integration_id
+                    WHEN 'github' THEN 30
+                    WHEN 'google' THEN 120
+                    ELSE interval_minutes
+                END,
+                    last_completed_at = CASE integration_id
+                    WHEN 'github' THEN ?
+                    WHEN 'google' THEN ?
+                    ELSE last_completed_at
+                END
+                """,
+                (past_completed_at, future_completed_at),
+            )
+            conn.commit()
+
         scheduler = client.app.state.large_context_sync_service.scheduler
         due, next_run_at = scheduler._resolve_due_integrations(datetime.now(timezone.utc))
         assert due == ["github"]
