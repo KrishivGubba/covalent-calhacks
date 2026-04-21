@@ -39,5 +39,5 @@ def compute_next_run_at(
     current_time = now or datetime.now(timezone.utc)
     last_completed = parse_iso_datetime(last_completed_at)
     if last_completed is None:
-        return current_time
+        return current_time + timedelta(minutes=max(interval_minutes, 30))
     return last_completed.astimezone(timezone.utc) + timedelta(minutes=max(interval_minutes, 30))
