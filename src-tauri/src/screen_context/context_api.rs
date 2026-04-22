@@ -222,6 +222,52 @@ impl ContextApiClient {
         }
     }
 
+    /// Drive iteration N+1 of the plan -> approve -> execute -> decide meta-loop.
+    /// Called after a successful execute_action. Backend responds with either a
+    /// fresh plan (status == "success"), a completion signal (status == "complete"),
+    /// or an error (including the "outer_iterations" budget case).
+    pub async fn continue_task(
+        &self,
+        action_uuid: String,
+        action_override: Option<serde_json::Value>,
+        prior_iterations: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/continue_task", self.base_url);
+
+        let mut payload = serde_json::json!({
+            "action_uuid": action_uuid,
+            "prior_iterations": prior_iterations,
+        });
+
+        if let Some(override_val) = action_override {
+            payload["action_override"] = override_val;
+        }
+
+        let response = self.client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .context("Failed to send continue_task request to Flask API")?;
+
+        // Accept 200 (success/complete), 400 (bad request), and 500 (planning/MCP/budget error)
+        // as structured responses — backend always returns {status, ...} JSON for errors.
+        let status = response.status();
+        if status.is_success() || status.as_u16() == 400 || status.as_u16() == 500 {
+            let body = response.text().await.unwrap_or_default();
+            let json_response: serde_json::Value = serde_json::from_str(&body)
+                .context("Failed to parse continue_task response from Flask API")?;
+            Ok(json_response)
+        } else {
+            let error_text = response.text().await.unwrap_or_default();
+            Err(anyhow::anyhow!(
+                "Flask API continue_task returned error status {}: {}",
+                status,
+                error_text
+            ))
+        }
+    }
+
     /// Edit an action via Flask API (optionally persist)
     pub async fn edit_action(
         &self,

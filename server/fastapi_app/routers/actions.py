@@ -40,6 +40,20 @@ class ExecuteActionRequest(BaseModel):
     actions: Optional[List[Dict[str, Any]]] = None
 
 
+class ContinueTaskRequest(BaseModel):
+    """Body for the /continue_task endpoint driving the plan->execute->continue meta-loop.
+
+    `prior_iterations` is the frontend-maintained journal of iterations already
+    approved & executed against this higher-level task. Each element is
+    `{plan: [action...], results: [result...]}`; the backend passes it straight
+    into the planner, which either drafts the next plan or declares the task
+    complete.
+    """
+    action_uuid: str = ""
+    action_override: Optional[Dict[str, Any]] = None
+    prior_iterations: List[Dict[str, Any]] = []
+
+
 class EditActionRequest(BaseModel):
     action_uuid: str = ""
     action_name: Optional[str] = None
@@ -370,6 +384,115 @@ async def execute_action_endpoint(
 
     except Exception as e:
         log.error(f"Error in /execute_action: {e}")
+        import traceback
+        traceback.print_exc()
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        return _error_response(str(e), status_code=500, duration_ms=duration_ms)
+
+
+@router.post("/continue_task")
+async def continue_task_endpoint(
+    body: ContinueTaskRequest,
+    tree=Depends(tree_dependency),
+):
+    """
+    Drive iterations 2..N of the plan -> approve -> execute -> decide meta-loop.
+
+    Call this AFTER a successful /execute_action. The frontend passes the
+    accumulated journal of prior iterations (plan + results) in the body.
+    The planner either:
+      - declares the higher-level task complete (status == "complete"), or
+      - returns a fresh plan for the user to approve (status == "success"),
+        with the same shape as /plan_action, or
+      - returns an error (including the new "outer_iterations" budget error).
+    """
+    start_time = time.perf_counter()
+
+    try:
+        action_text, collected_data = tree.get_action_context(
+            body.action_uuid,
+            action_override=body.action_override,
+        )
+
+        if not action_text:
+            return _error_response("Failed to retrieve action details", status_code=400)
+
+        prior_iterations = body.prior_iterations or []
+        log.info(
+            f"🔁 Continuing task ({len(prior_iterations)} prior iteration(s)): "
+            f"{action_text[:100]}..."
+        )
+
+        ae = get_action_executor()
+        result = await ae.research_and_plan(
+            action_text, collected_data, prior_iterations=prior_iterations,
+        )
+
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        research_info = result.get(
+            "research",
+            {"resources_read": [], "context_gathered": collected_data},
+        )
+        status = result.get("status")
+
+        if status == "complete":
+            return {
+                "status": "complete",
+                "summary": result.get("summary", "") or result.get("overall_reasoning", ""),
+                "research": research_info,
+                "action_text": action_text,
+                "iterations_executed": len(prior_iterations),
+                "duration_ms": duration_ms,
+            }
+
+        if status == "error":
+            extras: Dict[str, Any] = {
+                "research": research_info,
+                "duration_ms": duration_ms,
+            }
+            if result.get("error_reason"):
+                extras["error_reason"] = result["error_reason"]
+            return _error_response(
+                result.get("error") or "Continue task failed",
+                status_code=500,
+                **extras,
+            )
+
+        # status == "success": a fresh plan for the user to approve.
+        proposed_actions = result.get("proposed_actions") or []
+        displays = []
+        for action in proposed_actions:
+            try:
+                display_info = await _resolve_tool_display(action)
+                displays.append({
+                    "step_id": action.get("step_id", len(displays) + 1),
+                    **display_info,
+                })
+            except Exception as display_err:
+                log.warning(f"Display schema resolution failed: {display_err}")
+                displays.append({
+                    "step_id": action.get("step_id", len(displays) + 1),
+                    "display_name": action.get("tool_name", "Unknown").replace("_", " ").title(),
+                    "description": "",
+                    "fields": [],
+                    "has_schema": False,
+                })
+
+        return {
+            "status": "success",
+            "research": research_info,
+            "proposed_actions": proposed_actions,
+            "is_multi_action": result.get("is_multi_action", False),
+            "overall_reasoning": result.get("overall_reasoning", ""),
+            "displays": displays,
+            "action_text": action_text,
+            "context_data": research_info.get("context_gathered", collected_data),
+            "iteration_index": result.get("iteration_index", len(prior_iterations) + 1),
+            "duration_ms": duration_ms,
+        }
+
+    except Exception as e:
+        log.error(f"Error in /continue_task: {e}")
         import traceback
         traceback.print_exc()
         duration_ms = int((time.perf_counter() - start_time) * 1000)

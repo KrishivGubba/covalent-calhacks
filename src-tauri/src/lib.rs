@@ -1136,6 +1136,52 @@ async fn plan_action(
     result
 }
 
+// Continue-task command - drives the plan->execute->continue meta-loop.
+// Called after a successful execute_action. Returns either a fresh plan for
+// approval (status == "success"), a completion signal (status == "complete"),
+// or a structured error (including the "outer_iterations" budget case).
+#[tauri::command]
+async fn continue_task(
+    action_uuid: String,
+    action_override: Option<serde_json::Value>,
+    prior_iterations: Vec<serde_json::Value>,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ContextState>
+) -> Result<serde_json::Value, String> {
+    use screen_context::ContextApiClient;
+
+    println!(
+        "🔁 Continuing task: {} ({} prior iteration(s))",
+        action_uuid,
+        prior_iterations.len()
+    );
+
+    // Keep context collection paused while we're still mid-loop.
+    state.disable();
+    sync_context_collection_ui(&app, &state);
+
+    let api_client = ContextApiClient::new();
+
+    let result = api_client
+        .continue_task(action_uuid, action_override, prior_iterations)
+        .await
+        .map_err(|e| format!("Failed to continue task: {}", e));
+
+    match &result {
+        Ok(response) => {
+            println!("✅ Continue-task response:");
+            println!("{}", serde_json::to_string_pretty(response).unwrap_or_else(|_| format!("{:?}", response)));
+        }
+        Err(e) => {
+            println!("❌ Continue-task failed: {}", e);
+            state.enable_if_not_user_paused();
+            sync_context_collection_ui(&app, &state);
+        }
+    }
+
+    result
+}
+
 // Execute action command - Phase 2 of new action flow
 // Called after user approves/edits the action plan
 // Supports both single-action (legacy) and multi-action (new) formats
@@ -2163,6 +2209,7 @@ pub fn run() {
             toggle_tab_completion,
             plan_action,
             execute_action,
+            continue_task,
             edit_action,
             get_suggested_actions,
             clear_suggested_actions,

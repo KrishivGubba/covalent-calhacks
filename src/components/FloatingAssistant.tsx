@@ -1,6 +1,17 @@
 import React, { useState, memo, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { Action, ActionPlan, ProposedAction, ActionDisplay, ActionResult, ExecutionSummary, ExecutionResponse } from './SuggestedActions';
+import type {
+  Action,
+  ActionPlan,
+  ProposedAction,
+  ActionDisplay,
+  ActionResult,
+  ExecutionSummary,
+  ExecutionResponse,
+  IterationRecord,
+  TaskCompleteResponse,
+  ContinueTaskResponse,
+} from './SuggestedActions';
 import { disableContextCollection, enableContextCollectionIfNotUserPaused } from '../utils/contextControl';
 import { notifyPlanReady, notifyExecutionStatus } from '../utils/actionNotifications';
 
@@ -127,6 +138,10 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
   const [editableParamsMap, setEditableParamsMap] = useState<Record<number, Record<string, unknown>>>({});
   const [executionResults, setExecutionResults] = useState<ActionResult[] | null>(null);
   const [executionSummary, setExecutionSummary] = useState<ExecutionSummary | null>(null);
+  // Meta-loop state (see SuggestedActions for the equivalent comments).
+  const [iterationHistory, setIterationHistory] = useState<IterationRecord[]>([]);
+  const [taskCompleteSummary, setTaskCompleteSummary] = useState<string | null>(null);
+  const [isDecidingNextStep, setIsDecidingNextStep] = useState(false);
   const previousViewStateRef = useRef<ViewState>('collapsed');
 
 
@@ -230,6 +245,9 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
     setEditableParams({});
     setExecutionResults(null);
     setExecutionSummary(null);
+    setIterationHistory([]);
+    setTaskCompleteSummary(null);
+    setIsDecidingNextStep(false);
     await enableContextCollectionIfNotUserPaused();
   };
 
@@ -349,19 +367,81 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
         setExecutionResults(response.results);
         setExecutionSummary(response.summary);
         hasResults = true;
-        
+
+        // Record this iteration in the meta-loop journal.
+        const newIteration: IterationRecord = {
+          plan: actionsToExecute,
+          results: response.results,
+        };
+        const updatedHistory = [...iterationHistory, newIteration];
+        setIterationHistory(updatedHistory);
+
         if (response.summary.failed === 0) {
-          setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
-          // Send notification for successful execution
           await notifyExecutionStatus(planningAction.title, true);
         } else if (response.summary.succeeded === 0) {
           setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'idle' }));
-          // Send notification for failed execution
           await notifyExecutionStatus(planningAction.title, false, 'All actions failed');
+          // Don't invoke continue_task when everything failed — nothing for the
+          // meta-loop to build on. Leave the error state visible.
+          return;
         } else {
-          setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
-          // Send notification for partial success
           await notifyExecutionStatus(planningAction.title, true, `${response.summary.succeeded}/${response.summary.total} succeeded`);
+        }
+
+        // Meta-loop decision point: ask the planner whether the task is done.
+        setIsDecidingNextStep(true);
+        try {
+          console.log(`🔁 Calling continue_task with ${updatedHistory.length} iteration(s) in history`);
+          const contResp = await invoke<ContinueTaskResponse>('continue_task', {
+            actionUuid: planningAction.uuid,
+            actionOverride: null,
+            priorIterations: updatedHistory,
+          });
+          console.log(`🔁 continue_task response:`, contResp);
+
+          if (contResp.status === 'complete') {
+            const completeResp = contResp as TaskCompleteResponse;
+            setTaskCompleteSummary(completeResp.summary || 'Task completed.');
+            setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'done' }));
+          } else if (contResp.status === 'success') {
+            const newPlan = contResp as ActionPlan;
+            setExecutionResults(null);
+            setExecutionSummary(null);
+            setActionPlan(newPlan);
+
+            const newProposed = getProposedActions(newPlan);
+            const newParamsMap: Record<number, Record<string, unknown>> = {};
+            newProposed.forEach(act => {
+              const params: Record<string, unknown> = { ...act.parameters };
+              const display = getDisplayForStep(newPlan, act.step_id);
+              if (display?.fields) {
+                display.fields.forEach(field => {
+                  if (!(field.key in params) && field.value !== undefined && field.value !== null && field.value !== '') {
+                    params[field.key] = field.value;
+                  }
+                });
+              }
+              newParamsMap[act.step_id] = params;
+            });
+            setEditableParamsMap(newParamsMap);
+
+            await notifyPlanReady(planningAction.title, planningAction.uuid, newPlan, newParamsMap);
+            // Keep hasResults=true so the outer finally doesn't tear down the
+            // modal — we need planningAction/actionPlan to render the next
+            // iteration's approval UI.
+          } else {
+            const errResp = contResp as ActionPlan;
+            const errMsg = errResp.error || 'Failed to determine next step.';
+            console.error(`❌ continue_task returned error:`, errMsg);
+            setPlanError(errMsg);
+            setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'idle' }));
+          }
+        } catch (contErr) {
+          console.error(`❌ continue_task call failed:`, contErr);
+          setPlanError(String(contErr));
+          setActionStatuses(prev => ({ ...prev, [planningAction.id]: 'idle' }));
+        } finally {
+          setIsDecidingNextStep(false);
         }
       } else {
         if (response.status === 'success') {
@@ -401,6 +481,9 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
     setEditableParamsMap({});
     setExecutionResults(null);
     setExecutionSummary(null);
+    setIterationHistory([]);
+    setTaskCompleteSummary(null);
+    setIsDecidingNextStep(false);
     await enableContextCollectionIfNotUserPaused();
   };
 
@@ -729,7 +812,8 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
           <div style={styles.planModal}>
             <div style={styles.modalHeader}>
               <h3 style={styles.modalTitle}>
-                {getProposedActions(actionPlan).length > 1 
+                {iterationHistory.length > 0 && `Iteration ${iterationHistory.length + 1} — `}
+                {getProposedActions(actionPlan).length > 1
                   ? `Confirm ${getProposedActions(actionPlan).length} Actions`
                   : (getDisplayForStep(actionPlan, 1)?.display_name || getProposedActions(actionPlan)[0]?.tool_name || 'Confirm Action')
                 }
@@ -946,30 +1030,46 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
               <div style={styles.resultsTitleContainer}>
                 <span style={{
                   ...styles.resultsTitleIndicator,
-                  backgroundColor: executionSummary.failed === 0 
-                    ? 'rgba(34, 197, 94, 0.2)' 
-                    : executionSummary.succeeded === 0 
-                      ? 'rgba(239, 68, 68, 0.2)' 
-                      : 'rgba(251, 191, 36, 0.2)',
-                  borderColor: executionSummary.failed === 0 
-                    ? 'rgba(34, 197, 94, 0.5)' 
-                    : executionSummary.succeeded === 0 
-                      ? 'rgba(239, 68, 68, 0.5)' 
-                      : 'rgba(251, 191, 36, 0.5)',
-                  color: executionSummary.failed === 0 
-                    ? '#22c55e' 
-                    : executionSummary.succeeded === 0 
-                      ? '#ef4444' 
-                      : '#fbbf24',
+                  backgroundColor: taskCompleteSummary
+                    ? 'rgba(197, 244, 103, 0.25)'
+                    : executionSummary.failed === 0
+                      ? 'rgba(34, 197, 94, 0.2)'
+                      : executionSummary.succeeded === 0
+                        ? 'rgba(239, 68, 68, 0.2)'
+                        : 'rgba(251, 191, 36, 0.2)',
+                  borderColor: taskCompleteSummary
+                    ? 'rgba(197, 244, 103, 0.6)'
+                    : executionSummary.failed === 0
+                      ? 'rgba(34, 197, 94, 0.5)'
+                      : executionSummary.succeeded === 0
+                        ? 'rgba(239, 68, 68, 0.5)'
+                        : 'rgba(251, 191, 36, 0.5)',
+                  color: taskCompleteSummary
+                    ? '#C5F467'
+                    : executionSummary.failed === 0
+                      ? '#22c55e'
+                      : executionSummary.succeeded === 0
+                        ? '#ef4444'
+                        : '#fbbf24',
                 }}>
-                  {executionSummary.failed === 0 ? '✓' : executionSummary.succeeded === 0 ? '✕' : '!'}
+                  {taskCompleteSummary ? '★' : executionSummary.failed === 0 ? '✓' : executionSummary.succeeded === 0 ? '✕' : '!'}
                 </span>
                 <h3 style={styles.modalTitle}>
-                  {executionSummary.failed === 0 
-                    ? 'All Actions Completed'
-                    : executionSummary.succeeded === 0
-                      ? 'All Actions Failed'
-                      : `Partial Success (${executionSummary.succeeded}/${executionSummary.total})`
+                  {taskCompleteSummary
+                    ? 'Task Complete'
+                    : iterationHistory.length > 1
+                      ? `Iteration ${iterationHistory.length} — ${
+                          executionSummary.failed === 0
+                            ? 'Completed'
+                            : executionSummary.succeeded === 0
+                              ? 'Failed'
+                              : `${executionSummary.succeeded}/${executionSummary.total}`
+                        }`
+                      : executionSummary.failed === 0
+                        ? 'All Actions Completed'
+                        : executionSummary.succeeded === 0
+                          ? 'All Actions Failed'
+                          : `Partial Success (${executionSummary.succeeded}/${executionSummary.total})`
                   }
                 </h3>
               </div>
@@ -987,8 +1087,68 @@ const FloatingAssistant: React.FC<FloatingAssistantProps> = memo(({
               </button>
             </div>
             <div style={styles.resultsBody}>
+              {taskCompleteSummary && (
+                <div style={{
+                  padding: '0.75rem 1rem',
+                  marginBottom: '0.75rem',
+                  borderRadius: '0.5rem',
+                  border: '1px solid rgba(197, 244, 103, 0.4)',
+                  backgroundColor: 'rgba(197, 244, 103, 0.08)',
+                  color: 'rgba(255, 255, 255, 0.9)',
+                  fontSize: '0.9rem',
+                }}>
+                  <strong style={{ color: '#C5F467' }}>Task complete:</strong> {taskCompleteSummary}
+                </div>
+              )}
+
+              {isDecidingNextStep && (
+                <div style={{
+                  ...styles.summaryBar,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.5rem',
+                }}>
+                  <span style={styles.summaryText}>Deciding next step...</span>
+                </div>
+              )}
+
+              {iterationHistory.length > 1 && (
+                <details style={{
+                  padding: '0.5rem 1rem',
+                  marginBottom: '0.75rem',
+                  borderRadius: '0.5rem',
+                  border: '1px solid rgba(255, 255, 255, 0.12)',
+                  backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                  color: 'rgba(255, 255, 255, 0.85)',
+                }}>
+                  <summary style={{ cursor: 'pointer', fontWeight: 500 }}>
+                    View all {iterationHistory.length} iteration(s)
+                  </summary>
+                  <div style={{ marginTop: '0.5rem' }}>
+                    {iterationHistory.slice(0, -1).map((iter, iterIdx) => {
+                      const iterSucceeded = iter.results.filter(r => r.status === 'success').length;
+                      const iterTotal = iter.results.length;
+                      return (
+                        <div key={iterIdx} style={{ marginBottom: '0.4rem', fontSize: '0.85rem' }}>
+                          <strong>Iteration {iterIdx + 1}:</strong> {iterSucceeded}/{iterTotal} succeeded
+                          <ul style={{ margin: '0.2rem 0 0 1rem', padding: 0 }}>
+                            {iter.results.map((r, i) => (
+                              <li key={i} style={{ color: r.status === 'success' ? '#4ade80' : '#f87171' }}>
+                                {r.tool_name} — {r.status}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </details>
+              )}
+
               <div style={styles.summaryBar}>
                 <span style={styles.summaryText}>
+                  {iterationHistory.length > 1 ? `Iteration ${iterationHistory.length}: ` : ''}
                   {executionSummary.succeeded} succeeded, {executionSummary.failed} failed
                 </span>
               </div>

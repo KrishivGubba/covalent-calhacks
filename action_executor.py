@@ -137,9 +137,20 @@ MAX_RESOURCE_READS = int(os.getenv("RESEARCH_MAX_READS", "12"))
 RESEARCH_WALL_CLOCK_S = float(os.getenv("RESEARCH_WALL_CLOCK_S", "90"))
 MAX_DRAFT_ATTEMPTS = int(os.getenv("RESEARCH_MAX_DRAFTS", "4"))
 
+# Outer plan->execute->continue meta-loop budget. Caps how many iterations of
+# (plan, approve, execute) we'll run against a single higher-level task before
+# forcing termination with an error. Iteration 1 is the initial /plan_action
+# call; iterations 2..N are subsequent /continue_task calls.
+MAX_OUTER_ITERATIONS = int(os.getenv("RESEARCH_MAX_OUTER_ITERATIONS", "5"))
+
 # Scratchpad bounds (keeps the rolling prompt below MAX_CONTEXT_CHARS).
 SCRATCHPAD_PER_READ_CHARS = 6_000
 SCRATCHPAD_TOTAL_CHARS = 30_000
+
+# Prior-iterations bounds — keep the journal compact in the prompt so the
+# planner still has room for resources + scratchpad.
+PRIOR_ITERATION_PER_RESULT_CHARS = 1_500
+PRIOR_ITERATIONS_TOTAL_CHARS = 12_000
 
 # Strict policy: these markers indicate an unfinished / placeholder value and
 # should cause plan validation to fail.
@@ -1046,6 +1057,14 @@ def _parse_research_decision(response_text: str) -> Dict[str, Any]:
           "overall_reasoning": "..."
         }
       }
+    OR:
+      {
+        "thought": "...",
+        "action": {
+          "type": "task_complete",
+          "summary": "..."
+        }
+      }
 
     Returns a dict with at least `{"type": ...}`; on parse failure returns
     `{"type": "invalid", "raw": <text>}` so the loop can re-prompt.
@@ -1099,15 +1118,23 @@ def _parse_research_decision(response_text: str) -> Dict[str, Any]:
             "actions": normalized,
             "overall_reasoning": action.get("overall_reasoning", ""),
         }
+    if atype == "task_complete":
+        return {
+            "type": "task_complete",
+            "thought": thought,
+            "summary": action.get("summary", "") or "",
+        }
 
     return {"type": "invalid", "raw": response_text}
 
 
 def _build_research_system_prompt() -> str:
     """System prompt used for every turn of the iterative research loop."""
-    return """You are an agentic research + action planner.
+    return """You are an agentic research + action planner operating inside a multi-iteration meta-loop.
 
-Each turn you must emit EXACTLY ONE of two actions, as JSON:
+The caller drives an outer loop of: plan -> user approval -> execute -> call you again with the execution results -> decide.
+
+Each turn you must emit EXACTLY ONE of THREE actions, as JSON:
 
 1. Read a read-only resource to gather more context:
    {
@@ -1120,7 +1147,7 @@ Each turn you must emit EXACTLY ONE of two actions, as JSON:
      }
    }
 
-2. Draft the final plan (only when you have EVERYTHING you need):
+2. Draft the next plan (only when you have EVERYTHING you need to execute immediately):
    {
      "thought": "<why the plan is complete>",
      "action": {
@@ -1136,12 +1163,29 @@ Each turn you must emit EXACTLY ONE of two actions, as JSON:
      }
    }
 
+3. Declare the higher-level task complete (only when the PRIOR ITERATIONS' results clearly satisfy the original user action):
+   {
+     "thought": "<why the task is already done>",
+     "action": {
+       "type": "task_complete",
+       "summary": "<1-3 sentence summary of what was accomplished across all iterations>"
+     }
+   }
+
+META-LOOP POLICY (when to draft another plan vs. declare complete):
+- If PRIOR ITERATIONS is empty, you MUST either read a resource or draft a plan. Do NOT emit task_complete on iteration 1.
+- PREFER finishing in ONE iteration. Only decompose into multiple iterations when a later step strictly depends on the runtime output of a prior step AND that dependency cannot be expressed via the {{$N.field}} cross-step variable syntax within a single plan (e.g., you need to SEE content a tool returned before you know which subsequent tool to call).
+- After at least one iteration, if the prior results clearly satisfy the original user action, emit task_complete with a short summary.
+- If prior steps failed in a way that makes further progress impossible, emit task_complete with a summary explaining the partial outcome — do not loop indefinitely on unrecoverable errors.
+- Otherwise, emit draft_plan with the next concrete batch of actions to execute.
+
 STRICT PLAN POLICY:
 - Every REQUIRED parameter MUST be a concrete, final value.
 - Placeholders such as [FILL IN ...], [Content to be generated], TODO, TBD, <placeholder>, REPLACE_ME are FORBIDDEN and will cause the plan to be rejected.
 - If you don't know a value, CALL A READ-ONLY RESOURCE to look it up before drafting the plan.
 - For long-form content (email bodies, doc bodies), write the full final text.
 - Cross-step variables use the syntax {{$N.field}} where N is a strictly-earlier step and `field` is a declared passable output of that step's tool.
+- Cross-step variables reference steps WITHIN the current plan only — they CANNOT reference prior iterations. If you need output from a prior iteration, read it from PRIOR ITERATIONS and hardcode the value.
 
 SEARCH POLICY:
 - For web/fact lookups, PREFER `tavily://search/...` — it returns in <1s and is the default.
@@ -1155,6 +1199,87 @@ EMAIL FORMATTING (when the plan includes send_email / create_draft):
 Output ONLY the JSON object. No prose outside it."""
 
 
+def _format_prior_iterations(prior_iterations: Optional[List[Dict[str, Any]]]) -> str:
+    """
+    Render prior plan+execution iterations as a compact journal for the prompt.
+
+    `prior_iterations` is a list of `{plan: [...], results: [...]}` dicts, where:
+      - `plan` is a list of drafted actions (step_id, tool_name, parameters, ...)
+      - `results` is a list of per-step execution results (step_id, tool_name,
+        status, result | error, ...)
+
+    We truncate each result body and then apply a total character cap so this
+    section cannot crowd out the rest of the prompt.
+    """
+    if not prior_iterations:
+        return "(none — this is iteration 1)"
+
+    rendered_iters: List[str] = []
+    for idx, iteration in enumerate(prior_iterations, start=1):
+        plan = iteration.get("plan") or []
+        results = iteration.get("results") or []
+
+        plan_lines: List[str] = []
+        for step in plan:
+            if not isinstance(step, dict):
+                continue
+            tool_name = step.get("tool_name", "<unknown>")
+            params = step.get("parameters", {})
+            try:
+                params_str = json.dumps(params, default=str)
+            except (TypeError, ValueError):
+                params_str = str(params)
+            if len(params_str) > 400:
+                params_str = params_str[:400] + "...[truncated]"
+            plan_lines.append(
+                f"      step {step.get('step_id', '?')}: {tool_name}({params_str})"
+            )
+        plan_block = "\n".join(plan_lines) if plan_lines else "      (no plan recorded)"
+
+        result_lines: List[str] = []
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            status = r.get("status", "?")
+            tool_name = r.get("tool_name", "<unknown>")
+            step_id = r.get("step_id", "?")
+            if status == "success":
+                body = r.get("result", "")
+                try:
+                    body_str = (
+                        json.dumps(body, default=str)
+                        if not isinstance(body, str) else body
+                    )
+                except (TypeError, ValueError):
+                    body_str = str(body)
+                body_str = _truncate(body_str, PRIOR_ITERATION_PER_RESULT_CHARS)
+                result_lines.append(
+                    f"      step {step_id} {tool_name} -> SUCCESS: {body_str}"
+                )
+            else:
+                err = r.get("error", "unknown error")
+                err_str = _truncate(str(err), PRIOR_ITERATION_PER_RESULT_CHARS)
+                result_lines.append(
+                    f"      step {step_id} {tool_name} -> FAILED: {err_str}"
+                )
+        results_block = "\n".join(result_lines) if result_lines else "      (no results recorded)"
+
+        rendered_iters.append(
+            f"  Iteration {idx}:\n"
+            f"    Plan:\n{plan_block}\n"
+            f"    Results:\n{results_block}"
+        )
+
+    joined = "\n\n".join(rendered_iters)
+    if len(joined) > PRIOR_ITERATIONS_TOTAL_CHARS:
+        # Keep the TAIL (most recent iterations matter most for deciding what to do next).
+        joined = (
+            "... [earlier iterations truncated]\n\n"
+            + joined[-PRIOR_ITERATIONS_TOTAL_CHARS:]
+        )
+    return joined
+
+
 def _build_research_user_prompt(
     action_text: str,
     initial_context: str,
@@ -1165,6 +1290,7 @@ def _build_research_user_prompt(
     reads_budget: int,
     turns_left: int,
     last_issues: List[str],
+    prior_iterations: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Assemble the user-message for one turn of the loop."""
     if len(initial_context) > MAX_CONTEXT_CHARS:
@@ -1183,33 +1309,38 @@ def _build_research_user_prompt(
         "\n".join(f"- {i}" for i in last_issues)
         if last_issues else "(none — last draft either passed or there was none)"
     )
+    prior_block = _format_prior_iterations(prior_iterations)
+    outer_iteration_index = (len(prior_iterations) + 1) if prior_iterations else 1
 
-    return f"""USER ACTION TO ACCOMPLISH:
+    return f"""USER ACTION TO ACCOMPLISH (higher-level goal, same across all iterations):
 {action_text}
 
 EXISTING CONTEXT:
 {initial_context if initial_context else "(none)"}
 
+PRIOR ITERATIONS (plans already approved + executed; you are now on iteration {outer_iteration_index}):
+{prior_block}
+
 READ-ONLY RESOURCES YOU CAN CALL (choose ONE per read_resource turn):
 {resource_block}
 
-WRITE TOOLS YOU CAN PROPOSE IN THE FINAL PLAN:
+WRITE TOOLS YOU CAN PROPOSE IN THE NEXT PLAN:
 {tool_block}
 
-PASSABLE OUTPUTS BY TOOL (for cross-step {{{{$N.field}}}} references):
+PASSABLE OUTPUTS BY TOOL (for cross-step {{{{$N.field}}}} references WITHIN the next plan):
 {passable_info}
 
 BUDGET:
 - Turns remaining (including this one): {turns_left}
 - Resource reads remaining: {reads_budget - reads_done}
 
-SCRATCHPAD (chronological notes from previous turns):
+SCRATCHPAD (chronological notes from previous turns THIS iteration):
 {scratchpad_text}
 
 LATEST VALIDATION ISSUES FROM YOUR PREVIOUS DRAFT (address these before retrying):
 {issues_block}
 
-Now emit ONE JSON object per the system prompt's schema."""
+Now emit ONE JSON object per the system prompt's schema (read_resource, draft_plan, or task_complete)."""
 
 
 async def _llm_research_turn(
@@ -1222,6 +1353,7 @@ async def _llm_research_turn(
     reads_budget: int,
     turns_left: int,
     last_issues: List[str],
+    prior_iterations: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Run a single LLM turn of the research loop and return the parsed decision."""
     system_prompt = _build_research_system_prompt()
@@ -1235,6 +1367,7 @@ async def _llm_research_turn(
         reads_budget=reads_budget,
         turns_left=turns_left,
         last_issues=last_issues,
+        prior_iterations=prior_iterations,
     )
 
     gateway = get_gateway_client()
@@ -2012,22 +2145,56 @@ def _build_research_error_payload(
 async def iterative_research_and_plan(
     action_text: str,
     initial_context: str = "",
+    prior_iterations: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Agentic research + planning loop.
 
     Each turn, the LLM picks ONE of:
       - `read_resource`: read a read-only MCP resource, append to scratchpad.
-      - `draft_plan`: propose a final plan; we validate it programmatically.
+      - `draft_plan`: propose a next plan; we validate it programmatically.
+      - `task_complete`: declare the higher-level task satisfied (only allowed
+        when `prior_iterations` is non-empty).
 
-    The loop exits successfully when a drafted plan passes strict validation
-    (all REQUIRED parameters present, no forbidden placeholders, cross-step
-    refs valid). It exits with an error when ANY of the four budgets is
-    exhausted — we never silently force an incomplete plan.
+    The loop exits successfully (status="success") when a drafted plan passes
+    strict validation (all REQUIRED parameters present, no forbidden
+    placeholders, cross-step refs valid). It exits with status="complete" when
+    the planner declares the task done. It exits with an error when ANY of the
+    four inner budgets is exhausted or the outer-iteration budget has been
+    reached — we never silently force an incomplete plan.
+
+    `prior_iterations` — optional list of prior executed iterations used by the
+    outer plan->execute->continue meta-loop. Each element is
+    `{plan: [action...], results: [result...]}`. Ignored on iteration 1.
     """
+    outer_iteration_index = (len(prior_iterations) + 1) if prior_iterations else 1
     log.info("=" * 40)
-    log.info("🔁 ITERATIVE RESEARCH + PLANNING LOOP")
+    log.info(f"🔁 ITERATIVE RESEARCH + PLANNING LOOP (outer iteration {outer_iteration_index})")
     log.info("=" * 40)
+
+    # Outer-iteration budget: refuse to plan iteration N+1 once we've hit the cap.
+    if prior_iterations and len(prior_iterations) >= MAX_OUTER_ITERATIONS:
+        log.warning(
+            f"⛔ Outer-iteration budget exhausted: {len(prior_iterations)} prior "
+            f"iteration(s) >= MAX_OUTER_ITERATIONS={MAX_OUTER_ITERATIONS}. "
+            "Aborting without producing another plan."
+        )
+        human = (
+            f"Meta-loop exhausted its outer-iteration budget "
+            f"({MAX_OUTER_ITERATIONS} iterations). The task could not be completed "
+            "within the allowed number of plan/execute cycles."
+        )
+        return {
+            "status": "error",
+            "research": {"resources_read": [], "context_gathered": ""},
+            "proposed_actions": None,
+            "is_multi_action": False,
+            "overall_reasoning": "",
+            "error": human,
+            "error_reason": "outer_iterations",
+            "last_draft": None,
+            "last_issues": [],
+        }
 
     try:
         client, tools, resources = await get_mcp_client()
@@ -2097,6 +2264,7 @@ async def iterative_research_and_plan(
                 reads_budget=MAX_RESOURCE_READS,
                 turns_left=turns_left,
                 last_issues=last_issues,
+                prior_iterations=prior_iterations,
             )
         except GatewayError as e:
             log.error(f"❌ Gateway error during research turn: {e}")
@@ -2149,6 +2317,40 @@ async def iterative_research_and_plan(
             reads_done += 1
             continue
 
+        if dtype == "task_complete":
+            # Guardrail: block task_complete on iteration 1 — the planner MUST
+            # produce at least one plan before it can declare the task done.
+            if not prior_iterations:
+                log.warning(
+                    "   ✗ task_complete emitted on iteration 1 (forbidden). "
+                    "Nudging LLM to draft a plan or read a resource instead."
+                )
+                scratchpad.append(
+                    f"TURN {turn} INVALID task_complete — you cannot declare the task "
+                    "complete on iteration 1 (there are no prior iterations whose "
+                    "results could satisfy the goal). Emit read_resource or "
+                    "draft_plan instead."
+                )
+                continue
+
+            summary = decision.get("summary", "") or ""
+            log.info(
+                f"✅ task_complete after {outer_iteration_index - 1} prior iteration(s). "
+                f"Summary: {summary[:200]}"
+            )
+            return {
+                "status": "complete",
+                "research": {
+                    "resources_read": resources_read,
+                    "context_gathered": _scratchpad_as_text(scratchpad),
+                },
+                "proposed_actions": None,
+                "is_multi_action": False,
+                "overall_reasoning": summary,
+                "summary": summary,
+                "error": None,
+            }
+
         if dtype == "draft_plan":
             actions = decision.get("actions") or []
             last_draft = {
@@ -2161,7 +2363,7 @@ async def iterative_research_and_plan(
             if not last_issues:
                 log.info(
                     f"✅ Plan validated after {turn} turn(s), {reads_done} read(s). "
-                    f"{len(actions)} action(s) proposed."
+                    f"{len(actions)} action(s) proposed (outer iteration {outer_iteration_index})."
                 )
                 return {
                     "status": "success",
@@ -2172,6 +2374,7 @@ async def iterative_research_and_plan(
                     "proposed_actions": actions,
                     "is_multi_action": len(actions) > 1,
                     "overall_reasoning": decision.get("overall_reasoning", ""),
+                    "iteration_index": outer_iteration_index,
                     "error": None,
                 }
 
@@ -2197,7 +2400,7 @@ async def iterative_research_and_plan(
 
         # Invalid / unparseable output — tell the LLM to retry on the next turn.
         log.warning(
-            "   ✗ Invalid turn output (not a valid read_resource/draft_plan JSON); "
+            "   ✗ Invalid turn output (not a valid read_resource/draft_plan/task_complete JSON); "
             "nudging LLM to retry."
         )
         raw = (decision.get("raw") or "")[:500]
@@ -2214,7 +2417,11 @@ async def iterative_research_and_plan(
     )
 
 
-async def research_and_plan(action_text: str, initial_context: str = "") -> Dict[str, Any]:
+async def research_and_plan(
+    action_text: str,
+    initial_context: str = "",
+    prior_iterations: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """
     Combined research + planning flow.
 
@@ -2222,9 +2429,13 @@ async def research_and_plan(action_text: str, initial_context: str = "") -> Dict
     contract consumed by `server/fastapi_app/routers/actions.py` and
     `server/app.py`.
 
+    `prior_iterations` lets the outer plan->execute->continue meta-loop feed
+    the journal of previously-executed plans back into the planner so it can
+    either draft the next step or declare the task complete.
+
     Returns:
         {
-            "status": "success" | "error",
+            "status": "success" | "complete" | "error",
             "research": {
                 "resources_read": list,
                 "context_gathered": str
@@ -2239,17 +2450,26 @@ async def research_and_plan(action_text: str, initial_context: str = "") -> Dict
             ] | None,
             "is_multi_action": bool,
             "overall_reasoning": str,
+            # Present when status == "success":
+            "iteration_index": int,
+            # Present when status == "complete":
+            "summary": str,
             "error": str | None,
             # Present on loop-exhaustion errors:
-            "error_reason": "turns" | "reads" | "wall_clock" | "drafts",
+            "error_reason": "turns" | "reads" | "wall_clock" | "drafts" | "outer_iterations",
             "last_draft": {...} | None,
             "last_issues": list[str] | None,
         }
     """
-    result = await iterative_research_and_plan(action_text, initial_context)
-    if result.get("status") == "success":
+    result = await iterative_research_and_plan(
+        action_text, initial_context, prior_iterations=prior_iterations,
+    )
+    status = result.get("status")
+    if status == "success":
         num_actions = len(result.get("proposed_actions") or [])
         log.info(f"✅ Planning complete: {num_actions} action(s) proposed")
+    elif status == "complete":
+        log.info(f"🏁 Task declared complete: {result.get('summary', '')[:200]}")
     return result
 
 
