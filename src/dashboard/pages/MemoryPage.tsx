@@ -6,8 +6,6 @@ import {
   forceManyBody,
   forceRadial,
   forceSimulation,
-  type SimulationLinkDatum,
-  type SimulationNodeDatum,
 } from 'd3-force';
 
 const FLASK_PORT = import.meta.env.VITE_FLASK_PORT || '15001';
@@ -46,15 +44,21 @@ interface GraphResponse {
   };
 }
 
-interface ForceNode extends GraphNode, SimulationNodeDatum {
+interface ForceNode extends GraphNode {
   radius: number;
   topLevelId: string;
   seedAngle: number;
   fill: string;
   stroke: string;
+  x?: number;
+  y?: number;
+  vx?: number;
+  vy?: number;
+  fx?: number | null;
+  fy?: number | null;
 }
 
-interface ForceLink extends SimulationLinkDatum<ForceNode> {
+interface ForceLink {
   source: string | ForceNode;
   target: string | ForceNode;
 }
@@ -380,23 +384,23 @@ function computeLayout(nodes: GraphNode[], edges: GraphEdge[], containerWidth: n
     .force('center', forceCenter(0, 0))
     .force(
       'link',
-      forceLink<ForceNode, ForceLink>(simLinks)
-        .id((node) => node.id)
-        .distance((link) => {
+      forceLink(simLinks)
+        .id((node: ForceNode) => node.id)
+        .distance((link: ForceLink) => {
           const source = typeof link.source === 'string' ? nodeMap.get(link.source) : link.source;
           const target = typeof link.target === 'string' ? nodeMap.get(link.target) : link.target;
           const targetDepth = target?.depth ?? 0;
           const sourceChildren = source?.child_count ?? 0;
           return 80 + targetDepth * 14 + Math.min(sourceChildren, 5) * 6;
         })
-        .strength((link) => {
+        .strength((link: ForceLink) => {
           const source = typeof link.source === 'string' ? nodeMap.get(link.source) : link.source;
           return source?.depth === 0 ? 0.42 : 0.32;
         }),
     )
     .force(
       'charge',
-      forceManyBody<ForceNode>().strength((node) => {
+      forceManyBody().strength((node: ForceNode) => {
         if (node.id === rootId) return -1200;
         if (node.depth === 1) return -460;
         return -210;
@@ -404,11 +408,11 @@ function computeLayout(nodes: GraphNode[], edges: GraphEdge[], containerWidth: n
     )
     .force(
       'collide',
-      forceCollide<ForceNode>().radius((node) => node.radius + (node.depth <= 1 ? 26 : 16)).strength(0.92),
+      forceCollide().radius((node: ForceNode) => node.radius + (node.depth <= 1 ? 26 : 16)).strength(0.92),
     )
     .force(
       'radial',
-      forceRadial<ForceNode>(radialDistance, 0, 0).strength((node) => {
+      forceRadial(radialDistance, 0, 0).strength((node: ForceNode) => {
         if (node.id === rootId) return 1;
         if (node.depth === 1) return 0.24;
         return 0.08;
