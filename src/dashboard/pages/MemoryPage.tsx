@@ -616,6 +616,7 @@ const GraphVisualization: React.FC<{
     offsetX: 0,
     offsetY: 0,
   });
+  const rootId = nodes.find((entry) => entry.parent_id === null)?.id || null;
 
   useEffect(() => {
     if (!containerRef.current) return undefined;
@@ -779,7 +780,7 @@ const GraphVisualization: React.FC<{
                 onMouseLeave={() => setHoveredNode(null)}
                 style={{ cursor: 'pointer' }}
               >
-                {node.id === nodes.find((entry) => entry.parent_id === null)?.id && (
+                {node.id === rootId && (
                   <circle
                     cx={node.x}
                     cy={node.y}
