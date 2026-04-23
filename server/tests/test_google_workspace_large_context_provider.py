@@ -42,7 +42,7 @@ def test_google_workspace_provider_builds_entities_links_and_heuristics(monkeypa
 
         def list_messages(self, query=None, max_results=10, label_ids=None):  # noqa: ARG002
             self.__class__.queries.append(query or "")
-            if query == "newer_than:14d":
+            if query and query.startswith("after:"):
                 return [
                     {
                         "id": "msg-thread-1-old",
@@ -233,7 +233,7 @@ def test_google_workspace_provider_builds_entities_links_and_heuristics(monkeypa
                 {"id": "eng", "summary": "Engineering", "primary": False},
             ]
 
-        def list_events(self, time_min=None, time_max=None, max_results=250, show_deleted=False, calendar_id="primary"):  # noqa: ARG002
+        def list_events(self, time_min=None, time_max=None, max_results=250, show_deleted=False, calendar_id="primary", updated_min=None):  # noqa: ARG002
             if calendar_id == "primary":
                 return [
                     {
@@ -287,7 +287,11 @@ def test_google_workspace_provider_builds_entities_links_and_heuristics(monkeypa
 
     fetch_result = provider.fetch_delta(None, since_marker)
     assert fetch_result.next_cursor["bootstrap_remaining"] == 2
+    assert fetch_result.next_cursor["gmail_after_ts"]
+    assert fetch_result.next_cursor["drive_after_ts"]
+    assert fetch_result.next_cursor["calendar_after_ts"]
     assert "newer_than:90d" in FakeGmailService.queries
+    assert any(query.startswith("after:") for query in FakeGmailService.queries)
     assert any("mimeType = 'application/vnd.google-apps.document'" in query for query in FakeDriveService.queries)
 
     snapshot = provider.build_snapshot(fetch_result)
@@ -350,7 +354,7 @@ def test_google_workspace_provider_bootstrap_counts_down(monkeypatch):
         def list_calendars(self):
             return []
 
-        def list_events(self, time_min=None, time_max=None, max_results=250, show_deleted=False, calendar_id="primary"):  # noqa: ARG002
+        def list_events(self, time_min=None, time_max=None, max_results=250, show_deleted=False, calendar_id="primary", updated_min=None):  # noqa: ARG002
             return []
 
     monkeypatch.setattr(google_workspace, "GmailService", FakeGmailService)
@@ -366,4 +370,5 @@ def test_google_workspace_provider_bootstrap_counts_down(monkeypatch):
         "2026-04-17T00:00:00+00:00",
     )
     assert fetch_result.next_cursor["bootstrap_remaining"] == 0
-    assert FakeGmailService.queries == ["newer_than:14d"]
+    assert len(FakeGmailService.queries) == 1
+    assert FakeGmailService.queries[0].startswith("after:")
