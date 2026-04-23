@@ -2,7 +2,7 @@
 Tab completion endpoints.
 """
 import json
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -83,6 +83,7 @@ def generate_tab_prediction(text_buffer: str, context_data: list) -> str:
 
 @router.post("/tab_predict")
 async def tab_predict(
+    request: Request,
     body: TabPredictRequest,
     tree=Depends(tree_dependency),
 ):
@@ -99,11 +100,23 @@ async def tab_predict(
 
         app_name = body.app_name or "Unknown"
         log.debug(f"Tab predict request: app={app_name}, buffer={text_buffer[:50]}...")
+        large_context_service = getattr(request.app.state, "large_context_sync_service", None)
 
         relevant_node = tree.traverse(f"App: {app_name} | Context: Typing '{text_buffer}'")
 
         context_data = []
         suggested_actions = []
+        if large_context_service is not None:
+            active_context = large_context_service.get_active_context(
+                f"{app_name} {text_buffer}",
+                limit=5,
+            )
+            for item in active_context:
+                context_data.append(
+                    f"{item['title']} | {item.get('project') or ''} | "
+                    f"{item.get('summary') or ''} | "
+                    f"why active: {', '.join(item.get('why_active') or [])}"
+                )
         if relevant_node:
             metadata_chain = tree.get_parent_metadata(relevant_node)
             context_data.append(metadata_chain)

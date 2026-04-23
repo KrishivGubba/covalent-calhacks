@@ -40,7 +40,7 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
     BOOTSTRAP_DRIVE_DAYS = 90
     BOOTSTRAP_DRIVE_MAX = 220
     ACTIVE_CALENDAR_PAST_DAYS = 7
-    ACTIVE_CALENDAR_FUTURE_DAYS = 30
+    ACTIVE_CALENDAR_FUTURE_DAYS = 14
     ACTIVE_CALENDAR_MAX = 30
     BOOTSTRAP_CALENDAR_PAST_DAYS = 30
     BOOTSTRAP_CALENDAR_FUTURE_DAYS = 60
@@ -48,6 +48,9 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
     MAX_CALENDARS = 8
     MAX_DRIVE_CONTENT_CHARS = 6000
     MAX_EMAIL_BODY_CHARS = 6000
+    OVERLAP_MINUTES = 15
+    STALE_CURSOR_HOURS = 48
+    ANOMALY_BACKFILL_HOURS = 72
     GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
     GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder"
     TEXT_LIKE_MIME_TYPES = {
@@ -77,16 +80,19 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
         since = (cursor or {}).get("since") or since_ts
         include_bootstrap, next_bootstrap_remaining = self._bootstrap_state(cursor)
         now = datetime.now(timezone.utc)
+        strategy = self._resolve_fetch_strategy(cursor, since_ts, now=now)
         folder_cache: dict[str, dict[str, Any]] = {}
         account_email = metadata.get("email")
 
         mailbox = self._fetch_mailbox_threads(
             gmail,
+            after_ts=strategy["gmail_after_ts"],
             include_bootstrap=include_bootstrap,
         )
         drive_files = self._fetch_drive_files(
             drive,
             now=now,
+            modified_since=strategy["drive_after_ts"],
             include_bootstrap=include_bootstrap,
             folder_cache=folder_cache,
         )
@@ -95,8 +101,44 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
             calendar,
             calendars,
             now=now,
+            updated_after_ts=strategy["calendar_after_ts"],
             include_bootstrap=include_bootstrap,
         )
+        candidate_count = (
+            len(mailbox)
+            + len(drive_files)
+            + sum(len(events) for events in events_by_calendar.values())
+        )
+        if (
+            self._is_volume_anomaly(cursor, candidate_count)
+            and not include_bootstrap
+            and not strategy["anomaly_backfill_used"]
+        ):
+            strategy = self._resolve_fetch_strategy(cursor, since_ts, now=now, force_backfill=True)
+            mailbox = self._fetch_mailbox_threads(
+                gmail,
+                after_ts=strategy["gmail_after_ts"],
+                include_bootstrap=False,
+            )
+            drive_files = self._fetch_drive_files(
+                drive,
+                now=now,
+                modified_since=strategy["drive_after_ts"],
+                include_bootstrap=False,
+                folder_cache=folder_cache,
+            )
+            events_by_calendar = self._fetch_calendar_events(
+                calendar,
+                calendars,
+                now=now,
+                updated_after_ts=strategy["calendar_after_ts"],
+                include_bootstrap=False,
+            )
+            candidate_count = (
+                len(mailbox)
+                + len(drive_files)
+                + sum(len(events) for events in events_by_calendar.values())
+            )
         return ProviderFetchResult(
             records=[
                 {
@@ -110,12 +152,19 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
             ],
             next_cursor={
                 "since": now.isoformat(),
+                "gmail_after_ts": now.isoformat(),
+                "drive_after_ts": now.isoformat(),
+                "calendar_after_ts": now.isoformat(),
                 "bootstrap_remaining": next_bootstrap_remaining,
+                "last_success_at": now.isoformat(),
+                "recent_candidate_counts": self._next_candidate_counts(cursor, candidate_count),
             },
             metadata={
-                "backfill_since": since,
+                "backfill_since": strategy["gmail_after_ts"].isoformat(),
                 "account_email": account_email,
                 "bootstrap_included": include_bootstrap,
+                "anomaly_backfill_used": strategy["anomaly_backfill_used"],
+                "fetched_candidates": candidate_count,
             },
         )
 
@@ -199,6 +248,7 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
                         "thread_id": thread_id,
                         "subject": latest.get("subject") or "",
                         "participants": participants,
+                        "account_email": account_email or "",
                         "last_message_at": updated_at,
                         "labels": latest.get("labelIds", []),
                         "linked_entities": related_entities,
@@ -372,6 +422,7 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
             generated_at=datetime.now(timezone.utc).isoformat(),
             cursor=fetch_result.next_cursor,
             metadata=fetch_result.metadata,
+            is_incremental=True,
             containers=list(containers_by_id.values()),
             entities=entities,
             relevant_people=sorted(people_map.values(), key=lambda person: person.display_name.lower()),
@@ -379,6 +430,46 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
             open_questions=list(dict.fromkeys(item for item in open_questions if item)),
             watch_items=list(dict.fromkeys(item for item in watch_items if item)),
         )
+
+    def _resolve_fetch_strategy(
+        self,
+        cursor: Optional[dict],
+        since_ts: str,
+        *,
+        now: datetime,
+        force_backfill: bool = False,
+    ) -> dict[str, Any]:
+        fallback = self._parse_datetime(since_ts) or (now - timedelta(days=self.ACTIVE_GMAIL_DAYS))
+        last_success_at = self._parse_datetime((cursor or {}).get("last_success_at"))
+        stale = bool(last_success_at and now - last_success_at > timedelta(hours=self.STALE_CURSOR_HOURS))
+        invalid = cursor is None
+        gmail_after = self._parse_datetime((cursor or {}).get("gmail_after_ts")) if cursor else None
+        drive_after = self._parse_datetime((cursor or {}).get("drive_after_ts")) if cursor else None
+        calendar_after = self._parse_datetime((cursor or {}).get("calendar_after_ts")) if cursor else None
+
+        if cursor and (gmail_after is None or drive_after is None or calendar_after is None):
+            legacy_since = self._parse_datetime((cursor or {}).get("since"))
+            gmail_after = gmail_after or legacy_since
+            drive_after = drive_after or legacy_since
+            calendar_after = calendar_after or legacy_since
+            invalid = legacy_since is None
+
+        if force_backfill or stale or invalid:
+            backfill_start = now - timedelta(hours=self.ANOMALY_BACKFILL_HOURS)
+            return {
+                "gmail_after_ts": backfill_start,
+                "drive_after_ts": backfill_start,
+                "calendar_after_ts": backfill_start,
+                "anomaly_backfill_used": True,
+            }
+
+        overlap = timedelta(minutes=self.OVERLAP_MINUTES)
+        return {
+            "gmail_after_ts": max((gmail_after or fallback) - overlap, fallback - overlap),
+            "drive_after_ts": max((drive_after or fallback) - overlap, fallback - overlap),
+            "calendar_after_ts": max((calendar_after or fallback) - overlap, fallback - overlap),
+            "anomaly_backfill_used": False,
+        }
 
     def _bootstrap_state(self, cursor: Optional[dict]) -> tuple[bool, int]:
         if not cursor or "bootstrap_remaining" not in cursor:
@@ -389,10 +480,17 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
             return True, 2
         return remaining > 0, max(remaining - 1, 0)
 
-    def _fetch_mailbox_threads(self, gmail: GmailService, *, include_bootstrap: bool) -> list[dict[str, Any]]:
+    def _fetch_mailbox_threads(
+        self,
+        gmail: GmailService,
+        *,
+        after_ts: datetime,
+        include_bootstrap: bool,
+    ) -> list[dict[str, Any]]:
         messages_by_id: dict[str, dict[str, Any]] = {}
 
-        for message in gmail.list_messages(query=f"newer_than:{self.ACTIVE_GMAIL_DAYS}d", max_results=self.ACTIVE_GMAIL_MAX):
+        active_query = f"after:{int(after_ts.timestamp())}"
+        for message in gmail.list_messages(query=active_query, max_results=self.ACTIVE_GMAIL_MAX):
             if message.get("id"):
                 messages_by_id[message["id"]] = message
 
@@ -446,10 +544,11 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
         drive: DriveService,
         *,
         now: datetime,
+        modified_since: datetime,
         include_bootstrap: bool,
         folder_cache: dict[str, dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        active_since = (now - timedelta(days=self.ACTIVE_DRIVE_DAYS)).isoformat()
+        active_since = modified_since.isoformat()
         bootstrap_since = (now - timedelta(days=self.BOOTSTRAP_DRIVE_DAYS)).isoformat()
         files_by_id: dict[str, dict[str, Any]] = {}
 
@@ -511,10 +610,11 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
         calendars: list[dict[str, Any]],
         *,
         now: datetime,
+        updated_after_ts: datetime,
         include_bootstrap: bool,
     ) -> dict[str, list[dict[str, Any]]]:
         results: dict[str, list[dict[str, Any]]] = {}
-        active_min = (now - timedelta(days=self.ACTIVE_CALENDAR_PAST_DAYS)).isoformat()
+        active_min = (now - timedelta(days=3)).isoformat()
         active_max = (now + timedelta(days=self.ACTIVE_CALENDAR_FUTURE_DAYS)).isoformat()
         bootstrap_min = (now - timedelta(days=self.BOOTSTRAP_CALENDAR_PAST_DAYS)).isoformat()
         bootstrap_max = (now + timedelta(days=self.BOOTSTRAP_CALENDAR_FUTURE_DAYS)).isoformat()
@@ -527,6 +627,7 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
                 time_min=active_min,
                 time_max=active_max,
                 max_results=self.ACTIVE_CALENDAR_MAX,
+                updated_min=updated_after_ts.isoformat(),
             ):
                 if event.get("id"):
                     events_by_id[event["id"]] = event
@@ -546,6 +647,30 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
             )
 
         return results
+
+    def _is_volume_anomaly(self, cursor: Optional[dict], candidate_count: int) -> bool:
+        if not cursor:
+            return False
+        raw_counts = (cursor or {}).get("recent_candidate_counts") or []
+        counts = sorted(
+            int(value)
+            for value in raw_counts
+            if isinstance(value, (int, float, str)) and str(value).isdigit()
+        )
+        if len(counts) < 3:
+            return False
+        median = counts[len(counts) // 2]
+        return median > 0 and candidate_count > (median * 3)
+
+    def _next_candidate_counts(self, cursor: Optional[dict], candidate_count: int) -> list[int]:
+        raw_counts = (cursor or {}).get("recent_candidate_counts") or []
+        counts = [
+            int(value)
+            for value in raw_counts
+            if isinstance(value, (int, float, str)) and str(value).isdigit()
+        ]
+        counts.append(candidate_count)
+        return counts[-5:]
 
     def _select_calendars(self, calendars: list[dict[str, Any]]) -> list[dict[str, Any]]:
         primary = [calendar for calendar in calendars if calendar.get("primary")]

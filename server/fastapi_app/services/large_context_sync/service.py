@@ -19,6 +19,7 @@ from .models import (
     ManualRunRequest,
 )
 from .providers import build_default_provider_registry
+from .retrieval import ActiveContextRetriever
 from .scheduler import LargeContextSyncScheduler
 from .selection import resolve_manual_run_selection
 from .storage import LargeContextSnapshotStorage
@@ -38,6 +39,7 @@ class LargeContextSyncService:
         self.storage = LargeContextSnapshotStorage(default_markdown_root)
         self.dao.initialize(default_markdown_root, [provider.registry_info() for provider in self.providers])
         self.projector = LargeContextGraphProjector(db_path, refresh_tree_callback=refresh_tree_from_db)
+        self.retriever = ActiveContextRetriever(self.dao)
         self.engine = LargeContextSyncEngine(
             dao=self.dao,
             integration_dao=self.integration_dao,
@@ -161,6 +163,23 @@ class LargeContextSyncService:
             )
 
         return statuses
+
+    def get_active_context(self, query_text: str, limit: int = 10) -> list[dict]:
+        return self.retriever.get_active_context(query_text, limit=limit)
+
+    def export_provider_debug_snapshot(self, provider_id: str) -> str:
+        provider_lookup = {provider.provider_id: provider for provider in self.providers}
+        provider = provider_lookup.get(provider_id)
+        if provider is None:
+            raise ValueError(f"Unknown large-context provider: {provider_id}")
+        entity_states = self.dao.get_entity_states_for_provider(provider_id).values()
+        return self.storage.write_entity_state_snapshot(
+            provider_display_name=provider.display_name,
+            provider_id=provider.provider_id,
+            file_name=provider.file_name,
+            entity_states=entity_states,
+            markdown_root=self.get_config().markdown_root,
+        )
 
     def _integration_display_name(self, integration_id: str, providers: list) -> str:
         try:

@@ -173,8 +173,61 @@ def create_schema(conn: sqlite3.Connection) -> None:
             providers_attempted TEXT,
             providers_succeeded TEXT,
             providers_failed TEXT,
-            error_json TEXT
+            error_json TEXT,
+            metrics_json TEXT
         );
+        """
+    )
+
+    try:
+        conn.execute("ALTER TABLE large_context_sync_runs ADD COLUMN metrics_json TEXT")
+    except Exception:
+        pass
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS large_context_entity_state (
+            provider_id TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            container_id TEXT,
+            title TEXT,
+            source_url TEXT,
+            source_updated_at TEXT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            last_changed_at TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            normalized_json TEXT NOT NULL,
+            durable_node_uuid TEXT,
+            active_node_uuid TEXT,
+            is_active INTEGER NOT NULL DEFAULT 0,
+            active_score REAL NOT NULL DEFAULT 0,
+            active_reasons_json TEXT NOT NULL DEFAULT '[]',
+            last_active_at TEXT,
+            PRIMARY KEY (provider_id, entity_type, external_id)
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_large_context_entity_seen
+        ON large_context_entity_state (provider_id, last_seen_at);
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_large_context_entity_active
+        ON large_context_entity_state (provider_id, is_active, active_score);
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_large_context_entity_updated
+        ON large_context_entity_state (provider_id, source_updated_at);
         """
     )
 

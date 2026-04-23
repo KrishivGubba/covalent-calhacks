@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
-from .models import ProviderSnapshot, SnapshotCrossLink, SnapshotEntity, SnapshotPerson
+from .models import LargeContextEntityState, ProviderSnapshot, SnapshotCrossLink, SnapshotEntity, SnapshotPerson
 
 
 class LargeContextSnapshotStorage:
@@ -29,6 +29,27 @@ class LargeContextSnapshotStorage:
         os.replace(temp_path, path)
         return str(path)
 
+    def write_entity_state_snapshot(
+        self,
+        *,
+        provider_display_name: str,
+        provider_id: str,
+        file_name: str,
+        entity_states: Iterable[LargeContextEntityState],
+        markdown_root: Optional[str] = None,
+    ) -> str:
+        root = self.resolve_root(markdown_root)
+        path = Path(root) / file_name
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        content = self.render_entity_state_snapshot(
+            provider_display_name=provider_display_name,
+            provider_id=provider_id,
+            entity_states=entity_states,
+        )
+        temp_path.write_text(content, encoding="utf-8")
+        os.replace(temp_path, path)
+        return str(path)
+
     def render_snapshot(self, snapshot: ProviderSnapshot) -> str:
         lines: list[str] = [f"# {snapshot.provider_display_name} Context Snapshot", ""]
         lines.extend(self._render_mapping_section("Sync Metadata", {
@@ -45,6 +66,41 @@ class LargeContextSnapshotStorage:
             *snapshot.open_questions,
             *snapshot.watch_items,
         ]))
+        return "\n".join(lines).rstrip() + "\n"
+
+    def render_entity_state_snapshot(
+        self,
+        *,
+        provider_display_name: str,
+        provider_id: str,
+        entity_states: Iterable[LargeContextEntityState],
+    ) -> str:
+        states = list(entity_states)
+        lines: list[str] = [f"# {provider_display_name} Debug Snapshot", ""]
+        lines.extend(self._render_mapping_section("Sync Metadata", {
+            "provider_id": provider_id,
+            "entities": len(states),
+            "rendered_from": "large_context_entity_state",
+        }))
+        lines.append("## Active Entities")
+        if not states:
+            lines.extend(["- none", ""])
+            return "\n".join(lines).rstrip() + "\n"
+        for state in states:
+            lines.append(f"### {state.entity_type}: {state.title or state.external_id}")
+            lines.extend(self._render_mapping({
+                "external_id": state.external_id,
+                "container_id": state.container_id,
+                "source_url": state.source_url,
+                "source_updated_at": state.source_updated_at,
+                "last_seen_at": state.last_seen_at,
+                "last_changed_at": state.last_changed_at,
+                "is_active": state.is_active,
+                "active_score": state.active_score,
+                "active_reasons": state.active_reasons,
+                "normalized": state.normalized_json,
+            }))
+            lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
     def _render_containers(self, snapshot: ProviderSnapshot) -> list[str]:

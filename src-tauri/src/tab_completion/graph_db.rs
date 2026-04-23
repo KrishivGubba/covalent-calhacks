@@ -84,6 +84,43 @@ impl GraphDatabase {
         self.search_nodes(&query, limit)
     }
 
+    /// Get currently promoted active-context nodes.
+    pub fn get_active_nodes(&self, limit: usize) -> Result<Vec<NodeData>> {
+        let conn = self.conn.lock().unwrap();
+
+        let sql = r#"
+            SELECT DISTINCT
+                n.UUID,
+                n.Metadata,
+                n.parent_uuid
+            FROM node_table n
+            JOIN data_table d ON n.UUID = d.Node_UUID
+            WHERE d.category = 'active_context_identity'
+            ORDER BY n.last_modified DESC
+            LIMIT ?1
+        "#;
+
+        let mut stmt = conn.prepare(sql)?;
+        let nodes = stmt.query_map(params![limit], |row| {
+            Ok(NodeData {
+                node_uuid: row.get(0)?,
+                metadata: row.get(1)?,
+                parent_uuid: row.get(2)?,
+                data_entries: vec![],
+            })
+        })?;
+
+        let mut results = Vec::new();
+        for node_result in nodes {
+            if let Ok(mut node) = node_result {
+                node.data_entries = self.get_data_entries_internal(&conn, &node.node_uuid)?;
+                results.push(node);
+            }
+        }
+
+        Ok(results)
+    }
+
     /// Get all recent nodes (for when no specific context found)
     pub fn get_recent_nodes(&self, limit: usize) -> Result<Vec<NodeData>> {
         let conn = self.conn.lock().unwrap();

@@ -1,6 +1,6 @@
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -211,29 +211,76 @@ impl MultiTierCache {
             // Query graph for relevant context
             let query = format!("App: {} Activity: {}", app_name, activity_id);
 
-            match graph_db.search_nodes(&query, 5) {
-                Ok(nodes) if !nodes.is_empty() => {
-                    let activity_type = ActivityType::from_app(app_name);
+            let mut nodes = graph_db.get_active_nodes(5).unwrap_or_default();
+            let mut seen_ids: HashSet<String> = nodes.iter().map(|node| node.node_uuid.clone()).collect();
 
-                    // Extract learned patterns from graph nodes
-                    let learned_patterns: Vec<Pattern> = Vec::new();
+            match graph_db.search_nodes(&query, 5) {
+                Ok(search_nodes) => {
+                    for node in search_nodes {
+                        if seen_ids.insert(node.node_uuid.clone()) {
+                            nodes.push(node);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Graph query error: {}", e);
+                }
+            }
+
+            if !nodes.is_empty() {
+                let activity_type = ActivityType::from_app(app_name);
+
+                // Extract learned patterns from graph nodes
+                let learned_patterns: Vec<Pattern> = Vec::new();
+                let mut recent_actions = Vec::new();
+
+                for node in &nodes {
+                    // Use data entries as patterns
+                    for data_entry in &node.data_entries {
+                        if let Some(ref key) = data_entry.key {
+                            recent_actions.push(key.clone());
+                        }
+
+                        // Try to extract patterns from info
+                        if data_entry.info.len() < 200 {
+                            recent_actions.push(data_entry.info.clone());
+                        }
+                    }
+                }
+
+                recent_actions.truncate(10);
+
+                return Some(CachedContext {
+                    app_context: AppContext {
+                        name: app_name.to_string(),
+                        bundle_id: String::new(),
+                        window_title: None,
+                    },
+                    activity_type,
+                    learned_patterns,
+                    recent_actions,
+                    screen_context: None,
+                    timestamp: current_timestamp(),
+                    ttl: 300,
+                    context_chain: None,
+                });
+            }
+
+            // No nodes found, try getting recent nodes
+            if let Ok(recent_nodes) = graph_db.get_recent_nodes(3) {
+                if !recent_nodes.is_empty() {
+                    let activity_type = ActivityType::from_app(app_name);
                     let mut recent_actions = Vec::new();
 
-                    for node in &nodes {
-                        // Use data entries as patterns
+                    for node in &recent_nodes {
                         for data_entry in &node.data_entries {
                             if let Some(ref key) = data_entry.key {
                                 recent_actions.push(key.clone());
                             }
-
-                            // Try to extract patterns from info
-                            if data_entry.info.len() < 200 {
-                                recent_actions.push(data_entry.info.clone());
-                            }
                         }
                     }
 
-                    recent_actions.truncate(10);
+                    recent_actions.truncate(5);
 
                     return Some(CachedContext {
                         app_context: AppContext {
@@ -242,50 +289,13 @@ impl MultiTierCache {
                             window_title: None,
                         },
                         activity_type,
-                        learned_patterns,
+                        learned_patterns: vec![],
                         recent_actions,
                         screen_context: None,
                         timestamp: current_timestamp(),
                         ttl: 300,
                         context_chain: None,
                     });
-                }
-                Ok(_) => {
-                    // No nodes found, try getting recent nodes
-                    if let Ok(recent_nodes) = graph_db.get_recent_nodes(3) {
-                        if !recent_nodes.is_empty() {
-                            let activity_type = ActivityType::from_app(app_name);
-                            let mut recent_actions = Vec::new();
-
-                            for node in &recent_nodes {
-                                for data_entry in &node.data_entries {
-                                    if let Some(ref key) = data_entry.key {
-                                        recent_actions.push(key.clone());
-                                    }
-                                }
-                            }
-
-                            recent_actions.truncate(5);
-
-                            return Some(CachedContext {
-                                app_context: AppContext {
-                                    name: app_name.to_string(),
-                                    bundle_id: String::new(),
-                                    window_title: None,
-                                },
-                                activity_type,
-                                learned_patterns: vec![],
-                                recent_actions,
-                                screen_context: None,
-                                timestamp: current_timestamp(),
-                                ttl: 300,
-                                context_chain: None,
-                            });
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("⚠️  Graph query error: {}", e);
                 }
             }
         }
@@ -587,4 +597,3 @@ mod tests {
         assert!(matches!(result, CacheResult::ExactHit(_)));
     }
 }
-

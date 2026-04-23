@@ -7,6 +7,7 @@ from contextlib import closing
 from typing import Any, Dict, Iterable, Optional
 
 from .models import (
+    LargeContextEntityState,
     LargeContextIntegrationSyncState,
     LargeContextProviderState,
     LargeContextRunSummary,
@@ -24,6 +25,28 @@ class LargeContextSyncDAO:
 
     def _conn(self):
         return self._conn_factory(self.db_path)
+
+    def _row_to_entity_state(self, row) -> LargeContextEntityState:
+        return LargeContextEntityState(
+            provider_id=row[0],
+            entity_type=row[1],
+            external_id=row[2],
+            container_id=row[3],
+            title=row[4],
+            source_url=row[5],
+            source_updated_at=row[6],
+            first_seen_at=row[7],
+            last_seen_at=row[8],
+            last_changed_at=row[9],
+            fingerprint=row[10],
+            normalized_json=json.loads(row[11]) if row[11] else {},
+            durable_node_uuid=row[12],
+            active_node_uuid=row[13],
+            is_active=bool(row[14]),
+            active_score=float(row[15] or 0.0),
+            active_reasons=json.loads(row[16]) if row[16] else [],
+            last_active_at=row[17],
+        )
 
     def initialize(self, markdown_root: str, providers: Iterable[ProviderRegistryInfo]) -> None:
         providers = list(providers)
@@ -326,8 +349,8 @@ class LargeContextSyncDAO:
             conn.execute(
                 """
                 INSERT INTO large_context_sync_runs
-                    (run_id, started_at, completed_at, status, providers_attempted, providers_succeeded, providers_failed, error_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (run_id, started_at, completed_at, status, providers_attempted, providers_succeeded, providers_failed, error_json, metrics_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
@@ -338,6 +361,7 @@ class LargeContextSyncDAO:
                     json.dumps(run.providers_succeeded),
                     json.dumps(run.providers_failed),
                     json.dumps(run.error_json) if run.error_json is not None else None,
+                    json.dumps(run.metrics_json) if run.metrics_json is not None else None,
                 ),
             )
             conn.commit()
@@ -348,7 +372,7 @@ class LargeContextSyncDAO:
                 """
                 UPDATE large_context_sync_runs
                 SET completed_at = ?, status = ?, providers_attempted = ?, providers_succeeded = ?,
-                    providers_failed = ?, error_json = ?
+                    providers_failed = ?, error_json = ?, metrics_json = ?
                 WHERE run_id = ?
                 """,
                 (
@@ -358,6 +382,7 @@ class LargeContextSyncDAO:
                     json.dumps(run.providers_succeeded),
                     json.dumps(run.providers_failed),
                     json.dumps(run.error_json) if run.error_json is not None else None,
+                    json.dumps(run.metrics_json) if run.metrics_json is not None else None,
                     run.run_id,
                 ),
             )
@@ -367,7 +392,7 @@ class LargeContextSyncDAO:
         with closing(self._conn()) as conn:
             row = conn.execute(
                 """
-                SELECT run_id, started_at, completed_at, status, providers_attempted, providers_succeeded, providers_failed, error_json
+                SELECT run_id, started_at, completed_at, status, providers_attempted, providers_succeeded, providers_failed, error_json, metrics_json
                 FROM large_context_sync_runs
                 ORDER BY started_at DESC
                 LIMIT 1
@@ -384,4 +409,180 @@ class LargeContextSyncDAO:
             providers_succeeded=json.loads(row[5]) if row[5] else [],
             providers_failed=json.loads(row[6]) if row[6] else [],
             error_json=json.loads(row[7]) if row[7] else None,
+            metrics_json=json.loads(row[8]) if row[8] else {},
         )
+
+    def get_entity_state(
+        self,
+        provider_id: str,
+        entity_type: str,
+        external_id: str,
+    ) -> Optional[LargeContextEntityState]:
+        with closing(self._conn()) as conn:
+            row = conn.execute(
+                """
+                SELECT provider_id, entity_type, external_id, container_id, title, source_url,
+                       source_updated_at, first_seen_at, last_seen_at, last_changed_at,
+                       fingerprint, normalized_json, durable_node_uuid, active_node_uuid,
+                       is_active, active_score, active_reasons_json, last_active_at
+                FROM large_context_entity_state
+                WHERE provider_id = ? AND entity_type = ? AND external_id = ?
+                """,
+                (provider_id, entity_type, external_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_entity_state(row)
+
+    def get_entity_states_for_provider(self, provider_id: str) -> Dict[tuple[str, str], LargeContextEntityState]:
+        with closing(self._conn()) as conn:
+            rows = conn.execute(
+                """
+                SELECT provider_id, entity_type, external_id, container_id, title, source_url,
+                       source_updated_at, first_seen_at, last_seen_at, last_changed_at,
+                       fingerprint, normalized_json, durable_node_uuid, active_node_uuid,
+                       is_active, active_score, active_reasons_json, last_active_at
+                FROM large_context_entity_state
+                WHERE provider_id = ?
+                """,
+                (provider_id,),
+            ).fetchall()
+        return {
+            (row[1], row[2]): self._row_to_entity_state(row)
+            for row in rows
+        }
+
+    def upsert_entity_state(self, state: LargeContextEntityState) -> LargeContextEntityState:
+        with closing(self._conn()) as conn:
+            conn.execute(
+                """
+                INSERT INTO large_context_entity_state (
+                    provider_id, entity_type, external_id, container_id, title, source_url,
+                    source_updated_at, first_seen_at, last_seen_at, last_changed_at,
+                    fingerprint, normalized_json, durable_node_uuid, active_node_uuid,
+                    is_active, active_score, active_reasons_json, last_active_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider_id, entity_type, external_id) DO UPDATE SET
+                    container_id = excluded.container_id,
+                    title = excluded.title,
+                    source_url = excluded.source_url,
+                    source_updated_at = excluded.source_updated_at,
+                    first_seen_at = large_context_entity_state.first_seen_at,
+                    last_seen_at = excluded.last_seen_at,
+                    last_changed_at = excluded.last_changed_at,
+                    fingerprint = excluded.fingerprint,
+                    normalized_json = excluded.normalized_json,
+                    durable_node_uuid = COALESCE(excluded.durable_node_uuid, large_context_entity_state.durable_node_uuid),
+                    active_node_uuid = COALESCE(excluded.active_node_uuid, large_context_entity_state.active_node_uuid),
+                    is_active = excluded.is_active,
+                    active_score = excluded.active_score,
+                    active_reasons_json = excluded.active_reasons_json,
+                    last_active_at = COALESCE(excluded.last_active_at, large_context_entity_state.last_active_at)
+                """,
+                (
+                    state.provider_id,
+                    state.entity_type,
+                    state.external_id,
+                    state.container_id,
+                    state.title,
+                    state.source_url,
+                    state.source_updated_at,
+                    state.first_seen_at,
+                    state.last_seen_at,
+                    state.last_changed_at,
+                    state.fingerprint,
+                    json.dumps(state.normalized_json),
+                    state.durable_node_uuid,
+                    state.active_node_uuid,
+                    int(state.is_active),
+                    state.active_score,
+                    json.dumps(state.active_reasons),
+                    state.last_active_at,
+                ),
+            )
+            conn.commit()
+        return self.get_entity_state(state.provider_id, state.entity_type, state.external_id)  # type: ignore[return-value]
+
+    def delete_entity_state(self, provider_id: str, entity_type: str, external_id: str) -> None:
+        with closing(self._conn()) as conn:
+            conn.execute(
+                """
+                DELETE FROM large_context_entity_state
+                WHERE provider_id = ? AND entity_type = ? AND external_id = ?
+                """,
+                (provider_id, entity_type, external_id),
+            )
+            conn.commit()
+
+    def mark_entity_active(
+        self,
+        provider_id: str,
+        entity_type: str,
+        external_id: str,
+        *,
+        active_node_uuid: Optional[str],
+        active_score: float,
+        active_reasons: list[str],
+        last_active_at: str,
+    ) -> None:
+        with closing(self._conn()) as conn:
+            conn.execute(
+                """
+                UPDATE large_context_entity_state
+                SET active_node_uuid = ?,
+                    is_active = 1,
+                    active_score = ?,
+                    active_reasons_json = ?,
+                    last_active_at = ?
+                WHERE provider_id = ? AND entity_type = ? AND external_id = ?
+                """,
+                (
+                    active_node_uuid,
+                    active_score,
+                    json.dumps(active_reasons),
+                    last_active_at,
+                    provider_id,
+                    entity_type,
+                    external_id,
+                ),
+            )
+            conn.commit()
+
+    def mark_entity_inactive(self, provider_id: str, entity_type: str, external_id: str) -> None:
+        with closing(self._conn()) as conn:
+            conn.execute(
+                """
+                UPDATE large_context_entity_state
+                SET active_node_uuid = NULL,
+                    is_active = 0,
+                    active_score = 0,
+                    active_reasons_json = '[]'
+                WHERE provider_id = ? AND entity_type = ? AND external_id = ?
+                """,
+                (provider_id, entity_type, external_id),
+            )
+            conn.commit()
+
+    def list_active_entities(
+        self,
+        *,
+        provider_id: Optional[str] = None,
+        limit: int = 25,
+    ) -> list[LargeContextEntityState]:
+        params: list[Any] = []
+        query = """
+            SELECT provider_id, entity_type, external_id, container_id, title, source_url,
+                   source_updated_at, first_seen_at, last_seen_at, last_changed_at,
+                   fingerprint, normalized_json, durable_node_uuid, active_node_uuid,
+                   is_active, active_score, active_reasons_json, last_active_at
+            FROM large_context_entity_state
+            WHERE is_active = 1
+        """
+        if provider_id:
+            query += " AND provider_id = ?"
+            params.append(provider_id)
+        query += " ORDER BY active_score DESC, COALESCE(last_active_at, last_seen_at) DESC LIMIT ?"
+        params.append(limit)
+        with closing(self._conn()) as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [self._row_to_entity_state(row) for row in rows]

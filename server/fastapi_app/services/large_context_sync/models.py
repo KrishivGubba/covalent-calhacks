@@ -54,6 +54,7 @@ class LargeContextRunSummary(BaseModel):
     providers_succeeded: List[str] = Field(default_factory=list)
     providers_failed: List[str] = Field(default_factory=list)
     error_json: Optional[Dict[str, Any]] = None
+    metrics_json: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ProviderRegistryInfo(BaseModel):
@@ -115,12 +116,35 @@ class ProviderSnapshot(BaseModel):
     generated_at: str
     cursor: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    is_incremental: bool = True
+    deleted_entities: List[str] = Field(default_factory=list)
     containers: List[SnapshotContainer] = Field(default_factory=list)
     entities: List[SnapshotEntity] = Field(default_factory=list)
     relevant_people: List[SnapshotPerson] = Field(default_factory=list)
     cross_links: List[SnapshotCrossLink] = Field(default_factory=list)
     open_questions: List[str] = Field(default_factory=list)
     watch_items: List[str] = Field(default_factory=list)
+
+
+class LargeContextEntityState(BaseModel):
+    provider_id: str
+    entity_type: str
+    external_id: str
+    container_id: Optional[str] = None
+    title: Optional[str] = None
+    source_url: Optional[str] = None
+    source_updated_at: Optional[str] = None
+    first_seen_at: str
+    last_seen_at: str
+    last_changed_at: str
+    fingerprint: str
+    normalized_json: Dict[str, Any] = Field(default_factory=dict)
+    durable_node_uuid: Optional[str] = None
+    active_node_uuid: Optional[str] = None
+    is_active: bool = False
+    active_score: float = 0.0
+    active_reasons: List[str] = Field(default_factory=list)
+    last_active_at: Optional[str] = None
 
 
 ManualRunMode = Literal["all_connected_live", "providers", "integrations"]
