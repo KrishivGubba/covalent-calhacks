@@ -1,20 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  forceCenter,
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceRadial,
+  forceSimulation,
+} from 'd3-force';
 
 const FLASK_PORT = import.meta.env.VITE_FLASK_PORT || '15001';
 const BACKEND_URL = `http://localhost:${FLASK_PORT}`;
 
-// ── Types ──────────────────────────────────────────────────────────────────────
-
-interface GraphAction {
-  uuid: string;
-  name: string;
-}
-
-interface GraphDataEntry {
-  uuid: string;
-  key: string;
-  type: string;
-  category: string;
+interface GraphDataPreview {
+  label: string;
+  category: string | null;
 }
 
 interface GraphNode {
@@ -22,8 +21,12 @@ interface GraphNode {
   label: string;
   parent_id: string | null;
   depth: number;
-  actions: GraphAction[];
-  data: GraphDataEntry[];
+  child_count: number;
+  action_count: number;
+  data_count: number;
+  action_previews: string[];
+  data_previews: GraphDataPreview[];
+  path_labels: string[];
 }
 
 interface GraphEdge {
@@ -41,292 +44,688 @@ interface GraphResponse {
   };
 }
 
-// ── Layout helpers ─────────────────────────────────────────────────────────────
+interface ForceNode extends GraphNode {
+  radius: number;
+  topLevelId: string;
+  seedAngle: number;
+  fill: string;
+  stroke: string;
+  x?: number;
+  y?: number;
+  vx?: number;
+  vy?: number;
+  fx?: number | null;
+  fy?: number | null;
+}
 
-interface LayoutNode {
-  id: string;
-  label: string;
-  depth: number;
+interface ForceLink {
+  source: string | ForceNode;
+  target: string | ForceNode;
+}
+
+interface LayoutNode extends GraphNode {
   x: number;
   y: number;
-  color: string;
   radius: number;
-  actions: GraphAction[];
-  data: GraphDataEntry[];
-  childCount: number;
+  fill: string;
+  stroke: string;
+  topLevelId: string;
+  hasContent: boolean;
 }
 
 interface LayoutEdge {
-  fromX: number;
-  fromY: number;
-  toX: number;
-  toY: number;
+  id: string;
+  path: string;
 }
 
-// Refined color palette that works on light background
-const COLORS = {
-  root: '#C17A5F',      // warm terracotta (matches brand)
-  level1: '#6B5EA8',    // muted purple
-  level2: '#3B7DD8',    // medium blue
-  withActions: '#9b5de5', // vivid purple for nodes with actions
-  leaf: '#2a9d8f',      // teal
-  deepLeaf: '#457b9d',  // steel blue
+interface ClusterHalo {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  radius: number;
+  fill: string;
+  stroke: string;
+}
+
+interface LayoutResult {
+  layoutNodes: LayoutNode[];
+  layoutEdges: LayoutEdge[];
+  halos: ClusterHalo[];
+  svgWidth: number;
+  svgHeight: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+type CustomForce = {
+  (alpha: number): void;
+  initialize?: (nodes: ForceNode[]) => void;
 };
 
-function getNodeColor(depth: number, hasActions: boolean, isRoot: boolean): string {
-  if (isRoot) return COLORS.root;
-  if (hasActions) return COLORS.withActions;
-  if (depth === 1) return COLORS.level1;
-  if (depth === 2) return COLORS.level2;
-  if (depth >= 4) return COLORS.deepLeaf;
-  return COLORS.leaf;
+const GRAPH_BACKGROUND = {
+  base: '#F6F1E7',
+  ink: '#1A1A1A',
+  muted: '#6B655D',
+  grid: 'rgba(85, 69, 54, 0.08)',
+  link: 'rgba(113, 103, 90, 0.34)',
+  rootFill: '#C77753',
+  rootStroke: '#8D4D34',
+};
+
+const BRANCH_THEMES = [
+  { node: '#5F7DDE', stroke: '#3552AE', halo: 'rgba(95, 125, 222, 0.16)' },
+  { node: '#2C9A8B', stroke: '#17655B', halo: 'rgba(44, 154, 139, 0.16)' },
+  { node: '#D18A45', stroke: '#9F5E21', halo: 'rgba(209, 138, 69, 0.16)' },
+  { node: '#A76BC7', stroke: '#764595', halo: 'rgba(167, 107, 199, 0.16)' },
+  { node: '#D06272', stroke: '#993A4B', halo: 'rgba(208, 98, 114, 0.16)' },
+  { node: '#708E4E', stroke: '#4F6634', halo: 'rgba(112, 142, 78, 0.16)' },
+];
+
+const clamp = (value: number, min: number, max: number): number => Math.min(Math.max(value, min), max);
+
+function truncateLabel(label: string, maxLength: number): string {
+  return label.length > maxLength ? `${label.slice(0, maxLength - 1)}…` : label;
 }
 
-function computeLayout(nodes: GraphNode[], _edges: GraphEdge[]): { layoutNodes: LayoutNode[]; layoutEdges: LayoutEdge[] } {
-  if (nodes.length === 0) return { layoutNodes: [], layoutEdges: [] };
+function getReadableNodeLabel(label: string): string {
+  const normalized = label.replace(/\s+/g, ' ').trim();
+  if (!normalized) return 'Untitled';
 
-  const childrenMap: Record<string, string[]> = {};
-  const nodeMap: Record<string, GraphNode> = {};
-  let rootId: string | null = null;
-
-  for (const node of nodes) {
-    nodeMap[node.id] = node;
-    childrenMap[node.id] = [];
-    if (node.parent_id === null) rootId = node.id;
+  const bracketMatch = normalized.match(/\]\s*(.+)$/);
+  const withoutPrefix = bracketMatch?.[1]?.trim() || normalized;
+  const dashParts = withoutPrefix.split(' - ').map((part) => part.trim()).filter(Boolean);
+  if (dashParts.length > 1) {
+    const tail = dashParts[dashParts.length - 1];
+    if (tail.length >= 8) return tail;
   }
 
-  for (const node of nodes) {
-    if (node.parent_id && childrenMap[node.parent_id]) {
-      childrenMap[node.parent_id].push(node.id);
+  const slashParts = withoutPrefix.split('/').map((part) => part.trim()).filter(Boolean);
+  if (slashParts.length > 1) {
+    const tail = slashParts[slashParts.length - 1];
+    if (tail && tail.length <= 42) return tail.replace(/[_-]+/g, ' ');
+  }
+
+  return withoutPrefix.replace(/[_]+/g, ' ');
+}
+
+function hashAngle(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) % 360;
+  }
+  return (hash / 180) * Math.PI;
+}
+
+function getTopLevelId(node: GraphNode, nodeMap: Map<string, GraphNode>, rootId: string): string {
+  if (node.id === rootId) return rootId;
+
+  let current: GraphNode | undefined = node;
+  let lastBeforeRoot = node.id;
+  const seen = new Set<string>();
+
+  while (current && current.parent_id && !seen.has(current.id)) {
+    seen.add(current.id);
+    if (current.parent_id === rootId) {
+      return current.id;
     }
+    lastBeforeRoot = current.parent_id;
+    current = nodeMap.get(current.parent_id);
   }
 
-  if (!rootId && nodes.length > 0) rootId = nodes[0].id;
-  if (!rootId) return { layoutNodes: [], layoutEdges: [] };
+  return lastBeforeRoot;
+}
 
-  const subtreeWidth: Record<string, number> = {};
-  function calcWidth(id: string): number {
-    const children = childrenMap[id] || [];
-    if (children.length === 0) { subtreeWidth[id] = 1; return 1; }
-    let w = 0;
-    for (const c of children) w += calcWidth(c);
-    subtreeWidth[id] = w;
-    return w;
-  }
-  calcWidth(rootId);
+function getNodeRadius(node: GraphNode, isRoot: boolean): number {
+  if (isRoot) return 30;
 
-  const NODE_H_SPACING = 160;
-  const NODE_V_SPACING = 120;
-  const positions: Record<string, { x: number; y: number }> = {};
+  const contentWeight = Math.min(node.action_count + node.data_count, 8) * 1.2;
+  const branchWeight = Math.min(node.child_count, 6) * 1.4;
+  const depthAdjustment = node.depth === 1 ? 8 : node.depth === 2 ? 3 : -1;
+  return clamp(11 + contentWeight + branchWeight + depthAdjustment, 11, 24);
+}
 
-  function assignPositions(id: string, left: number, top: number) {
-    const children = childrenMap[id] || [];
-    const totalWidth = (subtreeWidth[id] || 1) * NODE_H_SPACING;
-    positions[id] = { x: left + totalWidth / 2, y: top };
+function createSiblingClusterForce(parentAngles: Record<string, number>): CustomForce {
+  let nodes: ForceNode[] = [];
 
-    let childLeft = left;
-    for (const c of children) {
-      const cw = (subtreeWidth[c] || 1) * NODE_H_SPACING;
-      assignPositions(c, childLeft, top + NODE_V_SPACING);
-      childLeft += cw;
+  const force = ((alpha: number) => {
+    const siblingGroups = new Map<string, ForceNode[]>();
+
+    for (const node of nodes) {
+      if (!node.parent_id) continue;
+      const siblings = siblingGroups.get(node.parent_id) || [];
+      siblings.push(node);
+      siblingGroups.set(node.parent_id, siblings);
     }
+
+    siblingGroups.forEach((siblings, parentId) => {
+      if (siblings.length < 2) return;
+
+      const center = siblings.reduce(
+        (accumulator, node) => {
+          return {
+            x: accumulator.x + (node.x || 0),
+            y: accumulator.y + (node.y || 0),
+          };
+        },
+        { x: 0, y: 0 },
+      );
+
+      const centroidX = center.x / siblings.length;
+      const centroidY = center.y / siblings.length;
+      const baseAngle = parentAngles[parentId] ?? parentAngles[siblings[0].topLevelId] ?? 0;
+      const ordered = [...siblings].sort((left, right) => left.label.localeCompare(right.label));
+
+      ordered.forEach((node, index) => {
+        const angle = baseAngle + (index / siblings.length) * Math.PI * 2;
+        const orbitRadius = 24 + siblings.length * 5 + Math.max(node.depth - 1, 0) * 12;
+        const targetX = centroidX + Math.cos(angle) * orbitRadius;
+        const targetY = centroidY + Math.sin(angle) * orbitRadius;
+
+        node.vx = (node.vx || 0) + (targetX - (node.x || 0)) * 0.08 * alpha;
+        node.vy = (node.vy || 0) + (targetY - (node.y || 0)) * 0.08 * alpha;
+      });
+    });
+  }) as CustomForce;
+
+  force.initialize = (newNodes: ForceNode[]) => {
+    nodes = newNodes;
+  };
+
+  return force;
+}
+
+function createBranchOrbitForce(
+  branchAnchors: Record<string, { x: number; y: number; angle: number }>,
+  rootId: string,
+): CustomForce {
+  let nodes: ForceNode[] = [];
+
+  const force = ((alpha: number) => {
+    for (const node of nodes) {
+      if (node.id === rootId) continue;
+
+      const anchor = branchAnchors[node.topLevelId] || { x: 0, y: 0, angle: node.seedAngle };
+      const orbitRadius = node.depth <= 1 ? 0 : 38 + (node.depth - 1) * 42 + Math.min(node.child_count, 5) * 8;
+      const targetAngle = anchor.angle + node.seedAngle * 0.35 + node.depth * 0.18;
+      const targetX = node.depth === 1 ? anchor.x : anchor.x + Math.cos(targetAngle) * orbitRadius;
+      const targetY = node.depth === 1 ? anchor.y : anchor.y + Math.sin(targetAngle) * orbitRadius;
+      const strength = node.depth === 1 ? 0.18 : 0.1;
+
+      node.vx = (node.vx || 0) + (targetX - (node.x || 0)) * strength * alpha;
+      node.vy = (node.vy || 0) + (targetY - (node.y || 0)) * strength * alpha;
+    }
+  }) as CustomForce;
+
+  force.initialize = (newNodes: ForceNode[]) => {
+    nodes = newNodes;
+  };
+
+  return force;
+}
+
+function buildClusterHalos(layoutNodes: LayoutNode[], rootId: string, themeByTopLevel: Record<string, { node: string; stroke: string; halo: string }>): ClusterHalo[] {
+  const grouped = new Map<string, LayoutNode[]>();
+
+  for (const node of layoutNodes) {
+    if (node.id === rootId || node.topLevelId === rootId) continue;
+    const group = grouped.get(node.topLevelId) || [];
+    group.push(node);
+    grouped.set(node.topLevelId, group);
   }
 
-  assignPositions(rootId, 0, 40);
+  return Array.from(grouped.entries()).map(([clusterId, nodes]) => {
+    const center = nodes.reduce(
+      (accumulator, node) => ({
+        x: accumulator.x + node.x,
+        y: accumulator.y + node.y,
+      }),
+      { x: 0, y: 0 },
+    );
+    const x = center.x / nodes.length;
+    const y = center.y / nodes.length;
+    const radius = nodes.reduce((maxRadius, node) => {
+      const dx = node.x - x;
+      const dy = node.y - y;
+      const distance = Math.hypot(dx, dy) + node.radius + 48;
+      return Math.max(maxRadius, distance);
+    }, 90);
 
-  const layoutNodes: LayoutNode[] = nodes.map((node) => {
-    const pos = positions[node.id] || { x: 0, y: 0 };
-    const isRoot = node.parent_id === null;
-    const hasActions = node.actions.length > 0;
-    const radius = isRoot ? 22 : node.depth === 1 ? 18 : 14;
+    const theme = themeByTopLevel[clusterId] || BRANCH_THEMES[0];
+    const anchorNode = nodes.find((node) => node.id === clusterId) || nodes[0];
+
     return {
-      id: node.id,
-      label: node.label,
-      depth: node.depth,
-      x: pos.x,
-      y: pos.y,
-      color: getNodeColor(node.depth, hasActions, isRoot),
+      id: clusterId,
+      label: anchorNode.label,
+      x,
+      y,
       radius,
-      actions: node.actions,
-      data: node.data,
-      childCount: (childrenMap[node.id] || []).length,
+      fill: theme.halo,
+      stroke: `${theme.stroke}55`,
+    };
+  });
+}
+
+function buildEdgePath(fromNode: LayoutNode, toNode: LayoutNode): string {
+  const dx = toNode.x - fromNode.x;
+  const dy = toNode.y - fromNode.y;
+  const length = Math.max(Math.hypot(dx, dy), 1);
+  const unitX = dx / length;
+  const unitY = dy / length;
+  const startX = fromNode.x + unitX * fromNode.radius;
+  const startY = fromNode.y + unitY * fromNode.radius;
+  const endX = toNode.x - unitX * toNode.radius;
+  const endY = toNode.y - unitY * toNode.radius;
+  const midX = (startX + endX) / 2;
+  const midY = (startY + endY) / 2;
+  const curve = clamp(length * 0.08, 10, 38);
+  const normalX = -unitY;
+  const normalY = unitX;
+  const controlX = midX + normalX * curve;
+  const controlY = midY + normalY * curve;
+
+  return `M ${startX} ${startY} Q ${controlX} ${controlY} ${endX} ${endY}`;
+}
+
+function computeLayout(nodes: GraphNode[], edges: GraphEdge[], containerWidth: number, containerHeight: number): LayoutResult {
+  if (nodes.length === 0) {
+    return {
+      layoutNodes: [],
+      layoutEdges: [],
+      halos: [],
+      svgWidth: 800,
+      svgHeight: 600,
+      offsetX: 0,
+      offsetY: 0,
+    };
+  }
+
+  const rootId = nodes.find((node) => node.parent_id === null)?.id || nodes[0].id;
+  const nodeMap = new Map<string, GraphNode>(nodes.map((node) => [node.id, node]));
+  const topLevelIds = nodes
+    .filter((node) => node.parent_id === rootId)
+    .map((node) => node.id);
+  const themeByTopLevel: Record<string, { node: string; stroke: string; halo: string }> = {};
+  topLevelIds.forEach((nodeId, index) => {
+    themeByTopLevel[nodeId] = BRANCH_THEMES[index % BRANCH_THEMES.length];
+  });
+
+  const simulationWidth = Math.max(containerWidth, 920);
+  const simulationHeight = Math.max(containerHeight, 720);
+  const orbitRadius = Math.min(simulationWidth, simulationHeight) * 0.28;
+  const branchAnchors: Record<string, { x: number; y: number; angle: number }> = {};
+  const parentAngles: Record<string, number> = {};
+
+  topLevelIds.forEach((nodeId, index) => {
+    const angle = (-Math.PI / 2) + (index / Math.max(topLevelIds.length, 1)) * Math.PI * 2;
+    branchAnchors[nodeId] = {
+      x: Math.cos(angle) * orbitRadius,
+      y: Math.sin(angle) * orbitRadius,
+      angle,
+    };
+    parentAngles[nodeId] = angle;
+  });
+
+  const simNodes: ForceNode[] = nodes.map((node) => {
+    const isRoot = node.id === rootId;
+    const topLevelId = getTopLevelId(node, nodeMap, rootId);
+    const theme = themeByTopLevel[topLevelId] || BRANCH_THEMES[0];
+    const radius = getNodeRadius(node, isRoot);
+    const seedAngle = hashAngle(node.id);
+    const anchor = branchAnchors[topLevelId] || { x: 0, y: 0, angle: seedAngle };
+    const orbit = node.depth <= 1 ? 0 : 24 + node.depth * 36;
+
+    return {
+      ...node,
+      x: isRoot ? 0 : anchor.x + Math.cos(seedAngle) * orbit,
+      y: isRoot ? 0 : anchor.y + Math.sin(seedAngle) * orbit,
+      fx: isRoot ? 0 : null,
+      fy: isRoot ? 0 : null,
+      radius,
+      topLevelId,
+      seedAngle,
+      fill: isRoot ? GRAPH_BACKGROUND.rootFill : theme.node,
+      stroke: isRoot ? GRAPH_BACKGROUND.rootStroke : theme.stroke,
     };
   });
 
-  const layoutEdges: LayoutEdge[] = [];
-  for (const node of nodes) {
-    if (node.parent_id && positions[node.parent_id] && positions[node.id]) {
-      layoutEdges.push({
-        fromX: positions[node.parent_id].x,
-        fromY: positions[node.parent_id].y,
-        toX: positions[node.id].x,
-        toY: positions[node.id].y,
-      });
-    }
+  const simLinks: ForceLink[] = edges.map((edge) => ({
+    source: edge.from,
+    target: edge.to,
+  }));
+
+  const radialDistance = (node: ForceNode): number => {
+    if (node.id === rootId) return 0;
+    if (node.depth === 1) return orbitRadius;
+    return orbitRadius + node.depth * 88;
+  };
+
+  const simulation = forceSimulation(simNodes)
+    .force('center', forceCenter(0, 0))
+    .force(
+      'link',
+      forceLink(simLinks)
+        .id((node: ForceNode) => node.id)
+        .distance((link: ForceLink) => {
+          const source = typeof link.source === 'string' ? nodeMap.get(link.source) : link.source;
+          const target = typeof link.target === 'string' ? nodeMap.get(link.target) : link.target;
+          const targetDepth = target?.depth ?? 0;
+          const sourceChildren = source?.child_count ?? 0;
+          return 80 + targetDepth * 14 + Math.min(sourceChildren, 5) * 6;
+        })
+        .strength((link: ForceLink) => {
+          const source = typeof link.source === 'string' ? nodeMap.get(link.source) : link.source;
+          return source?.depth === 0 ? 0.42 : 0.32;
+        }),
+    )
+    .force(
+      'charge',
+      forceManyBody().strength((node: ForceNode) => {
+        if (node.id === rootId) return -1200;
+        if (node.depth === 1) return -460;
+        return -210;
+      }),
+    )
+    .force(
+      'collide',
+      forceCollide().radius((node: ForceNode) => node.radius + (node.depth <= 1 ? 26 : 16)).strength(0.92),
+    )
+    .force(
+      'radial',
+      forceRadial(radialDistance, 0, 0).strength((node: ForceNode) => {
+        if (node.id === rootId) return 1;
+        if (node.depth === 1) return 0.24;
+        return 0.08;
+      }),
+    )
+    .force('branchOrbit', createBranchOrbitForce(branchAnchors, rootId))
+    .force('siblingCluster', createSiblingClusterForce(parentAngles))
+    .alpha(1)
+    .alphaDecay(0.03)
+    .velocityDecay(0.35);
+
+  simulation.stop();
+  for (let iteration = 0; iteration < 280; iteration += 1) {
+    simulation.tick();
   }
 
-  return { layoutNodes, layoutEdges };
+  const layoutNodes: LayoutNode[] = simNodes.map((node) => {
+    const hasContent = node.action_count > 0 || node.data_count > 0;
+    return {
+      ...node,
+      x: node.x || 0,
+      y: node.y || 0,
+      hasContent,
+    };
+  });
+
+  const layoutNodeMap = new Map<string, LayoutNode>(layoutNodes.map((node) => [node.id, node]));
+  const halos = buildClusterHalos(layoutNodes, rootId, themeByTopLevel);
+  const layoutEdges: LayoutEdge[] = edges
+    .map((edge) => {
+      const fromNode = layoutNodeMap.get(edge.from);
+      const toNode = layoutNodeMap.get(edge.to);
+      if (!fromNode || !toNode) return null;
+      return {
+        id: `${edge.from}-${edge.to}`,
+        path: buildEdgePath(fromNode, toNode),
+      };
+    })
+    .filter((edge): edge is LayoutEdge => edge !== null);
+
+  const padding = 120;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const halo of halos) {
+    minX = Math.min(minX, halo.x - halo.radius);
+    minY = Math.min(minY, halo.y - halo.radius);
+    maxX = Math.max(maxX, halo.x + halo.radius);
+    maxY = Math.max(maxY, halo.y + halo.radius);
+  }
+
+  for (const node of layoutNodes) {
+    minX = Math.min(minX, node.x - node.radius - 60);
+    minY = Math.min(minY, node.y - node.radius - 40);
+    maxX = Math.max(maxX, node.x + node.radius + 60);
+    maxY = Math.max(maxY, node.y + node.radius + 60);
+  }
+
+  if (!isFinite(minX)) {
+    minX = -400;
+    minY = -300;
+    maxX = 400;
+    maxY = 300;
+  }
+
+  return {
+    layoutNodes,
+    layoutEdges,
+    halos,
+    svgWidth: maxX - minX + padding * 2,
+    svgHeight: maxY - minY + padding * 2,
+    offsetX: -minX + padding,
+    offsetY: -minY + padding,
+  };
 }
 
-// ── Tooltip ────────────────────────────────────────────────────────────────────
-
-const Tooltip: React.FC<{
+const SelectionPanel: React.FC<{
   node: LayoutNode;
-  mouseX: number;
-  mouseY: number;
-  containerRect: DOMRect;
-}> = ({ node, mouseX, mouseY, containerRect }) => {
-  const tooltipWidth = 272;
-  const tooltipPad = 14;
-  let left = mouseX - containerRect.left + 16;
-  let top = mouseY - containerRect.top - 10;
-
-  if (left + tooltipWidth > containerRect.width) left = mouseX - containerRect.left - tooltipWidth - 16;
-  if (top < 0) top = 8;
-
+  onClose: () => void;
+}> = ({ node, onClose }) => {
+  const readableLabel = getReadableNodeLabel(node.label);
+  const path = node.path_labels.map(getReadableNodeLabel).join(' / ');
   return (
     <div
+      onClick={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
       style={{
         position: 'absolute',
-        left,
-        top,
-        width: tooltipWidth,
-        backgroundColor: '#FFFFFF',
-        border: '1px solid #E8E4DC',
-        borderRadius: 12,
-        padding: tooltipPad,
-        pointerEvents: 'none',
-        zIndex: 100,
-        boxShadow: '0 8px 24px rgba(0,0,0,0.10)',
+        right: 18,
+        top: 18,
+        width: 320,
+        maxWidth: 'calc(100% - 36px)',
+        background: 'rgba(255, 251, 245, 0.96)',
+        border: '1px solid rgba(120, 101, 80, 0.12)',
+        borderRadius: 18,
+        padding: 16,
+        zIndex: 10,
+        boxShadow: '0 18px 42px rgba(65, 51, 38, 0.14)',
+        backdropFilter: 'blur(12px)',
       }}
     >
-      <div style={{ fontWeight: 700, fontSize: '0.875rem', color: '#1A1A1A', marginBottom: 4, letterSpacing: '-0.01em' }}>
-        {node.label}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 6 }}>
+        <div style={{ fontWeight: 700, fontSize: '0.98rem', color: GRAPH_BACKGROUND.ink, minWidth: 0 }}>
+          {truncateLabel(readableLabel, 56)}
+        </div>
+        <button
+          onClick={(event) => {
+            event.stopPropagation();
+            onClose();
+          }}
+          style={{
+            border: 'none',
+            background: 'transparent',
+            color: '#8C8377',
+            cursor: 'pointer',
+            fontSize: '1rem',
+            padding: 0,
+            lineHeight: 1,
+            flexShrink: 0,
+          }}
+        >
+          ×
+        </button>
       </div>
-      <div style={{ fontSize: '0.7rem', color: '#9A9A96', fontFamily: 'monospace', marginBottom: 10 }}>
-        {node.id.slice(0, 12)}...
+      <div style={{ fontSize: '0.76rem', color: '#746C63', lineHeight: 1.5, marginBottom: 12 }}>
+        {path}
       </div>
-      {node.actions.length > 0 && (
-        <div style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: '0.7rem', color: '#9b5de5', fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Actions ({node.actions.length})
-          </div>
-          {node.actions.slice(0, 4).map((a, i) => (
-            <div key={i} style={{ fontSize: '0.775rem', color: '#5A5A5A', paddingLeft: 8, marginBottom: 2 }}>
-              · {a.name.length > 40 ? a.name.slice(0, 40) + '...' : a.name}
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+        <span style={tooltipStatPill}>{node.child_count} child{node.child_count === 1 ? '' : 'ren'}</span>
+        <span style={tooltipStatPill}>{node.action_count} action{node.action_count === 1 ? '' : 's'}</span>
+        <span style={tooltipStatPill}>{node.data_count} data item{node.data_count === 1 ? '' : 's'}</span>
+      </div>
+
+      {node.action_previews.length > 0 && (
+        <div style={{ marginBottom: node.data_previews.length > 0 ? 12 : 0 }}>
+          <div style={tooltipSectionTitle}>Action previews</div>
+          {node.action_previews.map((preview) => (
+            <div key={preview} style={tooltipPreviewRow}>
+              {truncateLabel(getReadableNodeLabel(preview), 54)}
             </div>
           ))}
-          {node.actions.length > 4 && (
-            <div style={{ fontSize: '0.7rem', color: '#9A9A96', paddingLeft: 8, fontStyle: 'italic' }}>
-              +{node.actions.length - 4} more
-            </div>
-          )}
         </div>
       )}
-      {node.data.length > 0 && (
+
+      {node.data_previews.length > 0 && (
         <div>
-          <div style={{ fontSize: '0.7rem', color: '#2a9d8f', fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Data ({node.data.length})
-          </div>
-          {node.data.slice(0, 3).map((d, i) => (
-            <div key={i} style={{ fontSize: '0.775rem', color: '#5A5A5A', paddingLeft: 8, marginBottom: 2 }}>
-              · [{d.category || 'uncategorized'}] {d.key ? (d.key.length > 30 ? d.key.slice(0, 30) + '...' : d.key) : '(no key)'}
+          <div style={tooltipSectionTitle}>Data previews</div>
+          {node.data_previews.map((preview, index) => (
+            <div key={`${preview.label}-${index}`} style={tooltipPreviewRow}>
+              {preview.category ? `[${preview.category}] ` : ''}
+              {truncateLabel(getReadableNodeLabel(preview.label), 52)}
             </div>
           ))}
-          {node.data.length > 3 && (
-            <div style={{ fontSize: '0.7rem', color: '#9A9A96', paddingLeft: 8, fontStyle: 'italic' }}>
-              +{node.data.length - 3} more
-            </div>
-          )}
         </div>
       )}
-      {node.actions.length === 0 && node.data.length === 0 && (
-        <div style={{ fontSize: '0.775rem', color: '#D4CFC6', fontStyle: 'italic' }}>
-          No actions or data
+
+      {node.action_previews.length === 0 && node.data_previews.length === 0 && (
+        <div style={{ fontSize: '0.8rem', color: '#8E877F', fontStyle: 'italic' }}>
+          This node is mostly structural right now.
         </div>
       )}
     </div>
   );
 };
 
-// ── Graph canvas ───────────────────────────────────────────────────────────────
+const tooltipStatPill: React.CSSProperties = {
+  padding: '5px 10px',
+  borderRadius: 999,
+  background: 'rgba(212, 197, 177, 0.36)',
+  color: '#5A5046',
+  fontSize: '0.72rem',
+  fontWeight: 600,
+};
+
+const tooltipSectionTitle: React.CSSProperties = {
+  fontSize: '0.68rem',
+  color: '#8B6A4B',
+  fontWeight: 700,
+  textTransform: 'uppercase',
+  letterSpacing: '0.08em',
+  marginBottom: 6,
+};
+
+const tooltipPreviewRow: React.CSSProperties = {
+  fontSize: '0.8rem',
+  color: '#4F4640',
+  lineHeight: 1.5,
+  marginBottom: 4,
+};
 
 const GraphVisualization: React.FC<{
   nodes: GraphNode[];
   edges: GraphEdge[];
 }> = ({ nodes, edges }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [hoveredNode, setHoveredNode] = useState<LayoutNode | null>(null);
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
-  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
+  const svgRef = useRef<SVGSVGElement>(null);
+  const transformRef = useRef({ x: 0, y: 0, scale: 1 });
+  const panStartRef = useRef({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
-  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
-  const [containerRect, setContainerRect] = useState<DOMRect | null>(null);
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [layout, setLayout] = useState<LayoutResult>({
+    layoutNodes: [],
+    layoutEdges: [],
+    halos: [],
+    svgWidth: 800,
+    svgHeight: 600,
+    offsetX: 0,
+    offsetY: 0,
+  });
+  const rootId = nodes.find((entry) => entry.parent_id === null)?.id || null;
+  const selectedNode = selectedNodeId ? layout.layoutNodes.find((node) => node.id === selectedNodeId) || null : null;
 
-  const { layoutNodes, layoutEdges } = computeLayout(nodes, edges);
-
-  const padding = 60;
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const n of layoutNodes) {
-    if (n.x - n.radius < minX) minX = n.x - n.radius;
-    if (n.x + n.radius > maxX) maxX = n.x + n.radius;
-    if (n.y - n.radius < minY) minY = n.y - n.radius;
-    if (n.y + n.radius > maxY) maxY = n.y + n.radius;
-  }
-  if (!isFinite(minX)) { minX = 0; maxX = 800; minY = 0; maxY = 600; }
-  const svgWidth = maxX - minX + padding * 2;
-  const svgHeight = maxY - minY + padding * 2;
-  const offsetX = -minX + padding;
-  const offsetY = -minY + padding;
-
-  useEffect(() => {
-    const update = () => {
-      if (containerRef.current) setContainerRect(containerRef.current.getBoundingClientRect());
-    };
-    update();
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
+  const applyTransform = useCallback(() => {
+    if (!svgRef.current) return;
+    const { x, y, scale } = transformRef.current;
+    svgRef.current.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
   }, []);
 
   useEffect(() => {
-    if (containerRef.current && layoutNodes.length > 0) {
-      const rect = containerRef.current.getBoundingClientRect();
-      const scaleX = rect.width / svgWidth;
-      const scaleY = rect.height / svgHeight;
-      const fitScale = Math.min(scaleX, scaleY, 1) * 0.9;
-      const cx = (rect.width - svgWidth * fitScale) / 2;
-      const cy = (rect.height - svgHeight * fitScale) / 2;
-      setTransform({ x: cx, y: cy, scale: fitScale });
-    }
-  }, [layoutNodes.length, svgWidth, svgHeight]);
+    if (!containerRef.current) return undefined;
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    setTransform((prev) => {
-      const newScale = Math.min(Math.max(prev.scale * delta, 0.1), 4);
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (!rect) return { ...prev, scale: newScale };
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
-      const newX = mx - (mx - prev.x) * (newScale / prev.scale);
-      const newY = my - (my - prev.y) * (newScale / prev.scale);
-      return { x: newX, y: newY, scale: newScale };
+    const element = containerRef.current;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const rect = entry.contentRect;
+      setContainerSize({ width: rect.width, height: rect.height });
     });
+
+    observer.observe(element);
+
+    return () => observer.disconnect();
   }, []);
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    setIsPanning(true);
-    setPanStart({ x: e.clientX - transform.x, y: e.clientY - transform.y });
-  }, [transform.x, transform.y]);
+  useEffect(() => {
+    const nextLayout = computeLayout(nodes, edges, containerSize.width, containerSize.height);
+    setLayout(nextLayout);
+  }, [nodes, edges, containerSize.width, containerSize.height]);
 
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    setMousePos({ x: e.clientX, y: e.clientY });
+  useEffect(() => {
+    if (!containerRef.current || layout.layoutNodes.length === 0) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const scaleX = rect.width / layout.svgWidth;
+    const scaleY = rect.height / layout.svgHeight;
+    const fitScale = Math.min(scaleX, scaleY, 1) * 0.92;
+    transformRef.current = {
+      x: (rect.width - layout.svgWidth * fitScale) / 2,
+      y: (rect.height - layout.svgHeight * fitScale) / 2,
+      scale: fitScale,
+    };
+    applyTransform();
+  }, [applyTransform, layout]);
+
+  const handleWheel = useCallback((event: React.WheelEvent) => {
+    event.preventDefault();
+    const delta = event.deltaY > 0 ? 0.9 : 1.1;
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const previous = transformRef.current;
+    const newScale = clamp(previous.scale * delta, 0.22, 4);
+    const mouseX = event.clientX - rect.left;
+    const mouseY = event.clientY - rect.top;
+
+    transformRef.current = {
+      x: mouseX - (mouseX - previous.x) * (newScale / previous.scale),
+      y: mouseY - (mouseY - previous.y) * (newScale / previous.scale),
+      scale: newScale,
+    };
+    applyTransform();
+  }, [applyTransform]);
+
+  const handleMouseDown = useCallback((event: React.MouseEvent) => {
+    if (event.button !== 0) return;
+    setIsPanning(true);
+    const { x, y } = transformRef.current;
+    panStartRef.current = { x: event.clientX - x, y: event.clientY - y };
+  }, []);
+
+  const handleMouseMove = useCallback((event: React.MouseEvent) => {
     if (isPanning) {
-      setTransform((prev) => ({ ...prev, x: e.clientX - panStart.x, y: e.clientY - panStart.y }));
+      transformRef.current = {
+        ...transformRef.current,
+        x: event.clientX - panStartRef.current.x,
+        y: event.clientY - panStartRef.current.y,
+      };
+      applyTransform();
     }
-  }, [isPanning, panStart]);
+  }, [applyTransform, isPanning]);
 
   const handleMouseUp = useCallback(() => setIsPanning(false), []);
 
@@ -344,115 +743,140 @@ const GraphVisualization: React.FC<{
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onMouseLeave={() => { setIsPanning(false); setHoveredNode(null); }}
+      onMouseLeave={() => {
+        setIsPanning(false);
+      }}
+      onClick={() => setSelectedNodeId(null)}
     >
       <svg
-        width={svgWidth}
-        height={svgHeight}
+        ref={svgRef}
+        width={layout.svgWidth}
+        height={layout.svgHeight}
         style={{
-          transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
+          position: 'absolute',
+          left: 0,
+          top: 0,
           transformOrigin: '0 0',
+          willChange: 'transform',
+          overflow: 'visible',
         }}
       >
         <defs>
-          <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur stdDeviation="3" result="coloredBlur" />
+          <filter id="nodeGlow" x="-80%" y="-80%" width="260%" height="260%">
+            <feGaussianBlur stdDeviation="8" result="softGlow" />
             <feMerge>
-              <feMergeNode in="coloredBlur" />
+              <feMergeNode in="softGlow" />
               <feMergeNode in="SourceGraphic" />
             </feMerge>
           </filter>
         </defs>
 
-        {/* Edges */}
-        {layoutEdges.map((edge, i) => {
-          const fx = edge.fromX + offsetX;
-          const fy = edge.fromY + offsetY;
-          const tx = edge.toX + offsetX;
-          const ty = edge.toY + offsetY;
-          const midY = (fy + ty) / 2;
-          return (
-            <path
-              key={`edge-${i}`}
-              d={`M ${fx} ${fy} C ${fx} ${midY}, ${tx} ${midY}, ${tx} ${ty}`}
-              fill="none"
-              stroke="#D4CFC6"
-              strokeWidth={1.5}
-              opacity={0.7}
-            />
-          );
-        })}
+        <g transform={`translate(${layout.offsetX}, ${layout.offsetY})`}>
+          {layout.halos.map((halo) => (
+            <g key={halo.id}>
+              <circle cx={halo.x} cy={halo.y} r={halo.radius} fill={halo.fill} stroke={halo.stroke} strokeWidth={1} opacity={0.82} />
+            </g>
+          ))}
 
-        {/* Nodes */}
-        {layoutNodes.map((node) => {
-          const nx = node.x + offsetX;
-          const ny = node.y + offsetY;
-          const isHovered = hoveredNode?.id === node.id;
-          const displayLabel = node.label.length > 20 ? node.label.slice(0, 18) + '...' : node.label;
-          return (
-            <g
-              key={node.id}
-              onMouseEnter={() => setHoveredNode(node)}
-              onMouseLeave={() => setHoveredNode(null)}
-              style={{ cursor: 'pointer' }}
-            >
-              <circle
-                cx={nx}
-                cy={ny}
-                r={isHovered ? node.radius + 3 : node.radius}
-                fill={node.color}
-                opacity={isHovered ? 1 : 0.88}
-                filter={isHovered ? 'url(#glow)' : undefined}
-                stroke={isHovered ? '#FFFFFF' : 'rgba(255,255,255,0.5)'}
-                strokeWidth={isHovered ? 2.5 : 1.5}
-                style={{ transition: 'r 0.15s ease, opacity 0.15s ease' }}
-              />
-              {node.actions.length > 0 && (
-                <>
+          {layout.layoutEdges.map((edge) => (
+            <path
+              key={edge.id}
+              d={edge.path}
+              fill="none"
+              stroke={GRAPH_BACKGROUND.link}
+              strokeWidth={1.5}
+              opacity={0.9}
+            />
+          ))}
+
+          {layout.layoutNodes.map((node) => {
+            const isSelected = selectedNodeId === node.id;
+            const label = truncateLabel(getReadableNodeLabel(node.label), node.depth <= 1 ? 20 : 16);
+            const displayLabel = node.id === rootId || node.depth === 1 || isSelected;
+            const contentCount = node.action_count + node.data_count;
+
+            return (
+              <g
+                key={node.id}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setSelectedNodeId(node.id);
+                }}
+                style={{ cursor: 'pointer' }}
+              >
+                {node.id === rootId && (
                   <circle
-                    cx={nx + node.radius * 0.7}
-                    cy={ny - node.radius * 0.7}
-                    r={8}
-                    fill="#9b5de5"
-                    stroke="#FFFFFF"
+                    cx={node.x}
+                    cy={node.y}
+                    r={node.radius + 18}
+                    fill="rgba(199, 119, 83, 0.12)"
+                    stroke="rgba(141, 77, 52, 0.18)"
                     strokeWidth={1.5}
                   />
+                )}
+
+                <circle
+                  cx={node.x}
+                  cy={node.y}
+                  r={isSelected ? node.radius + 2 : node.radius}
+                  fill={node.fill}
+                  stroke={node.stroke}
+                  strokeWidth={isSelected ? 3.5 : 1.8}
+                  opacity={0.96}
+                  filter={isSelected ? 'url(#nodeGlow)' : undefined}
+                  style={{ transition: 'r 0.16s ease, stroke-width 0.16s ease, opacity 0.16s ease' }}
+                />
+
+                {node.hasContent && (
+                  <circle
+                    cx={node.x + node.radius * 0.7}
+                    cy={node.y - node.radius * 0.7}
+                    r={Math.min(10, Math.max(7, node.radius * 0.45))}
+                    fill="#FFF9F1"
+                    stroke={node.stroke}
+                    strokeWidth={1.6}
+                  />
+                )}
+
+                {node.hasContent && (
                   <text
-                    x={nx + node.radius * 0.7}
-                    y={ny - node.radius * 0.7 + 3.5}
+                    x={node.x + node.radius * 0.7}
+                    y={node.y - node.radius * 0.7 + 3.5}
                     textAnchor="middle"
-                    fill="#fff"
-                    fontSize={9}
+                    fill={node.stroke}
+                    fontSize={10}
                     fontWeight={700}
                   >
-                    {node.actions.length}
+                    {contentCount > 9 ? '9+' : contentCount}
                   </text>
-                </>
-              )}
-              <text
-                x={nx}
-                y={ny + node.radius + 16}
-                textAnchor="middle"
-                fill="#5A5A5A"
-                fontSize={11}
-                fontFamily="DM Sans, system-ui, sans-serif"
-                fontWeight={500}
-              >
-                {displayLabel}
-              </text>
-            </g>
-          );
-        })}
+                )}
+
+                {displayLabel && (
+                  <text
+                    x={node.x}
+                    y={node.y + node.radius + 18}
+                    textAnchor="middle"
+                    fill={node.depth <= 1 ? GRAPH_BACKGROUND.ink : '#62594F'}
+                    fontSize={node.depth <= 1 ? 12 : 10}
+                    fontFamily="DM Sans, system-ui, sans-serif"
+                    fontWeight={node.depth <= 1 ? 700 : 500}
+                    opacity={isSelected ? 1 : node.depth <= 1 ? 0.94 : 0.78}
+                  >
+                    {label}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </g>
       </svg>
 
-      {hoveredNode && containerRect && (
-        <Tooltip node={hoveredNode} mouseX={mousePos.x} mouseY={mousePos.y} containerRect={containerRect} />
+      {selectedNode && (
+        <SelectionPanel node={selectedNode} onClose={() => setSelectedNodeId(null)} />
       )}
     </div>
   );
 };
-
-// ── Main Page ──────────────────────────────────────────────────────────────────
 
 const MemoryPage: React.FC = () => {
   const [graphData, setGraphData] = useState<GraphResponse | null>(null);
@@ -469,8 +893,8 @@ const MemoryPage: React.FC = () => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data: GraphResponse = await response.json();
       setGraphData(data);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load graph data');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to load graph data');
     } finally {
       setLoading(false);
     }
@@ -484,12 +908,13 @@ const MemoryPage: React.FC = () => {
       const response = await fetch(`${BACKEND_URL}/graph/reset`, { method: 'POST' });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || `HTTP ${response.status}`);
+        const message = typeof body.error === 'string' ? body.error : `HTTP ${response.status}`;
+        throw new Error(message);
       }
       setGraphData(null);
       await loadGraphData();
-    } catch (err: any) {
-      setError(err.message || 'Failed to reset graph');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to reset graph');
     } finally {
       setResetting(false);
     }
@@ -499,14 +924,14 @@ const MemoryPage: React.FC = () => {
     loadGraphData();
   }, []);
 
-  const hasData = graphData && graphData.nodes.length > 0;
+  const hasData = Boolean(graphData && graphData.nodes.length > 0);
 
   return (
     <div style={styles.container}>
       <div style={styles.header}>
         <div>
           <h1 style={styles.title}>Memory Graph</h1>
-          <p style={styles.subtitle}>Visualize and edit what Covalent knows about you</p>
+          <p style={styles.subtitle}>Explore and edit what Covalent knows about you</p>
         </div>
       </div>
 
@@ -533,6 +958,9 @@ const MemoryPage: React.FC = () => {
             <span style={styles.statValue}>{graphData.stats.total_data}</span>
             <span style={styles.statLabel}>Data</span>
           </div>
+          <div style={styles.statsHelper}>
+            <span style={styles.statsHelperText}>Scroll to zoom and click to expand</span>
+          </div>
         </div>
       )}
 
@@ -540,7 +968,7 @@ const MemoryPage: React.FC = () => {
         <div style={styles.graphContainer}>
           <div style={styles.loadingState}>
             <div style={styles.spinner} />
-            <p style={styles.loadingText}>Loading graph...</p>
+            <p style={styles.loadingText}>Building memory map...</p>
           </div>
         </div>
       ) : hasData && graphData ? (
@@ -593,8 +1021,6 @@ const MemoryPage: React.FC = () => {
     </div>
   );
 };
-
-// ── Styles ─────────────────────────────────────────────────────────────────────
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
@@ -676,14 +1102,24 @@ const styles: Record<string, React.CSSProperties> = {
     height: 28,
     backgroundColor: '#E8E4DC',
   },
+  statsHelper: {
+    marginLeft: 'auto',
+    paddingLeft: 8,
+  },
+  statsHelperText: {
+    fontSize: '0.75rem',
+    color: '#8B8378',
+    fontWeight: 500,
+  },
   graphContainer: {
     flex: 1,
-    minHeight: 400,
-    backgroundColor: '#F4F1EC',
-    borderRadius: 14,
-    border: '1px solid #E8E4DC',
+    minHeight: 440,
+    background: 'linear-gradient(180deg, #F8F3EA 0%, #F0E7DA 100%)',
+    borderRadius: 18,
+    border: '1px solid rgba(184, 160, 130, 0.12)',
     overflow: 'hidden',
     position: 'relative',
+    boxShadow: '0 12px 36px rgba(77, 58, 32, 0.05), inset 0 1px 0 rgba(255,255,255,0.48)',
   },
   loadingState: {
     display: 'flex',
@@ -702,7 +1138,7 @@ const styles: Record<string, React.CSSProperties> = {
     animation: 'spin 0.8s linear infinite',
   },
   loadingText: {
-    color: '#9A9A96',
+    color: '#8B8378',
     fontSize: '0.875rem',
     margin: 0,
   },
