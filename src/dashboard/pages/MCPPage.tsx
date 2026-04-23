@@ -11,11 +11,11 @@ import {
   runLargeContextIntegrationSync,
   updateLargeContextIntegrationConfig,
   updateJiraConfig,
-  type LargeContextIntegrationStatus,
-  type LargeContextSyncStatusResponse,
   type IntegrationStatus,
   type JiraConfigResponse,
   type JiraProject,
+  type LargeContextIntegrationStatus,
+  type LargeContextSyncStatusResponse,
 } from '../../shared/integrationService';
 import { formatSystemTimestamp, getSystemTimeZone } from '../../shared/dateTime';
 
@@ -26,6 +26,11 @@ interface MCPPageProps {
 type SyncDraft = {
   enabled: boolean;
   intervalMinutes: number;
+};
+
+type SettingsModalState = {
+  mode: 'single' | 'all';
+  integrationId: string;
 };
 
 const SYNC_INTERVAL_OPTIONS = [
@@ -83,6 +88,62 @@ const FALLBACK_INTEGRATIONS: IntegrationStatus[] = [
   },
 ];
 
+function SyncLaunchIcon({ active = false }: { active?: boolean }) {
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+      style={active ? { opacity: 1 } : { opacity: 0.92 }}
+    >
+      <path
+        d="M20.4532 12.8928C20.1754 15.5027 18.6967 17.9484 16.2497 19.3612C12.1842 21.7084 6.98566 20.3155 4.63845 16.25L4.38845 15.817M3.54617 11.1071C3.82397 8.49723 5.30276 6.05151 7.74974 4.63874C11.8152 2.29153 17.0138 3.68447 19.361 7.74995L19.611 8.18297M3.49316 18.0659L4.22522 15.3339L6.95727 16.0659M17.0422 7.93398L19.7743 8.66603L20.5063 5.93398M11.9997 7.49995V12L14.4997 13.5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function formatSyncTimestamp(value?: string | null, fallback = 'Not synced yet') {
+  if (!value) {
+    return fallback;
+  }
+  return formatSystemTimestamp(value, { timeZoneName: 'short' });
+}
+
+function getConnectionLabel(integration: IntegrationStatus) {
+  if (integration.included) {
+    return 'Included';
+  }
+  return integration.connected ? 'Connected' : 'Not connected';
+}
+
+function getSyncStatusLabel(
+  integration: IntegrationStatus,
+  syncStatus?: LargeContextIntegrationStatus,
+  syncRunning = false,
+) {
+  if (integration.included) {
+    return 'Built in';
+  }
+  if (syncRunning) {
+    return 'Syncing';
+  }
+  if (!integration.connected) {
+    return 'Disconnected';
+  }
+  if (!syncStatus) {
+    return 'Unavailable';
+  }
+  return syncStatus.enabled ? 'Automatic sync on' : 'Automatic sync off';
+}
+
 const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   const [integrations, setIntegrations] = useState<IntegrationStatus[]>([]);
   const [largeContextStatus, setLargeContextStatus] = useState<LargeContextSyncStatusResponse | null>(
@@ -90,8 +151,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   );
   const [loading, setLoading] = useState(true);
   const [connectingId, setConnectingId] = useState<string | null>(null);
-  const [activeConfigId, setActiveConfigId] = useState<string | null>(null);
-  const [syncTrayOpenId, setSyncTrayOpenId] = useState<string | null>(null);
+  const [settingsModal, setSettingsModal] = useState<SettingsModalState | null>(null);
   const [syncStartingId, setSyncStartingId] = useState<string | null>(null);
   const [syncSavingId, setSyncSavingId] = useState<string | null>(null);
   const [syncDrafts, setSyncDrafts] = useState<Record<string, SyncDraft>>({});
@@ -106,6 +166,8 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
     void loadPageData({ showLoader: true });
   }, []);
 
+  const integrationList = integrations.length > 0 ? integrations : FALLBACK_INTEGRATIONS;
+
   const integrationSyncMap = useMemo(() => {
     const entries = (largeContextStatus?.integrations || []).map((integrationStatus) => [
       integrationStatus.integration_id,
@@ -115,9 +177,16 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
   }, [largeContextStatus]);
 
   const anySyncRunning = useMemo(
-    () => (largeContextStatus?.integrations || []).some((integrationStatus) => integrationStatus.status === 'running'),
+    () =>
+      (largeContextStatus?.integrations || []).some(
+        (integrationStatus) => integrationStatus.status === 'running',
+      ),
     [largeContextStatus],
   );
+
+  const selectedIntegration = settingsModal
+    ? integrationList.find((integration) => integration.id === settingsModal.integrationId) || null
+    : null;
 
   useEffect(() => {
     if (loading) return undefined;
@@ -127,6 +196,19 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
 
     return () => window.clearTimeout(timeout);
   }, [anySyncRunning, largeContextStatus, loading, syncStartingId]);
+
+  useEffect(() => {
+    if (!settingsModal) {
+      return;
+    }
+    const integrationStatus = integrationSyncMap[settingsModal.integrationId];
+    if (integrationStatus) {
+      ensureSyncDraft(integrationStatus);
+    }
+    if (settingsModal.integrationId === 'jira') {
+      void ensureJiraConfigLoaded();
+    }
+  }, [settingsModal, integrationSyncMap]);
 
   const loadPageData = async ({
     showLoader = false,
@@ -190,15 +272,21 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
     }
   };
 
-  const openJiraConfiguration = async () => {
-    setError(null);
-    setActiveConfigId('jira');
+  const ensureJiraConfigLoaded = async () => {
+    const jiraIntegration = integrationList.find((integration) => integration.id === 'jira');
+    if (!jiraIntegration?.connected) {
+      setJiraConfig(null);
+      setJiraProjects([]);
+      setJiraCloudId('');
+      setJiraProjectKeys([]);
+      return;
+    }
+
     setJiraBusy(true);
     try {
       const config = await fetchJiraConfig();
       const accessibleResources = config.config.accessible_resources || [];
-      const initialCloudId =
-        config.config.cloud_id || accessibleResources[0]?.cloud_id || '';
+      const initialCloudId = config.config.cloud_id || accessibleResources[0]?.cloud_id || '';
       setJiraConfig(config);
       setJiraCloudId(initialCloudId);
       setJiraProjectKeys(config.config.project_keys || []);
@@ -208,7 +296,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
         setJiraProjects([]);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load Jira configuration');
+      setError(e instanceof Error ? e.message : 'Failed to load Jira settings');
     } finally {
       setJiraBusy(false);
     }
@@ -223,13 +311,15 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
       } else if (id === 'google' || id === 'github' || id === 'notion' || id === 'jira') {
         const result = await connectOAuthIntegration(id);
         if (!result.ok) throw new Error(result.error);
-        if (id === 'jira') {
-          await openJiraConfiguration();
-        }
       } else {
         throw new Error(`${id} integration is not supported yet`);
       }
+
       await loadPageData();
+
+      if (id === 'jira') {
+        await ensureJiraConfigLoaded();
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : `Failed to connect ${id}`);
     } finally {
@@ -244,7 +334,6 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
       const ok = await disconnectIntegration(id);
       if (!ok) throw new Error(`Failed to disconnect ${id}`);
       if (id === 'jira') {
-        setActiveConfigId(null);
         setJiraConfig(null);
         setJiraProjects([]);
         setJiraCloudId('');
@@ -266,11 +355,11 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
 
   const saveJiraConfiguration = async () => {
     if (!jiraCloudId) {
-      setError('Select a Jira site before saving configuration.');
+      setError('Select a Jira site before saving settings.');
       return;
     }
     if (jiraProjectKeys.length === 0) {
-      setError('Select at least one Jira project before saving configuration.');
+      setError('Select at least one Jira project before saving settings.');
       return;
     }
 
@@ -281,7 +370,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
       setJiraConfig(config);
       await loadPageData();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to save Jira configuration');
+      setError(e instanceof Error ? e.message : 'Failed to save Jira settings');
     } finally {
       setJiraBusy(false);
     }
@@ -302,17 +391,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
     });
   };
 
-  const toggleSyncTray = (integrationStatus: LargeContextIntegrationStatus) => {
-    ensureSyncDraft(integrationStatus);
-    setSyncTrayOpenId((prev) =>
-      prev === integrationStatus.integration_id ? null : integrationStatus.integration_id,
-    );
-  };
-
-  const updateSyncDraft = (
-    integrationId: string,
-    partial: Partial<SyncDraft>,
-  ) => {
+  const updateSyncDraft = (integrationId: string, partial: Partial<SyncDraft>) => {
     setSyncDrafts((prev) => ({
       ...prev,
       [integrationId]: {
@@ -356,168 +435,550 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
       }
       await loadPageData({ silent: true });
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to start large context sync');
+      setError(e instanceof Error ? e.message : 'Failed to start sync');
     } finally {
       setSyncStartingId(null);
     }
   };
 
-  const renderLargeContextControls = (integration: IntegrationStatus) => {
+  const openSettingsModal = (mode: 'single' | 'all', integrationId: string) => {
+    setSettingsModal({ mode, integrationId });
+  };
+
+  const openAllSettings = () => {
+    openSettingsModal('all', selectedIntegration?.id || integrationList[0]?.id || 'filesystem');
+  };
+
+  const renderCard = (integration: IntegrationStatus) => {
     const integrationStatus = integrationSyncMap[integration.id];
-    if (!integrationStatus) {
-      return null;
-    }
-    const draft = syncDrafts[integrationStatus.integration_id] || {
-      enabled: integrationStatus.enabled,
-      intervalMinutes: integrationStatus.interval_minutes,
-    };
-    const trayOpen = syncTrayOpenId === integrationStatus.integration_id;
     const syncRunning =
-      integrationStatus.status === 'running' || syncStartingId === integrationStatus.integration_id;
-    const controlsDisabled =
-      !integration.connected || connectingId === integration.id || syncSavingId === integrationStatus.integration_id;
+      integrationStatus?.status === 'running' || syncStartingId === integration.id;
+    const connectionLabel = getConnectionLabel(integration);
+    const lastSync = integrationStatus
+      ? formatSyncTimestamp(
+          integrationStatus.last_success_at,
+          integration.connected ? 'Not synced yet' : 'Connect to sync',
+        )
+      : integration.included
+      ? 'Not applicable'
+      : integration.connected
+      ? 'Unavailable'
+      : 'Connect to sync';
+    const nextSync = integrationStatus?.next_run_at
+      ? formatSyncTimestamp(integrationStatus.next_run_at, 'Not scheduled')
+      : integration.included
+      ? 'Not applicable'
+      : !integration.connected
+      ? 'Connect to schedule'
+      : integrationStatus?.enabled
+      ? 'Not scheduled'
+      : 'Automatic sync off';
 
     return (
-      <div
-        style={{
-          ...styles.syncPanel,
-          ...(integration.connected ? {} : styles.syncPanelDisabled),
-        }}
-      >
-        <div style={styles.syncHeader}>
-          <div>
-            <div style={styles.syncTitle}>Large Context Sync</div>
-            <div style={styles.syncSubtitle}>
-              {integration.connected
-                ? `Last sync on ${
-                    integrationStatus.last_success_at
-                      ? formatSystemTimestamp(integrationStatus.last_success_at, {
-                          timeZoneName: 'short',
-                        })
-                      : 'Not synced yet'
-                  }`
-                : 'Connect this integration to enable large context sync'}
-            </div>
-            {integration.connected && integrationStatus.next_run_at && (
-              <div style={styles.syncHint}>
-                Next sync {formatSystemTimestamp(integrationStatus.next_run_at, { timeZoneName: 'short' })}
-              </div>
-            )}
+      <div key={integration.id} style={styles.card}>
+        <div style={styles.cardTopRow}>
+          <div style={styles.cardHeadingBlock}>
+            <h3 style={styles.cardTitle}>{integration.name}</h3>
+            <p style={styles.cardDescription}>{integration.description}</p>
           </div>
-          <div
-            style={{
-              ...styles.syncStatusBadge,
-              ...(syncRunning ? styles.syncStatusRunning : styles.syncStatusIdle),
-            }}
-          >
-            {syncRunning ? (
-              <>
-                <span className="app-spinner" style={styles.spinner} />
-                Syncing
-              </>
-            ) : (
-              integrationStatus.enabled ? 'Auto-sync on' : 'Auto-sync off'
-            )}
-          </div>
-        </div>
 
-        {integration.connected && integrationStatus.last_error && integrationStatus.status === 'error' && (
-          <div style={styles.syncErrorText}>{integrationStatus.last_error}</div>
-        )}
-
-        <div style={styles.syncActionRow}>
           <button
             style={{
-              ...styles.syncButton,
-              ...(syncRunning || controlsDisabled ? styles.buttonDisabled : {}),
+              ...styles.syncLauncherButton,
+              ...(syncRunning ? styles.syncLauncherButtonActive : {}),
             }}
-            onClick={() => void startManualSync(integrationStatus)}
-            disabled={syncRunning || controlsDisabled}
+            onClick={() => openSettingsModal('single', integration.id)}
+            aria-label={`Open ${integration.name} sync controls`}
+            title={`${integration.name} sync and settings`}
           >
-            {syncRunning ? 'Syncing...' : 'Sync'}
-          </button>
-          <button
-            style={{
-              ...styles.syncTrayButton,
-              ...(syncSavingId === integrationStatus.integration_id ? styles.buttonDisabled : {}),
-            }}
-            onClick={() => toggleSyncTray(integrationStatus)}
-            disabled={syncSavingId === integrationStatus.integration_id}
-          >
-            {trayOpen ? 'Hide Settings' : 'Settings'}
+            <SyncLaunchIcon active={syncRunning} />
           </button>
         </div>
 
-        {trayOpen && (
-          <div style={styles.syncTray}>
-            <label style={styles.syncToggleRow}>
-              <span style={styles.syncControlLabel}>Auto-sync</span>
-              <input
-                type="checkbox"
-                checked={draft.enabled}
-                onChange={(event) =>
-                  updateSyncDraft(integrationStatus.integration_id, {
-                    enabled: event.target.checked,
-                  })
-                }
-                disabled={controlsDisabled}
-              />
-            </label>
-            <label style={styles.syncField}>
-              <span style={styles.syncControlLabel}>Cadence</span>
-              <select
-                style={styles.select}
-                value={draft.intervalMinutes}
-                onChange={(event) =>
-                  updateSyncDraft(integrationStatus.integration_id, {
-                    intervalMinutes: Number(event.target.value),
-                  })
-                }
-                disabled={controlsDisabled}
-              >
-                {SYNC_INTERVAL_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div style={styles.syncTrayFooter}>
-              <span style={styles.syncTimeZoneText}>Times shown in {getSystemTimeZone()}</span>
-              <button
-                style={{
-                  ...styles.configureButton,
-                  ...(controlsDisabled ? styles.buttonDisabled : {}),
-                }}
-                onClick={() => void saveSyncSettings(integrationStatus)}
-                disabled={controlsDisabled}
-              >
-                {syncSavingId === integrationStatus.integration_id ? 'Saving...' : 'Save'}
-              </button>
-            </div>
+        <div
+          style={{
+            ...styles.statusBadge,
+            ...(integration.connected || integration.included
+              ? styles.statusBadgeConnected
+              : styles.statusBadgeDisconnected),
+          }}
+        >
+          {connectionLabel}
+        </div>
+
+        <div style={styles.statGrid}>
+          <div style={styles.statCard}>
+            <div style={styles.statLabel}>Last sync</div>
+            <div style={styles.statValue}>{lastSync}</div>
           </div>
+          <div style={styles.statCard}>
+            <div style={styles.statLabel}>Next scheduled</div>
+            <div style={styles.statValue}>{nextSync}</div>
+          </div>
+        </div>
+
+        <div style={styles.cardFooter}>
+          <div style={styles.cardFooterLabel}>
+            {getSyncStatusLabel(integration, integrationStatus, syncRunning)}
+          </div>
+
+          {!integration.included && !integration.connected && (
+            <button
+              style={{
+                ...styles.connectButton,
+                ...((!isAuthenticated && integration.id !== 'filesystem') ||
+                connectingId === integration.id
+                  ? styles.buttonDisabled
+                  : {}),
+              }}
+              onClick={() => void handleConnect(integration.id)}
+              disabled={
+                (!isAuthenticated && integration.id !== 'filesystem') ||
+                connectingId === integration.id
+              }
+            >
+              {connectingId === integration.id
+                ? 'Connecting...'
+                : integration.id === 'filesystem'
+                ? 'Choose Folder'
+                : 'Connect'}
+            </button>
+          )}
+        </div>
+
+        {integrationStatus?.last_error && integrationStatus.status === 'error' && (
+          <div style={styles.cardErrorText}>{integrationStatus.last_error}</div>
         )}
       </div>
     );
   };
 
-  const renderIntegrationMeta = (integration: IntegrationStatus) => {
-    if (integration.id !== 'jira' || !integration.connected) {
+  const renderConnectionSection = (integration: IntegrationStatus) => {
+    if (integration.included) {
+      return (
+        <div style={styles.settingsSection}>
+          <div style={styles.settingsSectionHeader}>
+            <div>
+              <h4 style={styles.settingsSectionTitle}>Connection</h4>
+              <p style={styles.settingsSectionText}>
+                This integration is built into the product and does not need to be connected.
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const requiresLogin = !isAuthenticated && integration.id !== 'filesystem';
+
+    return (
+      <div style={styles.settingsSection}>
+        <div style={styles.settingsSectionHeader}>
+          <div>
+            <h4 style={styles.settingsSectionTitle}>Connection</h4>
+            <p style={styles.settingsSectionText}>
+              {integration.connected
+                ? 'This integration is active and available to Covalent.'
+                : 'Connect this integration to enable sync and tool access.'}
+            </p>
+          </div>
+        </div>
+
+        <div style={styles.inlineActionRow}>
+          {!integration.connected ? (
+            <button
+              style={{
+                ...styles.primaryButton,
+                ...(requiresLogin || connectingId === integration.id ? styles.buttonDisabled : {}),
+              }}
+              onClick={() => void handleConnect(integration.id)}
+              disabled={requiresLogin || connectingId === integration.id}
+            >
+              {connectingId === integration.id
+                ? 'Connecting...'
+                : integration.id === 'filesystem'
+                ? 'Choose Folder'
+                : 'Connect'}
+            </button>
+          ) : (
+            <button
+              style={{
+                ...styles.secondaryButton,
+                ...(connectingId === integration.id ? styles.buttonDisabled : {}),
+              }}
+              onClick={() => void handleDisconnect(integration.id)}
+              disabled={connectingId === integration.id}
+            >
+              {connectingId === integration.id ? 'Disconnecting...' : 'Disconnect'}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderSyncSection = (integration: IntegrationStatus) => {
+    const integrationStatus = integrationSyncMap[integration.id];
+    const syncRunning =
+      integrationStatus?.status === 'running' || syncStartingId === integration.id;
+
+    if (!integrationStatus) {
+      return (
+        <div style={styles.settingsSection}>
+          <div style={styles.settingsSectionHeader}>
+            <div>
+              <h4 style={styles.settingsSectionTitle}>Sync</h4>
+              <p style={styles.settingsSectionText}>
+                {integration.included
+                  ? 'No scheduled sync is needed for this built-in integration.'
+                  : 'Sync controls are not available for this integration yet.'}
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const draft = syncDrafts[integrationStatus.integration_id] || {
+      enabled: integrationStatus.enabled,
+      intervalMinutes: integrationStatus.interval_minutes,
+    };
+    const controlsDisabled =
+      !integration.connected ||
+      connectingId === integration.id ||
+      syncSavingId === integrationStatus.integration_id;
+
+    return (
+      <div style={styles.settingsSection}>
+        <div style={styles.settingsSectionHeader}>
+          <div>
+            <h4 style={styles.settingsSectionTitle}>Sync</h4>
+            <p style={styles.settingsSectionText}>
+              Control manual refreshes and the automatic sync schedule for this integration.
+            </p>
+          </div>
+
+          <button
+            style={{
+              ...styles.primaryButton,
+              ...(syncRunning || !integration.connected ? styles.buttonDisabled : {}),
+            }}
+            onClick={() => void startManualSync(integrationStatus)}
+            disabled={syncRunning || !integration.connected}
+          >
+            {syncRunning ? 'Syncing...' : 'Sync now'}
+          </button>
+        </div>
+
+        <div style={styles.settingsStatsGrid}>
+          <div style={styles.settingsStat}>
+            <span style={styles.settingsStatLabel}>Last sync</span>
+            <span style={styles.settingsStatValue}>
+              {formatSyncTimestamp(
+                integrationStatus.last_success_at,
+                integration.connected ? 'Not synced yet' : 'Connect to sync',
+              )}
+            </span>
+          </div>
+          <div style={styles.settingsStat}>
+            <span style={styles.settingsStatLabel}>Next scheduled</span>
+            <span style={styles.settingsStatValue}>
+              {integrationStatus.next_run_at
+                ? formatSyncTimestamp(integrationStatus.next_run_at, 'Not scheduled')
+                : draft.enabled
+                ? 'Not scheduled'
+                : 'Automatic sync off'}
+            </span>
+          </div>
+          <div style={styles.settingsStat}>
+            <span style={styles.settingsStatLabel}>Status</span>
+            <span style={styles.settingsStatValue}>
+              {getSyncStatusLabel(integration, integrationStatus, syncRunning)}
+            </span>
+          </div>
+        </div>
+
+        {integrationStatus.last_error && integrationStatus.status === 'error' && (
+          <div style={styles.syncErrorText}>{integrationStatus.last_error}</div>
+        )}
+
+        <div style={styles.settingsFormGrid}>
+          <label style={styles.toggleRow}>
+            <span style={styles.fieldLabel}>Automatic sync</span>
+            <input
+              type="checkbox"
+              checked={draft.enabled}
+              onChange={(event) =>
+                updateSyncDraft(integrationStatus.integration_id, {
+                  enabled: event.target.checked,
+                })
+              }
+              disabled={controlsDisabled}
+            />
+          </label>
+
+          <label style={styles.fieldBlock}>
+            <span style={styles.fieldLabel}>Refresh every</span>
+            <select
+              style={styles.select}
+              value={draft.intervalMinutes}
+              onChange={(event) =>
+                updateSyncDraft(integrationStatus.integration_id, {
+                  intervalMinutes: Number(event.target.value),
+                })
+              }
+              disabled={controlsDisabled}
+            >
+              {SYNC_INTERVAL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div style={styles.sectionFooter}>
+          <span style={styles.helperText}>Times shown in {getSystemTimeZone()}</span>
+          <button
+            style={{
+              ...styles.secondaryButton,
+              ...(controlsDisabled ? styles.buttonDisabled : {}),
+            }}
+            onClick={() => void saveSyncSettings(integrationStatus)}
+            disabled={controlsDisabled}
+          >
+            {syncSavingId === integrationStatus.integration_id ? 'Saving...' : 'Save schedule'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderJiraSection = (integration: IntegrationStatus) => {
+    if (integration.id !== 'jira') {
       return null;
     }
-    const siteName = integration.configuration?.site_name;
-    const projectCount = integration.configuration?.project_count ?? 0;
-    return (
-      <div style={styles.metaList}>
-        <div style={styles.metaRow}>
-          <span style={styles.metaLabel}>Site</span>
-          <span style={styles.metaValue}>{siteName || 'Not selected'}</span>
+
+    if (!integration.connected) {
+      return (
+        <div style={styles.settingsSection}>
+          <div style={styles.settingsSectionHeader}>
+            <div>
+              <h4 style={styles.settingsSectionTitle}>Jira access</h4>
+              <p style={styles.settingsSectionText}>
+                Connect Jira first, then choose the site and projects Covalent can sync.
+              </p>
+            </div>
+          </div>
         </div>
-        <div style={styles.metaRow}>
-          <span style={styles.metaLabel}>Projects</span>
-          <span style={styles.metaValue}>
-            {integration.needs_configuration ? 'Configuration required' : `${projectCount} selected`}
+      );
+    }
+
+    const jiraAccessibleResources = jiraConfig?.config.accessible_resources || [];
+
+    return (
+      <div style={styles.settingsSection}>
+        <div style={styles.settingsSectionHeader}>
+          <div>
+            <h4 style={styles.settingsSectionTitle}>Jira access</h4>
+            <p style={styles.settingsSectionText}>
+              Choose which Jira site and projects Covalent should use for sync and live context.
+            </p>
+          </div>
+        </div>
+
+        <div style={styles.fieldBlock}>
+          <span style={styles.fieldLabel}>Jira site</span>
+          <select
+            style={styles.select}
+            value={jiraCloudId}
+            onChange={(event) => {
+              const nextCloudId = event.target.value;
+              setJiraCloudId(nextCloudId);
+              void loadJiraProjectsForCloudId(nextCloudId, []);
+            }}
+            disabled={jiraBusy}
+          >
+            <option value="">Choose a Jira site</option>
+            {jiraAccessibleResources.map((resource) => (
+              <option key={resource.cloud_id} value={resource.cloud_id}>
+                {resource.site_name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div style={styles.fieldBlock}>
+          <div style={styles.projectsHeader}>
+            <div>
+              <div style={styles.fieldLabel}>Projects</div>
+              <div style={styles.helperText}>
+                These projects define the Jira issues that appear in context sync.
+              </div>
+            </div>
+            <div style={styles.selectionCount}>{jiraProjectKeys.length} selected</div>
+          </div>
+
+          <div style={styles.projectList}>
+            {jiraProjects.length === 0 ? (
+              <div style={styles.projectEmpty}>
+                {jiraCloudId
+                  ? jiraBusy
+                    ? 'Loading projects...'
+                    : 'No Jira projects found for this site.'
+                  : 'Choose a Jira site to load projects.'}
+              </div>
+            ) : (
+              jiraProjects.map((project) => {
+                const checked = jiraProjectKeys.includes(project.key);
+                return (
+                  <label key={project.id || project.key} style={styles.projectRow}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleJiraProjectKey(project.key)}
+                      disabled={jiraBusy}
+                    />
+                    <div style={styles.projectText}>
+                      <span style={styles.projectName}>{project.name}</span>
+                      <span style={styles.projectKey}>{project.key}</span>
+                    </div>
+                  </label>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        <div style={styles.sectionFooter}>
+          <span style={styles.helperText}>
+            {integration.needs_configuration
+              ? 'Jira still needs a site and project selection.'
+              : 'Use settings to keep Jira scoped to the right work.'}
           </span>
+          <button
+            style={{
+              ...styles.secondaryButton,
+              ...(jiraBusy ? styles.buttonDisabled : {}),
+            }}
+            onClick={() => void saveJiraConfiguration()}
+            disabled={jiraBusy}
+          >
+            {jiraBusy ? 'Saving...' : 'Save Jira settings'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderSettingsPanel = (integration: IntegrationStatus) => {
+    const integrationStatus = integrationSyncMap[integration.id];
+    const syncRunning =
+      integrationStatus?.status === 'running' || syncStartingId === integration.id;
+
+    return (
+      <div style={styles.settingsPanel}>
+        <div style={styles.settingsHero}>
+          <div style={styles.settingsHeroText}>
+            <div
+              style={{
+                ...styles.statusBadge,
+                ...(integration.connected || integration.included
+                  ? styles.statusBadgeConnected
+                  : styles.statusBadgeDisconnected),
+              }}
+            >
+              {getConnectionLabel(integration)}
+            </div>
+            <h3 style={styles.settingsTitle}>{integration.name}</h3>
+            <p style={styles.settingsSubtitle}>{integration.description}</p>
+          </div>
+
+          <div style={styles.settingsHeroButtonCluster}>
+            {integrationStatus && (
+              <button
+                style={{
+                  ...styles.primaryButton,
+                  ...(syncRunning || !integration.connected ? styles.buttonDisabled : {}),
+                }}
+                onClick={() => void startManualSync(integrationStatus)}
+                disabled={syncRunning || !integration.connected}
+              >
+                {syncRunning ? 'Syncing...' : 'Sync now'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {renderConnectionSection(integration)}
+        {renderSyncSection(integration)}
+        {renderJiraSection(integration)}
+      </div>
+    );
+  };
+
+  const renderSettingsModal = () => {
+    if (!settingsModal || !selectedIntegration) {
+      return null;
+    }
+
+    const modalTitle =
+      settingsModal.mode === 'all' ? 'Integration settings' : `${selectedIntegration.name}`;
+    const modalSubtitle =
+      settingsModal.mode === 'all'
+        ? 'Manage connections, sync schedules, and integration-specific setup in one place.'
+        : 'Sync controls and integration settings';
+
+    return (
+      <div style={styles.modalOverlay} onClick={() => setSettingsModal(null)}>
+        <div
+          style={{
+            ...styles.modalShell,
+            ...(settingsModal.mode === 'all' ? styles.modalShellWide : styles.modalShellSingle),
+          }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div style={styles.modalHeader}>
+            <div>
+              <h2 style={styles.modalTitle}>{modalTitle}</h2>
+              <p style={styles.modalSubtitle}>{modalSubtitle}</p>
+            </div>
+
+            <button style={styles.modalCloseButton} onClick={() => setSettingsModal(null)}>
+              Close
+            </button>
+          </div>
+
+          {settingsModal.mode === 'all' ? (
+            <div style={styles.modalContentLayout}>
+              <div style={styles.modalSidebar}>
+                {integrationList.map((integration) => (
+                  <button
+                    key={integration.id}
+                    style={{
+                      ...styles.sidebarItem,
+                      ...(integration.id === settingsModal.integrationId
+                        ? styles.sidebarItemActive
+                        : {}),
+                    }}
+                    onClick={() =>
+                      setSettingsModal((prev) =>
+                        prev ? { ...prev, integrationId: integration.id } : prev,
+                      )
+                    }
+                  >
+                    <span style={styles.sidebarItemName}>{integration.name}</span>
+                    <span style={styles.sidebarItemMeta}>{getConnectionLabel(integration)}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div style={styles.modalPanel}>{renderSettingsPanel(selectedIntegration)}</div>
+            </div>
+          ) : (
+            <div style={styles.modalPanel}>{renderSettingsPanel(selectedIntegration)}</div>
+          )}
         </div>
       </div>
     );
@@ -531,14 +992,17 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
     );
   }
 
-  const jiraAccessibleResources = jiraConfig?.config.accessible_resources || [];
-  const showingJiraConfiguration = activeConfigId === 'jira';
-
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <h1 style={styles.title}>Integrations</h1>
-        <p style={styles.subtitle}>Connect external services and tools</p>
+        <div>
+          <h1 style={styles.title}>Integrations</h1>
+          <p style={styles.subtitle}>Connect tools, review sync status, and manage settings.</p>
+        </div>
+
+        <button style={styles.pageSettingsButton} onClick={openAllSettings}>
+          Settings
+        </button>
       </div>
 
       {!isAuthenticated && (
@@ -549,187 +1013,9 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
 
       {error && <div style={styles.errorBox}>{error}</div>}
 
-      {!showingJiraConfiguration ? (
-        <div style={styles.grid}>
-          {integrations.map((integration) => (
-            <div key={integration.id} style={styles.card}>
-              <div style={styles.cardHeader}>
-                <div style={styles.cardTitleRow}>
-                  <h3 style={styles.cardTitle}>{integration.name}</h3>
-                  <div
-                    style={{
-                      ...styles.statusText,
-                      color: integration.connected ? '#166534' : '#B42318',
-                    }}
-                  >
-                    {integration.connected ? 'Connected' : 'Not Connected'}
-                  </div>
-                </div>
-                <p style={styles.cardDescription}>{integration.description}</p>
-                {renderIntegrationMeta(integration)}
-                {renderLargeContextControls(integration)}
-              </div>
+      <div style={styles.grid}>{integrationList.map((integration) => renderCard(integration))}</div>
 
-              <div style={styles.cardActions}>
-                {integration.included ? (
-                  <div style={styles.includedBadge}>Included</div>
-                ) : !integration.connected ? (
-                  <button
-                    style={{
-                      ...styles.connectButton,
-                      ...((!isAuthenticated && integration.id !== 'filesystem') ||
-                      connectingId === integration.id
-                        ? styles.buttonDisabled
-                        : {}),
-                    }}
-                    onClick={() => void handleConnect(integration.id)}
-                    disabled={
-                      (!isAuthenticated && integration.id !== 'filesystem') ||
-                      connectingId === integration.id
-                    }
-                    title={
-                      !isAuthenticated && integration.id !== 'filesystem'
-                        ? 'Please log in first'
-                        : undefined
-                    }
-                  >
-                    {connectingId === integration.id
-                      ? 'Connecting...'
-                      : integration.id === 'filesystem'
-                      ? 'Choose Folder'
-                      : 'Connect'}
-                  </button>
-                ) : (
-                  <>
-                    {integration.configurable && (
-                      <button
-                        style={{
-                          ...styles.configureButton,
-                          ...(jiraBusy ? styles.buttonDisabled : {}),
-                        }}
-                        onClick={() => void openJiraConfiguration()}
-                        disabled={jiraBusy}
-                      >
-                        Configure
-                      </button>
-                    )}
-                    <button
-                      style={{
-                        ...styles.disconnectButton,
-                        ...(isAuthenticated || integration.id === 'filesystem'
-                          ? {}
-                          : styles.buttonDisabled),
-                      }}
-                      onClick={() => void handleDisconnect(integration.id)}
-                      disabled={!isAuthenticated && integration.id !== 'filesystem'}
-                    >
-                      {connectingId === integration.id ? 'Disconnecting...' : 'Disconnect'}
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div style={styles.configPanel}>
-          <div style={styles.configHeader}>
-            <div>
-              <h2 style={styles.configTitle}>Configure Jira Context</h2>
-              <p style={styles.configSubtitle}>
-                Select the Jira site and project allowlist used for MCP actions and large context
-                sync.
-              </p>
-            </div>
-            <button
-              style={styles.backButton}
-              onClick={() => setActiveConfigId(null)}
-              disabled={jiraBusy}
-            >
-              Back
-            </button>
-          </div>
-
-          <div style={styles.configGroup}>
-            <label style={styles.configLabel} htmlFor="jira-site-select">
-              Jira Site
-            </label>
-            <select
-              id="jira-site-select"
-              style={styles.select}
-              value={jiraCloudId}
-              onChange={(event) => {
-                const nextCloudId = event.target.value;
-                setJiraCloudId(nextCloudId);
-                void loadJiraProjectsForCloudId(nextCloudId, []);
-              }}
-              disabled={jiraBusy}
-            >
-              <option value="">Choose a Jira site</option>
-              {jiraAccessibleResources.map((resource) => (
-                <option key={resource.cloud_id} value={resource.cloud_id}>
-                  {resource.site_name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div style={styles.configGroup}>
-            <div style={styles.projectHeader}>
-              <div>
-                <div style={styles.configLabel}>Projects</div>
-                <div style={styles.projectHint}>
-                  These projects will drive Jira.md snapshots and the live context graph.
-                </div>
-              </div>
-              <div style={styles.selectionCount}>{jiraProjectKeys.length} selected</div>
-            </div>
-
-            <div style={styles.projectList}>
-              {jiraProjects.length === 0 ? (
-                <div style={styles.projectEmpty}>
-                  {jiraCloudId
-                    ? jiraBusy
-                      ? 'Loading projects...'
-                      : 'No Jira projects found for this site.'
-                    : 'Choose a Jira site to load projects.'}
-                </div>
-              ) : (
-                jiraProjects.map((project) => {
-                  const checked = jiraProjectKeys.includes(project.key);
-                  return (
-                    <label key={project.id || project.key} style={styles.projectRow}>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleJiraProjectKey(project.key)}
-                        disabled={jiraBusy}
-                      />
-                      <div style={styles.projectText}>
-                        <span style={styles.projectName}>{project.name}</span>
-                        <span style={styles.projectKey}>{project.key}</span>
-                      </div>
-                    </label>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          <div style={styles.configActions}>
-            <button
-              style={{
-                ...styles.connectButton,
-                ...(jiraBusy ? styles.buttonDisabled : {}),
-              }}
-              onClick={() => void saveJiraConfiguration()}
-              disabled={jiraBusy}
-            >
-              {jiraBusy ? 'Saving...' : 'Save Jira Configuration'}
-            </button>
-          </div>
-        </div>
-      )}
+      {renderSettingsModal()}
     </div>
   );
 };
@@ -737,125 +1023,189 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
 const styles: { [key: string]: React.CSSProperties } = {
   container: {
     padding: '40px',
-    maxWidth: '1040px',
+    maxWidth: '1120px',
   },
   header: {
     marginBottom: '28px',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '16px',
+    flexWrap: 'wrap',
   },
   title: {
-    fontSize: '1.6rem',
-    fontWeight: '700',
+    fontSize: '1.75rem',
+    fontWeight: 700,
     color: '#1A1A1A',
     margin: '0 0 6px 0',
-    letterSpacing: '-0.02em',
+    letterSpacing: '-0.03em',
   },
   subtitle: {
-    fontSize: '0.9rem',
+    fontSize: '0.95rem',
     color: '#5A5A5A',
     margin: 0,
+    lineHeight: 1.5,
+  },
+  pageSettingsButton: {
+    padding: '10px 16px',
+    backgroundColor: '#FFFFFF',
+    border: '1px solid #D8D1C7',
+    borderRadius: '999px',
+    color: '#2F2A24',
+    fontSize: '0.86rem',
+    fontWeight: 600,
+    cursor: 'pointer',
+    fontFamily: 'inherit',
   },
   grid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(270px, 1fr))',
-    gap: '14px',
-    marginBottom: '28px',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+    gap: '16px',
   },
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: '14px',
+    borderRadius: '18px',
     padding: '20px',
     border: '1px solid #E8E4DC',
+    display: 'grid',
+    gap: '16px',
+    boxShadow: '0 4px 18px rgba(17, 17, 17, 0.05)',
+  },
+  cardTopRow: {
     display: 'flex',
-    flexDirection: 'column',
     justifyContent: 'space-between',
-    minHeight: '188px',
-    boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-    transition: 'box-shadow 0.15s ease, border-color 0.15s ease',
+    alignItems: 'flex-start',
+    gap: '14px',
   },
-  cardHeader: {
-    marginBottom: '16px',
+  cardHeadingBlock: {
+    minWidth: 0,
   },
-  cardTitleRow: {
+  cardTitle: {
+    fontSize: '1.05rem',
+    fontWeight: 700,
+    color: '#1A1A1A',
+    margin: 0,
+    letterSpacing: '-0.02em',
+  },
+  cardDescription: {
+    fontSize: '0.84rem',
+    color: '#5A5A5A',
+    margin: '6px 0 0 0',
+    lineHeight: 1.5,
+  },
+  syncLauncherButton: {
+    width: '46px',
+    height: '46px',
+    borderRadius: '999px',
+    border: '1px solid #D8D1C7',
+    backgroundColor: '#FFFDF9',
+    color: '#4B4338',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    flexShrink: 0,
+    boxShadow: '0 2px 8px rgba(17, 17, 17, 0.04)',
+  },
+  syncLauncherButtonActive: {
+    backgroundColor: '#F6F0E6',
+    color: '#1A1A1A',
+  },
+  statusBadge: {
+    display: 'inline-block',
+    padding: 0,
+    fontSize: '0.84rem',
+    fontWeight: 700,
+    width: 'fit-content',
+    letterSpacing: '-0.01em',
+  },
+  statusBadgeConnected: {
+    color: '#166534',
+  },
+  statusBadgeDisconnected: {
+    color: '#B42318',
+  },
+  statGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: '10px',
+  },
+  statCard: {
+    borderRadius: '14px',
+    backgroundColor: '#FCFAF6',
+    border: '1px solid #EEE7DD',
+    padding: '12px',
+    display: 'grid',
+    gap: '6px',
+  },
+  statLabel: {
+    fontSize: '0.74rem',
+    fontWeight: 700,
+    color: '#7A746B',
+    letterSpacing: '0.01em',
+    textTransform: 'uppercase',
+  },
+  statValue: {
+    fontSize: '0.8rem',
+    lineHeight: 1.35,
+    color: '#1A1A1A',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  cardFooter: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: '10px',
+    gap: '12px',
+    flexWrap: 'wrap',
   },
-  cardTitle: {
-    fontSize: '0.95rem',
-    fontWeight: '700',
-    color: '#1A1A1A',
-    margin: 0,
-    letterSpacing: '-0.01em',
-  },
-  statusText: {
-    fontSize: '0.74rem',
-    fontWeight: '700',
-    letterSpacing: '0.01em',
-  },
-  cardDescription: {
-    fontSize: '0.825rem',
+  cardFooterLabel: {
+    fontSize: '0.82rem',
     color: '#5A5A5A',
-    margin: 0,
-    lineHeight: '1.5',
-  },
-  cardActions: {
-    display: 'flex',
-    gap: '8px',
+    fontWeight: 600,
   },
   connectButton: {
-    flex: 1,
-    padding: '9px 18px',
+    padding: '9px 16px',
     backgroundColor: '#1A1A1A',
     border: 'none',
-    borderRadius: '100px',
+    borderRadius: '999px',
     color: '#FFFFFF',
-    fontSize: '0.825rem',
-    fontWeight: '600',
+    fontSize: '0.82rem',
+    fontWeight: 600,
     cursor: 'pointer',
-    transition: 'all 0.15s ease',
     fontFamily: 'inherit',
   },
-  configureButton: {
-    flex: 1,
-    padding: '9px 18px',
-    backgroundColor: '#F6F2EA',
-    border: '1px solid #E8E4DC',
-    borderRadius: '100px',
-    color: '#1A1A1A',
-    fontSize: '0.825rem',
-    fontWeight: '600',
+  primaryButton: {
+    padding: '10px 16px',
+    backgroundColor: '#1A1A1A',
+    border: 'none',
+    borderRadius: '999px',
+    color: '#FFFFFF',
+    fontSize: '0.84rem',
+    fontWeight: 600,
     cursor: 'pointer',
-    transition: 'all 0.15s ease',
     fontFamily: 'inherit',
   },
-  disconnectButton: {
-    flex: 1,
-    padding: '9px 18px',
-    backgroundColor: 'transparent',
-    border: '1px solid #E8E4DC',
-    borderRadius: '100px',
-    color: '#5A5A5A',
-    fontSize: '0.825rem',
-    fontWeight: '500',
+  secondaryButton: {
+    padding: '10px 16px',
+    backgroundColor: '#FFFFFF',
+    border: '1px solid #D8D1C7',
+    borderRadius: '999px',
+    color: '#2F2A24',
+    fontSize: '0.84rem',
+    fontWeight: 600,
     cursor: 'pointer',
-    transition: 'all 0.15s ease',
     fontFamily: 'inherit',
   },
   buttonDisabled: {
     opacity: 0.45,
     cursor: 'not-allowed',
   },
-  includedBadge: {
-    flex: 1,
-    padding: '9px 18px',
-    backgroundColor: 'rgba(193, 122, 95, 0.08)',
-    border: '1px solid rgba(193, 122, 95, 0.25)',
-    borderRadius: '100px',
-    color: '#C17A5F',
-    fontSize: '0.825rem',
-    fontWeight: '600',
-    textAlign: 'center',
+  cardErrorText: {
+    fontSize: '0.76rem',
+    lineHeight: 1.45,
+    color: '#991b1b',
   },
   loadingText: {
     color: '#9A9A96',
@@ -880,216 +1230,263 @@ const styles: { [key: string]: React.CSSProperties } = {
     fontSize: '0.85rem',
     marginBottom: '16px',
   },
-  metaList: {
-    display: 'grid',
-    gap: '6px',
-    marginTop: '12px',
-  },
-  metaRow: {
+  modalOverlay: {
+    position: 'fixed',
+    inset: 0,
+    backgroundColor: 'rgba(17, 17, 17, 0.24)',
     display: 'flex',
-    justifyContent: 'space-between',
-    gap: '12px',
-    fontSize: '0.78rem',
-  },
-  metaLabel: {
-    color: '#7A746B',
-    fontWeight: 600,
-  },
-  metaValue: {
-    color: '#312B24',
-    textAlign: 'right',
-  },
-  syncPanel: {
-    marginTop: '14px',
-    padding: '14px',
-    borderRadius: '14px',
-    backgroundColor: '#FCFAF6',
-    border: '1px solid #E8E4DC',
-    display: 'grid',
-    gap: '12px',
-  },
-  syncPanelDisabled: {
-    opacity: 0.7,
-  },
-  syncHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: '12px',
-  },
-  syncTitle: {
-    fontSize: '0.82rem',
-    fontWeight: 700,
-    color: '#1A1A1A',
-  },
-  syncSubtitle: {
-    marginTop: '4px',
-    fontSize: '0.76rem',
-    color: '#5A5A5A',
-    lineHeight: 1.45,
-  },
-  syncHint: {
-    marginTop: '4px',
-    fontSize: '0.74rem',
-    color: '#7A746B',
-  },
-  syncStatusBadge: {
-    display: 'inline-flex',
     alignItems: 'center',
-    gap: '6px',
-    padding: '6px 10px',
-    borderRadius: '999px',
-    fontSize: '0.74rem',
-    fontWeight: 700,
-    whiteSpace: 'nowrap',
-  },
-  syncStatusRunning: {
-    backgroundColor: 'rgba(193, 122, 95, 0.1)',
-    border: '1px solid rgba(193, 122, 95, 0.25)',
-    color: '#8A4F39',
-  },
-  syncStatusIdle: {
-    backgroundColor: '#F6F2EA',
-    border: '1px solid #E8E4DC',
-    color: '#5A5A5A',
-  },
-  syncErrorText: {
-    fontSize: '0.75rem',
-    color: '#991b1b',
-    lineHeight: 1.4,
-  },
-  syncActionRow: {
-    display: 'flex',
-    gap: '8px',
-  },
-  syncButton: {
-    flex: 1,
-    padding: '9px 14px',
-    backgroundColor: '#1A1A1A',
-    border: 'none',
-    borderRadius: '100px',
-    color: '#FFFFFF',
-    fontSize: '0.8rem',
-    fontWeight: 600,
-    cursor: 'pointer',
-  },
-  syncTrayButton: {
-    flex: 1,
-    padding: '9px 14px',
-    backgroundColor: '#FFFFFF',
-    border: '1px solid #D8D1C7',
-    borderRadius: '100px',
-    color: '#4B4338',
-    fontSize: '0.8rem',
-    fontWeight: 600,
-    cursor: 'pointer',
-  },
-  syncTray: {
-    borderTop: '1px solid #EEE7DD',
-    paddingTop: '12px',
-    display: 'grid',
-    gap: '12px',
-  },
-  syncToggleRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: '12px',
-    fontSize: '0.8rem',
-    color: '#1A1A1A',
-  },
-  syncField: {
-    display: 'grid',
-    gap: '8px',
-  },
-  syncControlLabel: {
-    fontSize: '0.78rem',
-    fontWeight: 700,
-    color: '#1A1A1A',
-  },
-  syncTrayFooter: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: '12px',
-  },
-  syncTimeZoneText: {
-    fontSize: '0.72rem',
-    color: '#7A746B',
-  },
-  spinner: {
-    width: '12px',
-    height: '12px',
-    border: '2px solid rgba(138, 79, 57, 0.2)',
-    borderTopColor: '#8A4F39',
-  },
-  configPanel: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: '18px',
-    border: '1px solid #E8E4DC',
-    boxShadow: '0 4px 18px rgba(17, 17, 17, 0.05)',
+    justifyContent: 'center',
     padding: '24px',
+    zIndex: 1000,
+    backdropFilter: 'blur(10px)',
+    WebkitBackdropFilter: 'blur(10px)',
   },
-  configHeader: {
+  modalShell: {
+    width: '100%',
+    backgroundColor: 'rgba(255, 255, 255, 0.96)',
+    border: '1px solid rgba(232, 228, 220, 0.85)',
+    borderRadius: '24px',
+    boxShadow: '0 24px 80px rgba(17, 17, 17, 0.16)',
+    maxHeight: 'min(88vh, 960px)',
+    overflow: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  modalShellSingle: {
+    maxWidth: '760px',
+  },
+  modalShellWide: {
+    maxWidth: '1080px',
+  },
+  modalHeader: {
+    padding: '24px 24px 18px 24px',
+    borderBottom: '1px solid #EEE7DD',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: '20px',
     gap: '16px',
+    flexWrap: 'wrap',
   },
-  configTitle: {
+  modalTitle: {
     margin: 0,
-    fontSize: '1.05rem',
+    fontSize: '1.2rem',
+    fontWeight: 700,
     color: '#1A1A1A',
+    letterSpacing: '-0.02em',
   },
-  configSubtitle: {
+  modalSubtitle: {
     margin: '6px 0 0 0',
-    fontSize: '0.88rem',
+    fontSize: '0.9rem',
     color: '#5A5A5A',
     lineHeight: 1.5,
   },
-  backButton: {
-    padding: '9px 16px',
-    backgroundColor: 'transparent',
+  modalCloseButton: {
+    padding: '10px 16px',
+    backgroundColor: '#FFFFFF',
     border: '1px solid #D8D1C7',
     borderRadius: '999px',
-    color: '#4B4338',
-    fontSize: '0.82rem',
+    color: '#2F2A24',
+    fontSize: '0.84rem',
     fontWeight: 600,
     cursor: 'pointer',
-    whiteSpace: 'nowrap',
     fontFamily: 'inherit',
   },
-  configGroup: {
-    marginBottom: '18px',
+  modalContentLayout: {
+    display: 'flex',
+    gap: '0',
+    minHeight: 0,
+    flex: 1,
+    flexWrap: 'wrap',
   },
-  configLabel: {
-    display: 'block',
-    fontSize: '0.82rem',
+  modalSidebar: {
+    width: '240px',
+    minWidth: '240px',
+    borderRight: '1px solid #EEE7DD',
+    padding: '16px',
+    display: 'grid',
+    gap: '10px',
+    alignContent: 'start',
+    backgroundColor: '#FBF8F3',
+  },
+  sidebarItem: {
+    padding: '12px 14px',
+    borderRadius: '14px',
+    border: '1px solid transparent',
+    backgroundColor: 'transparent',
+    color: '#2F2A24',
+    cursor: 'pointer',
+    textAlign: 'left',
+    display: 'grid',
+    gap: '4px',
+    fontFamily: 'inherit',
+  },
+  sidebarItemActive: {
+    backgroundColor: '#FFFFFF',
+    border: '1px solid #E8E4DC',
+    boxShadow: '0 4px 16px rgba(17, 17, 17, 0.04)',
+  },
+  sidebarItemName: {
+    fontSize: '0.88rem',
+    fontWeight: 700,
+  },
+  sidebarItemMeta: {
+    fontSize: '0.76rem',
+    color: '#6F685D',
+  },
+  modalPanel: {
+    flex: 1,
+    minWidth: '320px',
+    overflowY: 'auto',
+    padding: '24px',
+  },
+  settingsPanel: {
+    display: 'grid',
+    gap: '18px',
+  },
+  settingsHero: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '16px',
+    flexWrap: 'wrap',
+  },
+  settingsHeroText: {
+    minWidth: 0,
+  },
+  settingsTitle: {
+    margin: '10px 0 0 0',
+    fontSize: '1.15rem',
     fontWeight: 700,
     color: '#1A1A1A',
-    marginBottom: '8px',
+    letterSpacing: '-0.02em',
+  },
+  settingsSubtitle: {
+    margin: '6px 0 0 0',
+    fontSize: '0.9rem',
+    color: '#5A5A5A',
+    lineHeight: 1.5,
+    maxWidth: '60ch',
+  },
+  settingsHeroButtonCluster: {
+    display: 'flex',
+    gap: '10px',
+    flexWrap: 'wrap',
+  },
+  settingsSection: {
+    border: '1px solid #E8E4DC',
+    borderRadius: '18px',
+    backgroundColor: '#FCFAF6',
+    padding: '18px',
+    display: 'grid',
+    gap: '16px',
+  },
+  settingsSectionHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '14px',
+    flexWrap: 'wrap',
+  },
+  settingsSectionTitle: {
+    margin: 0,
+    fontSize: '0.92rem',
+    fontWeight: 700,
+    color: '#1A1A1A',
+  },
+  settingsSectionText: {
+    margin: '6px 0 0 0',
+    fontSize: '0.84rem',
+    color: '#5A5A5A',
+    lineHeight: 1.5,
+    maxWidth: '64ch',
+  },
+  inlineActionRow: {
+    display: 'flex',
+    gap: '10px',
+    flexWrap: 'wrap',
+  },
+  settingsStatsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+    gap: '10px',
+  },
+  settingsStat: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: '14px',
+    border: '1px solid #EEE7DD',
+    padding: '12px',
+    display: 'grid',
+    gap: '6px',
+  },
+  settingsStatLabel: {
+    fontSize: '0.74rem',
+    fontWeight: 700,
+    letterSpacing: '0.01em',
+    textTransform: 'uppercase',
+    color: '#7A746B',
+  },
+  settingsStatValue: {
+    fontSize: '0.84rem',
+    lineHeight: 1.45,
+    color: '#1A1A1A',
+  },
+  settingsFormGrid: {
+    display: 'grid',
+    gap: '14px',
+  },
+  toggleRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: '12px',
+    borderRadius: '14px',
+    backgroundColor: '#FFFFFF',
+    border: '1px solid #EEE7DD',
+    padding: '12px 14px',
+  },
+  fieldBlock: {
+    display: 'grid',
+    gap: '8px',
+  },
+  fieldLabel: {
+    fontSize: '0.8rem',
+    fontWeight: 700,
+    color: '#1A1A1A',
+  },
+  helperText: {
+    fontSize: '0.78rem',
+    color: '#7A746B',
+    lineHeight: 1.45,
   },
   select: {
     width: '100%',
     padding: '12px 14px',
     borderRadius: '12px',
     border: '1px solid #D8D1C7',
-    backgroundColor: '#FCFAF6',
+    backgroundColor: '#FFFFFF',
     color: '#1A1A1A',
     fontSize: '0.9rem',
+    fontFamily: 'inherit',
   },
-  projectHeader: {
+  sectionFooter: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: '10px',
     gap: '14px',
+    flexWrap: 'wrap',
   },
-  projectHint: {
+  syncErrorText: {
     fontSize: '0.78rem',
-    color: '#7A746B',
-    marginTop: '4px',
+    color: '#991b1b',
+    lineHeight: 1.45,
+  },
+  projectsHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: '16px',
+    flexWrap: 'wrap',
   },
   selectionCount: {
     fontSize: '0.78rem',
@@ -1100,7 +1497,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   projectList: {
     border: '1px solid #E8E4DC',
     borderRadius: '14px',
-    backgroundColor: '#FCFAF6',
+    backgroundColor: '#FFFFFF',
     maxHeight: '320px',
     overflowY: 'auto',
   },
@@ -1130,10 +1527,6 @@ const styles: { [key: string]: React.CSSProperties } = {
     fontSize: '0.77rem',
     color: '#7A746B',
     letterSpacing: '0.02em',
-  },
-  configActions: {
-    display: 'flex',
-    justifyContent: 'flex-end',
   },
 };
 
