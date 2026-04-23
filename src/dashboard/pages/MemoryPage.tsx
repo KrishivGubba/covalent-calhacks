@@ -938,7 +938,7 @@ const MemoryPage: React.FC = () => {
       <div style={styles.header}>
         <div>
           <h1 style={styles.title}>Memory Graph</h1>
-          <p style={styles.subtitle}>Explore clustered memory regions instead of a cramped tree.</p>
+          <p style={styles.subtitle}>Explore and edit what Covalent knows about you</p>
         </div>
       </div>
 
@@ -964,6 +964,9 @@ const MemoryPage: React.FC = () => {
           <div style={styles.statItem}>
             <span style={styles.statValue}>{graphData.stats.total_data}</span>
             <span style={styles.statLabel}>Data</span>
+          </div>
+          <div style={styles.statsHelper}>
+            <span style={styles.statsHelperText}>Scroll to zoom and click to expand</span>
           </div>
         </div>
       )}
@@ -1105,6 +1108,15 @@ const styles: Record<string, React.CSSProperties> = {
     width: 1,
     height: 28,
     backgroundColor: '#E8E4DC',
+  },
+  statsHelper: {
+    marginLeft: 'auto',
+    paddingLeft: 8,
+  },
+  statsHelperText: {
+    fontSize: '0.75rem',
+    color: '#8B8378',
+    fontWeight: 500,
   },
   graphContainer: {
     flex: 1,
