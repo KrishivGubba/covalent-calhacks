@@ -753,19 +753,15 @@ const GraphVisualization: React.FC<{
         width={layout.svgWidth}
         height={layout.svgHeight}
         style={{
+          position: 'absolute',
+          left: 0,
+          top: 0,
           transformOrigin: '0 0',
           willChange: 'transform',
+          overflow: 'visible',
         }}
       >
         <defs>
-          <radialGradient id="memoryGraphGlow" cx="50%" cy="45%" r="85%">
-            <stop offset="0%" stopColor="#FFF9F1" />
-            <stop offset="65%" stopColor="#F3EBDD" />
-            <stop offset="100%" stopColor="#E8DECD" />
-          </radialGradient>
-          <pattern id="memoryGraphGrid" width="48" height="48" patternUnits="userSpaceOnUse">
-            <path d="M 48 0 L 0 0 0 48" fill="none" stroke={GRAPH_BACKGROUND.grid} strokeWidth="1" />
-          </pattern>
           <filter id="nodeGlow" x="-80%" y="-80%" width="260%" height="260%">
             <feGaussianBlur stdDeviation="8" result="softGlow" />
             <feMerge>
@@ -774,9 +770,6 @@ const GraphVisualization: React.FC<{
             </feMerge>
           </filter>
         </defs>
-
-        <rect x={0} y={0} width={layout.svgWidth} height={layout.svgHeight} fill="url(#memoryGraphGlow)" />
-        <rect x={0} y={0} width={layout.svgWidth} height={layout.svgHeight} fill="url(#memoryGraphGrid)" opacity={0.45} />
 
         <g transform={`translate(${layout.offsetX}, ${layout.offsetY})`}>
           {layout.halos.map((halo) => (
