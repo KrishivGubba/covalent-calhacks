@@ -99,7 +99,7 @@ class JiraClient:
             payload["expand"] = ",".join(expand) if not isinstance(expand, str) else expand
         return self._request(
             "POST",
-            self._api_url("/rest/api/3/search", cloud_id=cloud_id),
+            self._api_url("/rest/api/3/search/jql", cloud_id=cloud_id),
             json=payload,
             headers={"Content-Type": "application/json"},
         )
