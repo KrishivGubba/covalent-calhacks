@@ -97,7 +97,8 @@ class CalendarService:
         time_max: Optional[str] = None,
         max_results: int = 250,
         show_deleted: bool = False,
-        calendar_id: str = 'primary'
+        calendar_id: str = 'primary',
+        updated_min: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Retrieve calendar events within a specified time range.
@@ -133,7 +134,9 @@ class CalendarService:
             # Add optional time_max if specified
             if time_max:
                 params['timeMax'] = time_max
-            
+            if updated_min:
+                params['updatedMin'] = updated_min
+
             # Execute the events().list() method
             events_result = self.service.events().list(**params).execute()
             
