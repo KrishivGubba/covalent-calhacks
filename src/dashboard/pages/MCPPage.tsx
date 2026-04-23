@@ -91,26 +91,33 @@ const FALLBACK_INTEGRATIONS: IntegrationStatus[] = [
 function SyncLaunchIcon({ active = false }: { active?: boolean }) {
   return (
     <svg
-      width="18"
-      height="18"
+      width="20"
+      height="20"
       viewBox="0 0 24 24"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden="true"
-      style={active ? { opacity: 1 } : undefined}
+      style={active ? { opacity: 1 } : { opacity: 0.92 }}
     >
       <path
-        d="M20 7.5V4m0 0h-3.5M20 4l-3 3A8 8 0 1 0 20 12"
+        d="M20 5v4h-4"
         stroke="currentColor"
-        strokeWidth="1.8"
+        strokeWidth="1.9"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <circle cx="15.6" cy="15.6" r="4.1" stroke="currentColor" strokeWidth="1.6" />
       <path
-        d="M15.6 13.8v2.1l1.35.95"
+        d="M20 9a8 8 0 1 0 2 5.25"
         stroke="currentColor"
-        strokeWidth="1.6"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="16.75" cy="16.75" r="3.75" stroke="currentColor" strokeWidth="1.7" />
+      <path
+        d="M16.75 14.9v1.95l1.2.8"
+        stroke="currentColor"
+        strokeWidth="1.7"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
@@ -1009,7 +1016,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
         </div>
 
         <button style={styles.pageSettingsButton} onClick={openAllSettings}>
-          All settings
+          Settings
         </button>
       </div>
 
@@ -1102,39 +1109,35 @@ const styles: { [key: string]: React.CSSProperties } = {
     lineHeight: 1.5,
   },
   syncLauncherButton: {
-    width: '42px',
-    height: '42px',
+    width: '46px',
+    height: '46px',
     borderRadius: '999px',
     border: '1px solid #D8D1C7',
-    backgroundColor: '#FAF7F2',
+    backgroundColor: '#FFFDF9',
     color: '#4B4338',
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
     cursor: 'pointer',
     flexShrink: 0,
+    boxShadow: '0 2px 8px rgba(17, 17, 17, 0.04)',
   },
   syncLauncherButtonActive: {
-    backgroundColor: '#F1E8DA',
+    backgroundColor: '#F6F0E6',
     color: '#1A1A1A',
   },
   statusBadge: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    padding: '7px 12px',
-    borderRadius: '999px',
-    fontSize: '0.76rem',
+    display: 'inline-block',
+    padding: 0,
+    fontSize: '0.84rem',
     fontWeight: 700,
     width: 'fit-content',
+    letterSpacing: '-0.01em',
   },
   statusBadgeConnected: {
-    backgroundColor: 'rgba(22, 101, 52, 0.08)',
-    border: '1px solid rgba(22, 101, 52, 0.16)',
     color: '#166534',
   },
   statusBadgeDisconnected: {
-    backgroundColor: 'rgba(180, 35, 24, 0.08)',
-    border: '1px solid rgba(180, 35, 24, 0.14)',
     color: '#B42318',
   },
   statGrid: {
@@ -1158,9 +1161,12 @@ const styles: { [key: string]: React.CSSProperties } = {
     textTransform: 'uppercase',
   },
   statValue: {
-    fontSize: '0.83rem',
-    lineHeight: 1.45,
+    fontSize: '0.8rem',
+    lineHeight: 1.35,
     color: '#1A1A1A',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
   },
   cardFooter: {
     display: 'flex',
