@@ -71,7 +71,6 @@ interface LayoutNode extends GraphNode {
   stroke: string;
   topLevelId: string;
   hasContent: boolean;
-  showLabel: boolean;
 }
 
 interface LayoutEdge {
@@ -127,6 +126,27 @@ const clamp = (value: number, min: number, max: number): number => Math.min(Math
 
 function truncateLabel(label: string, maxLength: number): string {
   return label.length > maxLength ? `${label.slice(0, maxLength - 1)}…` : label;
+}
+
+function getReadableNodeLabel(label: string): string {
+  const normalized = label.replace(/\s+/g, ' ').trim();
+  if (!normalized) return 'Untitled';
+
+  const bracketMatch = normalized.match(/\]\s*(.+)$/);
+  const withoutPrefix = bracketMatch?.[1]?.trim() || normalized;
+  const dashParts = withoutPrefix.split(' - ').map((part) => part.trim()).filter(Boolean);
+  if (dashParts.length > 1) {
+    const tail = dashParts[dashParts.length - 1];
+    if (tail.length >= 8) return tail;
+  }
+
+  const slashParts = withoutPrefix.split('/').map((part) => part.trim()).filter(Boolean);
+  if (slashParts.length > 1) {
+    const tail = slashParts[slashParts.length - 1];
+    if (tail && tail.length <= 42) return tail.replace(/[_-]+/g, ' ');
+  }
+
+  return withoutPrefix.replace(/[_]+/g, ' ');
 }
 
 function hashAngle(value: string): number {
@@ -431,13 +451,11 @@ function computeLayout(nodes: GraphNode[], edges: GraphEdge[], containerWidth: n
 
   const layoutNodes: LayoutNode[] = simNodes.map((node) => {
     const hasContent = node.action_count > 0 || node.data_count > 0;
-    const showLabel = node.depth <= 1 || hasContent;
     return {
       ...node,
       x: node.x || 0,
       y: node.y || 0,
       hasContent,
-      showLabel,
     };
   });
 
@@ -493,43 +511,56 @@ function computeLayout(nodes: GraphNode[], edges: GraphEdge[], containerWidth: n
   };
 }
 
-const Tooltip: React.FC<{
+const SelectionPanel: React.FC<{
   node: LayoutNode;
-  mouseX: number;
-  mouseY: number;
-  containerRect: DOMRect;
-}> = ({ node, mouseX, mouseY, containerRect }) => {
-  const tooltipWidth = 300;
-  let left = mouseX - containerRect.left + 18;
-  let top = mouseY - containerRect.top - 18;
-
-  if (left + tooltipWidth > containerRect.width - 12) {
-    left = mouseX - containerRect.left - tooltipWidth - 18;
-  }
-  if (top < 12) top = 12;
-
+  onClose: () => void;
+}> = ({ node, onClose }) => {
+  const readableLabel = getReadableNodeLabel(node.label);
+  const path = node.path_labels.map(getReadableNodeLabel).join(' / ');
   return (
     <div
+      onClick={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
       style={{
         position: 'absolute',
-        left,
-        top,
-        width: tooltipWidth,
-        background: 'rgba(255, 251, 245, 0.97)',
-        border: '1px solid rgba(120, 101, 80, 0.16)',
+        right: 18,
+        top: 18,
+        width: 320,
+        maxWidth: 'calc(100% - 36px)',
+        background: 'rgba(255, 251, 245, 0.96)',
+        border: '1px solid rgba(120, 101, 80, 0.12)',
         borderRadius: 18,
         padding: 16,
-        pointerEvents: 'none',
-        zIndex: 100,
-        boxShadow: '0 18px 42px rgba(65, 51, 38, 0.16)',
+        zIndex: 10,
+        boxShadow: '0 18px 42px rgba(65, 51, 38, 0.14)',
         backdropFilter: 'blur(12px)',
       }}
     >
-      <div style={{ fontWeight: 700, fontSize: '0.98rem', color: GRAPH_BACKGROUND.ink, marginBottom: 6 }}>
-        {node.label}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 6 }}>
+        <div style={{ fontWeight: 700, fontSize: '0.98rem', color: GRAPH_BACKGROUND.ink, minWidth: 0 }}>
+          {truncateLabel(readableLabel, 56)}
+        </div>
+        <button
+          onClick={(event) => {
+            event.stopPropagation();
+            onClose();
+          }}
+          style={{
+            border: 'none',
+            background: 'transparent',
+            color: '#8C8377',
+            cursor: 'pointer',
+            fontSize: '1rem',
+            padding: 0,
+            lineHeight: 1,
+            flexShrink: 0,
+          }}
+        >
+          ×
+        </button>
       </div>
       <div style={{ fontSize: '0.76rem', color: '#746C63', lineHeight: 1.5, marginBottom: 12 }}>
-        {node.path_labels.join(' / ')}
+        {path}
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
@@ -543,7 +574,7 @@ const Tooltip: React.FC<{
           <div style={tooltipSectionTitle}>Action previews</div>
           {node.action_previews.map((preview) => (
             <div key={preview} style={tooltipPreviewRow}>
-              {truncateLabel(preview, 54)}
+              {truncateLabel(getReadableNodeLabel(preview), 54)}
             </div>
           ))}
         </div>
@@ -555,7 +586,7 @@ const Tooltip: React.FC<{
           {node.data_previews.map((preview, index) => (
             <div key={`${preview.label}-${index}`} style={tooltipPreviewRow}>
               {preview.category ? `[${preview.category}] ` : ''}
-              {truncateLabel(preview.label, 52)}
+              {truncateLabel(getReadableNodeLabel(preview.label), 52)}
             </div>
           ))}
         </div>
@@ -600,13 +631,12 @@ const GraphVisualization: React.FC<{
   edges: GraphEdge[];
 }> = ({ nodes, edges }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [hoveredNode, setHoveredNode] = useState<LayoutNode | null>(null);
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
-  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
+  const svgRef = useRef<SVGSVGElement>(null);
+  const transformRef = useRef({ x: 0, y: 0, scale: 1 });
+  const panStartRef = useRef({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
-  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
-  const [containerRect, setContainerRect] = useState<DOMRect | null>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [layout, setLayout] = useState<LayoutResult>({
     layoutNodes: [],
     layoutEdges: [],
@@ -617,6 +647,13 @@ const GraphVisualization: React.FC<{
     offsetY: 0,
   });
   const rootId = nodes.find((entry) => entry.parent_id === null)?.id || null;
+  const selectedNode = selectedNodeId ? layout.layoutNodes.find((node) => node.id === selectedNodeId) || null : null;
+
+  const applyTransform = useCallback(() => {
+    if (!svgRef.current) return;
+    const { x, y, scale } = transformRef.current;
+    svgRef.current.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current) return undefined;
@@ -627,11 +664,9 @@ const GraphVisualization: React.FC<{
       if (!entry) return;
       const rect = entry.contentRect;
       setContainerSize({ width: rect.width, height: rect.height });
-      setContainerRect(element.getBoundingClientRect());
     });
 
     observer.observe(element);
-    setContainerRect(element.getBoundingClientRect());
 
     return () => observer.disconnect();
   }, []);
@@ -647,45 +682,50 @@ const GraphVisualization: React.FC<{
     const scaleX = rect.width / layout.svgWidth;
     const scaleY = rect.height / layout.svgHeight;
     const fitScale = Math.min(scaleX, scaleY, 1) * 0.92;
-    const x = (rect.width - layout.svgWidth * fitScale) / 2;
-    const y = (rect.height - layout.svgHeight * fitScale) / 2;
-    setTransform({ x, y, scale: fitScale });
-  }, [layout]);
+    transformRef.current = {
+      x: (rect.width - layout.svgWidth * fitScale) / 2,
+      y: (rect.height - layout.svgHeight * fitScale) / 2,
+      scale: fitScale,
+    };
+    applyTransform();
+  }, [applyTransform, layout]);
 
   const handleWheel = useCallback((event: React.WheelEvent) => {
     event.preventDefault();
     const delta = event.deltaY > 0 ? 0.9 : 1.1;
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
 
-    setTransform((previous) => {
-      const newScale = clamp(previous.scale * delta, 0.18, 4.5);
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (!rect) return { ...previous, scale: newScale };
+    const previous = transformRef.current;
+    const newScale = clamp(previous.scale * delta, 0.22, 4);
+    const mouseX = event.clientX - rect.left;
+    const mouseY = event.clientY - rect.top;
 
-      const mouseX = event.clientX - rect.left;
-      const mouseY = event.clientY - rect.top;
-      const x = mouseX - (mouseX - previous.x) * (newScale / previous.scale);
-      const y = mouseY - (mouseY - previous.y) * (newScale / previous.scale);
-
-      return { x, y, scale: newScale };
-    });
-  }, []);
+    transformRef.current = {
+      x: mouseX - (mouseX - previous.x) * (newScale / previous.scale),
+      y: mouseY - (mouseY - previous.y) * (newScale / previous.scale),
+      scale: newScale,
+    };
+    applyTransform();
+  }, [applyTransform]);
 
   const handleMouseDown = useCallback((event: React.MouseEvent) => {
     if (event.button !== 0) return;
     setIsPanning(true);
-    setPanStart({ x: event.clientX - transform.x, y: event.clientY - transform.y });
-  }, [transform.x, transform.y]);
+    const { x, y } = transformRef.current;
+    panStartRef.current = { x: event.clientX - x, y: event.clientY - y };
+  }, []);
 
   const handleMouseMove = useCallback((event: React.MouseEvent) => {
-    setMousePos({ x: event.clientX, y: event.clientY });
     if (isPanning) {
-      setTransform((previous) => ({
-        ...previous,
-        x: event.clientX - panStart.x,
-        y: event.clientY - panStart.y,
-      }));
+      transformRef.current = {
+        ...transformRef.current,
+        x: event.clientX - panStartRef.current.x,
+        y: event.clientY - panStartRef.current.y,
+      };
+      applyTransform();
     }
-  }, [isPanning, panStart.x, panStart.y]);
+  }, [applyTransform, isPanning]);
 
   const handleMouseUp = useCallback(() => setIsPanning(false), []);
 
@@ -705,15 +745,16 @@ const GraphVisualization: React.FC<{
       onMouseUp={handleMouseUp}
       onMouseLeave={() => {
         setIsPanning(false);
-        setHoveredNode(null);
       }}
+      onClick={() => setSelectedNodeId(null)}
     >
       <svg
+        ref={svgRef}
         width={layout.svgWidth}
         height={layout.svgHeight}
         style={{
-          transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
           transformOrigin: '0 0',
+          willChange: 'transform',
         }}
       >
         <defs>
@@ -740,19 +781,7 @@ const GraphVisualization: React.FC<{
         <g transform={`translate(${layout.offsetX}, ${layout.offsetY})`}>
           {layout.halos.map((halo) => (
             <g key={halo.id}>
-              <circle cx={halo.x} cy={halo.y} r={halo.radius} fill={halo.fill} stroke={halo.stroke} strokeWidth={1.4} />
-              <text
-                x={halo.x}
-                y={halo.y - halo.radius + 22}
-                textAnchor="middle"
-                fill="#8F8275"
-                fontSize={12}
-                fontFamily="DM Sans, system-ui, sans-serif"
-                fontWeight={600}
-                opacity={0.85}
-              >
-                {truncateLabel(halo.label, 24)}
-              </text>
+              <circle cx={halo.x} cy={halo.y} r={halo.radius} fill={halo.fill} stroke={halo.stroke} strokeWidth={1} opacity={0.82} />
             </g>
           ))}
 
@@ -768,16 +797,18 @@ const GraphVisualization: React.FC<{
           ))}
 
           {layout.layoutNodes.map((node) => {
-            const isHovered = hoveredNode?.id === node.id;
-            const label = truncateLabel(node.label, node.depth <= 1 ? 22 : 18);
-            const displayLabel = node.showLabel || isHovered;
+            const isSelected = selectedNodeId === node.id;
+            const label = truncateLabel(getReadableNodeLabel(node.label), node.depth <= 1 ? 20 : 16);
+            const displayLabel = node.id === rootId || node.depth === 1 || isSelected;
             const contentCount = node.action_count + node.data_count;
 
             return (
               <g
                 key={node.id}
-                onMouseEnter={() => setHoveredNode(node)}
-                onMouseLeave={() => setHoveredNode(null)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setSelectedNodeId(node.id);
+                }}
                 style={{ cursor: 'pointer' }}
               >
                 {node.id === rootId && (
@@ -794,12 +825,12 @@ const GraphVisualization: React.FC<{
                 <circle
                   cx={node.x}
                   cy={node.y}
-                  r={isHovered ? node.radius + 3 : node.radius}
+                  r={isSelected ? node.radius + 2 : node.radius}
                   fill={node.fill}
                   stroke={node.stroke}
-                  strokeWidth={isHovered ? 3 : 2}
+                  strokeWidth={isSelected ? 3.5 : 1.8}
                   opacity={0.96}
-                  filter={isHovered ? 'url(#nodeGlow)' : undefined}
+                  filter={isSelected ? 'url(#nodeGlow)' : undefined}
                   style={{ transition: 'r 0.16s ease, stroke-width 0.16s ease, opacity 0.16s ease' }}
                 />
 
@@ -833,10 +864,10 @@ const GraphVisualization: React.FC<{
                     y={node.y + node.radius + 18}
                     textAnchor="middle"
                     fill={node.depth <= 1 ? GRAPH_BACKGROUND.ink : '#62594F'}
-                    fontSize={node.depth <= 1 ? 12 : 10.5}
+                    fontSize={node.depth <= 1 ? 12 : 10}
                     fontFamily="DM Sans, system-ui, sans-serif"
                     fontWeight={node.depth <= 1 ? 700 : 500}
-                    opacity={isHovered ? 1 : node.depth <= 1 ? 0.94 : 0.78}
+                    opacity={isSelected ? 1 : node.depth <= 1 ? 0.94 : 0.78}
                   >
                     {label}
                   </text>
@@ -847,10 +878,8 @@ const GraphVisualization: React.FC<{
         </g>
       </svg>
 
-      <div style={styles.hintPill}>Scroll to zoom. Drag to pan. Hover for a quick human summary.</div>
-
-      {hoveredNode && containerRect && (
-        <Tooltip node={hoveredNode} mouseX={mousePos.x} mouseY={mousePos.y} containerRect={containerRect} />
+      {selectedNode && (
+        <SelectionPanel node={selectedNode} onClose={() => setSelectedNodeId(null)} />
       )}
     </div>
   );
@@ -1082,24 +1111,10 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 440,
     background: 'linear-gradient(180deg, #F8F3EA 0%, #F0E7DA 100%)',
     borderRadius: 18,
-    border: '1px solid #E3D8C8',
+    border: '1px solid rgba(184, 160, 130, 0.12)',
     overflow: 'hidden',
     position: 'relative',
-    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.55)',
-  },
-  hintPill: {
-    position: 'absolute',
-    top: 16,
-    left: 16,
-    padding: '8px 12px',
-    borderRadius: 999,
-    background: 'rgba(255, 251, 245, 0.78)',
-    border: '1px solid rgba(141, 124, 104, 0.16)',
-    color: '#645A50',
-    fontSize: '0.74rem',
-    fontWeight: 600,
-    zIndex: 2,
-    backdropFilter: 'blur(8px)',
+    boxShadow: '0 12px 36px rgba(77, 58, 32, 0.05), inset 0 1px 0 rgba(255,255,255,0.48)',
   },
   loadingState: {
     display: 'flex',
