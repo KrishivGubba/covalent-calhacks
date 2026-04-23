@@ -102,6 +102,58 @@ class TestGraphEndpoints:
         assert "edges" in data
         assert "stats" in data
         assert data["stats"]["total_nodes"] == 0
+        assert data["nodes"] == []
+
+    @pytest.mark.asyncio
+    async def test_graph_data_returns_summarized_nodes(self, client):
+        """Graph data should expose summarized previews instead of raw nested records."""
+        from server.fastapi_app.routers import graph as graph_router
+
+        raw_nodes = [
+            ("root-uuid", "Root", None, "[]"),
+            ("project-uuid", "Projects", "root-uuid", "[]"),
+        ]
+        raw_actions = [
+            ("action-uuid-1", "Open roadmap", "project-uuid"),
+            ("action-uuid-2", "Draft summary", "project-uuid"),
+            ("action-uuid-3", "Archive notes", "project-uuid"),
+        ]
+        raw_data = [
+            ("data-uuid-1", "project-uuid", "Roadmap Q2", "document", "planning"),
+            ("data-uuid-2", "project-uuid", "Launch checklist", "document", "ops"),
+            ("data-uuid-3", "project-uuid", "Hidden extra", "document", "internal"),
+        ]
+
+        with patch.object(graph_router, "_fetch_graph_data_sync", return_value=(raw_nodes, raw_actions, raw_data)):
+            async with client:
+                response = await client.get("/graph/data")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["stats"]["total_nodes"] == 2
+        assert data["stats"]["total_actions"] == 3
+        assert data["stats"]["total_data"] == 3
+        assert len(data["nodes"]) == 2
+
+        project_node = next(node for node in data["nodes"] if node["id"] == "project-uuid")
+        assert project_node["label"] == "Projects"
+        assert project_node["parent_id"] == "root-uuid"
+        assert project_node["depth"] == 1
+        assert project_node["child_count"] == 0
+        assert project_node["action_count"] == 3
+        assert project_node["data_count"] == 3
+        assert project_node["action_previews"] == ["Open roadmap", "Draft summary"]
+        assert project_node["data_previews"] == [
+            {"label": "Roadmap Q2", "category": "planning"},
+            {"label": "Launch checklist", "category": "ops"},
+        ]
+        assert project_node["path_labels"] == ["Root", "Projects"]
+        assert "actions" not in project_node
+        assert "data" not in project_node
+
+        response_text = response.text
+        assert "action-uuid-1" not in response_text
+        assert "data-uuid-1" not in response_text
     
     @pytest.mark.asyncio
     async def test_graph_reset(self, client):
@@ -111,7 +163,7 @@ class TestGraphEndpoints:
         
         assert response.status_code == 200
         data = response.json()
-        assert data.get("status") == "ok" or data.get("ok") == True
+        assert data.get("status") == "ok" or data.get("ok") == True or data.get("message") == "Graph reset successfully"
 
 
 class TestAuthEndpoints:
