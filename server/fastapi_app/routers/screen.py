@@ -3,7 +3,7 @@ Screen context endpoint.
 """
 import asyncio
 import json
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 
@@ -26,6 +26,7 @@ class ScreenContextRequest(BaseModel):
 
 @router.post("/screen")
 async def screen(
+    request: Request,
     body: ScreenContextRequest,
     tree=Depends(tree_dependency),
     integration_dao=Depends(integration_dao_dependency),
@@ -61,6 +62,28 @@ async def screen(
         activity_level = full_context_data.get("activity_level", body.activity_level)
         workflow_stage = full_context_data.get("workflow_stage", body.workflow_stage)
         raw_ocr_text = full_context_data.get("raw_ocr_text", body.raw_ocr_text)
+        large_context_service = getattr(request.app.state, "large_context_sync_service", None)
+        active_context = []
+        if large_context_service is not None:
+            query_text = " ".join(part for part in [str(app_name), str(description), str(raw_ocr_text)] if part)
+            active_context = large_context_service.get_active_context(query_text, limit=5)
+
+        active_context_section = ""
+        if active_context:
+            rendered_items = []
+            for item in active_context:
+                rendered_items.append(
+                    f"- {item['title']} [{item['entity_type']}]"
+                    f" | project={item.get('project') or '-'}"
+                    f" | why={', '.join(item.get('why_active') or []) or '-'}"
+                    f" | people={', '.join(item.get('people') or []) or '-'}"
+                    f" | related={', '.join(item.get('related_entities') or []) or '-'}"
+                )
+            active_context_section = (
+                "\nACTIVE LARGE CONTEXT (PRIORITIZED):\n"
+                + "\n".join(rendered_items)
+                + "\n"
+            )
         
         # Format context_type
         context_type_str = "Unknown"
@@ -89,6 +112,7 @@ APPLICATION INFO:
 USER ACTIVITY DESCRIPTION:
 {description}
 {ocr_section}
+{active_context_section}
 FULL CONTEXT DATA (JSON):
 {json.dumps(full_context_data, indent=2, ensure_ascii=False)}
 

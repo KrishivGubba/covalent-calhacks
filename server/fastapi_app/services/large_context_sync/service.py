@@ -19,6 +19,7 @@ from .models import (
     ManualRunRequest,
 )
 from .providers import build_default_provider_registry
+from .retrieval import ActiveContextRetriever
 from .scheduler import LargeContextSyncScheduler
 from .selection import resolve_manual_run_selection
 from .storage import LargeContextSnapshotStorage
@@ -38,6 +39,7 @@ class LargeContextSyncService:
         self.storage = LargeContextSnapshotStorage(default_markdown_root)
         self.dao.initialize(default_markdown_root, [provider.registry_info() for provider in self.providers])
         self.projector = LargeContextGraphProjector(db_path, refresh_tree_callback=refresh_tree_from_db)
+        self.retriever = ActiveContextRetriever(self.dao)
         self.engine = LargeContextSyncEngine(
             dao=self.dao,
             integration_dao=self.integration_dao,
@@ -161,6 +163,9 @@ class LargeContextSyncService:
             )
 
         return statuses
+
+    def get_active_context(self, query_text: str, limit: int = 10) -> list[dict]:
+        return self.retriever.get_active_context(query_text, limit=limit)
 
     def _integration_display_name(self, integration_id: str, providers: list) -> str:
         try:

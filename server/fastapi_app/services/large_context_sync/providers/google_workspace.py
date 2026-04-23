@@ -248,6 +248,7 @@ class GoogleWorkspaceLargeContextProvider(LargeContextProvider):
                         "thread_id": thread_id,
                         "subject": latest.get("subject") or "",
                         "participants": participants,
+                        "account_email": account_email or "",
                         "last_message_at": updated_at,
                         "labels": latest.get("labelIds", []),
                         "linked_entities": related_entities,
