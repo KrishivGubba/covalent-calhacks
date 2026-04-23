@@ -212,7 +212,9 @@ def test_manual_run_creates_history_and_updates_provider_state(tmp_path, monkeyp
 
     state = _fetch_one(db_path, "SELECT status, cursor_json FROM large_context_provider_state WHERE provider = ?", ("fake_live",))
     assert state[0] == "synced"
-    assert json.loads(state[1]) == {"since": "cursor-1"}
+    stored_cursor = json.loads(state[1])
+    assert stored_cursor["since"] == "cursor-1"
+    assert stored_cursor["last_success_at"]
     run_row = _fetch_one(db_path, "SELECT status FROM large_context_sync_runs ORDER BY started_at DESC LIMIT 1")
     assert run_row[0] == "completed"
 
@@ -248,7 +250,7 @@ def test_placeholder_provider_reports_not_supported_and_does_not_write_graph(tmp
     assert graph_rows == []
 
 
-def test_markdown_and_graph_projection_are_idempotent(tmp_path, monkeypatch):
+def test_incremental_projection_skips_markdown_and_remains_idempotent(tmp_path, monkeypatch):
     provider = FakeLiveProvider()
     app, db_path, data_dir = _make_app(tmp_path, monkeypatch, [provider])
 
@@ -257,9 +259,7 @@ def test_markdown_and_graph_projection_are_idempotent(tmp_path, monkeypatch):
         assert client.post("/integrations/large-context-sync/run", json={"providers": ["fake_live"]}).status_code == 200
 
     markdown_path = data_dir / "long_term_context" / "fake_live.md"
-    content = markdown_path.read_text(encoding="utf-8")
-    assert markdown_path.exists()
-    assert content.count("### ticket: Fake Ticket") == 1
+    assert not markdown_path.exists()
 
     entity_rows = _fetch_all(
         db_path,
@@ -273,6 +273,16 @@ def test_markdown_and_graph_projection_are_idempotent(tmp_path, monkeypatch):
         ("fake_live:1",),
     )
     assert len(entity_rows) == 1
+    entity_state_rows = _fetch_all(
+        db_path,
+        """
+        SELECT provider_id, entity_type, external_id
+        FROM large_context_entity_state
+        WHERE provider_id = ?
+        """,
+        ("fake_live",),
+    )
+    assert entity_state_rows == [("fake_live", "ticket", "fake_live:1")]
 
 
 def test_failed_provider_does_not_block_later_provider(tmp_path, monkeypatch):
@@ -310,12 +320,15 @@ def test_incremental_cursor_and_status_endpoint(tmp_path, monkeypatch):
         payload = status.json()
         assert payload["last_run"]["providers_succeeded"] == ["fake_live"]
         assert any(state["provider"] == "fake_live" for state in payload["providers"])
-        assert payload["scheduler"]["running"] is True
+    assert payload["scheduler"]["running"] is True
 
     assert provider.received_cursors[0] is None
-    assert provider.received_cursors[1] == {"since": "cursor-1"}
+    assert provider.received_cursors[1]["since"] == "cursor-1"
+    assert provider.received_cursors[1]["last_success_at"]
     stored_cursor = _fetch_one(db_path, "SELECT cursor_json FROM large_context_provider_state WHERE provider = ?", ("fake_live",))
-    assert json.loads(stored_cursor[0]) == {"since": "cursor-2"}
+    parsed_stored_cursor = json.loads(stored_cursor[0])
+    assert parsed_stored_cursor["since"] == "cursor-2"
+    assert parsed_stored_cursor["last_success_at"]
 
 
 def test_manual_run_accepts_integration_key_alias_for_provider(tmp_path, monkeypatch):
