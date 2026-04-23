@@ -52,7 +52,8 @@ class DriveService:
         self,
         query: str,
         max_results: int = 50,
-        page_token: Optional[str] = None
+        page_token: Optional[str] = None,
+        order_by: Optional[str] = 'modifiedTime desc'
     ) -> Dict[str, Any]:
         """
         Search for files in Google Drive.
@@ -71,13 +72,22 @@ class DriveService:
             params = {
                 'q': query,
                 'pageSize': max_results,
-                'fields': 'nextPageToken, files(id, name, mimeType, modifiedTime, size, webViewLink)',
+                'fields': (
+                    'nextPageToken, '
+                    'files('
+                    'id, name, mimeType, modifiedTime, size, webViewLink, parents, '
+                    'owners(displayName,emailAddress), '
+                    'lastModifyingUser(displayName,emailAddress)'
+                    ')'
+                ),
                 'includeItemsFromAllDrives': True,
                 'supportsAllDrives': True
             }
-            
+
             if page_token:
                 params['pageToken'] = page_token
+            if order_by:
+                params['orderBy'] = order_by
             
             response = self.service.files().list(**params).execute()
             
@@ -266,7 +276,14 @@ class DriveService:
             params = {
                 'q': query,
                 'pageSize': max_results,
-                'fields': 'nextPageToken, files(id, name, mimeType, modifiedTime, size)',
+                'fields': (
+                    'nextPageToken, '
+                    'files('
+                    'id, name, mimeType, modifiedTime, size, webViewLink, parents, '
+                    'owners(displayName,emailAddress), '
+                    'lastModifyingUser(displayName,emailAddress)'
+                    ')'
+                ),
                 'orderBy': 'name',
                 'includeItemsFromAllDrives': True,
                 'supportsAllDrives': True
@@ -299,7 +316,11 @@ class DriveService:
         try:
             file = self.service.files().get(
                 fileId=file_id,
-                fields='id, name, mimeType, modifiedTime, size, webViewLink, parents',
+                fields=(
+                    'id, name, mimeType, modifiedTime, size, webViewLink, parents, '
+                    'owners(displayName,emailAddress), '
+                    'lastModifyingUser(displayName,emailAddress)'
+                ),
                 supportsAllDrives=True
             ).execute()
             
@@ -308,6 +329,48 @@ class DriveService:
             logging.error(f"Error getting file: {str(e)}")
             logging.error(traceback.format_exc())
             return None
+
+    def resolve_path(
+        self,
+        parents: Optional[List[str]] = None,
+        cache: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> str:
+        """
+        Resolve a folder path using the first parent chain.
+
+        Args:
+            parents: Parent folder IDs for a file
+            cache: Optional mutable folder metadata cache keyed by folder ID
+
+        Returns:
+            POSIX-style folder path rooted at "/"
+        """
+        if not parents:
+            return '/'
+
+        cache = cache if cache is not None else {}
+        current = parents[0]
+        visited = set()
+        components: List[str] = []
+
+        while current and current != 'root' and current not in visited:
+            visited.add(current)
+            folder = cache.get(current)
+            if folder is None:
+                folder = self.get_file(current) or {}
+                if folder.get('id'):
+                    cache[current] = folder
+            if not folder:
+                break
+            name = folder.get('name')
+            if name:
+                components.append(name)
+            folder_parents = folder.get('parents') or []
+            current = folder_parents[0] if folder_parents else 'root'
+
+        if not components:
+            return '/'
+        return '/' + '/'.join(reversed(components))
     
     def get_file_content(self, file_id: str) -> Optional[str]:
         """

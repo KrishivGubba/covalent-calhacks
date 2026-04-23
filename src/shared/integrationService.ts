@@ -67,6 +67,40 @@ export interface JiraConfigResponse {
   };
 }
 
+export interface LargeContextIntegrationStatus {
+  integration_id: string;
+  display_name: string;
+  provider_ids: string[];
+  connected: boolean;
+  enabled: boolean;
+  interval_minutes: number;
+  status: string;
+  last_started_at?: string | null;
+  last_completed_at?: string | null;
+  last_success_at?: string | null;
+  last_error?: string | null;
+  next_run_at?: string | null;
+}
+
+export interface LargeContextSyncStatusResponse {
+  config: {
+    enabled: boolean;
+    interval_minutes: number;
+    projection_mode: string;
+    markdown_root: string;
+    last_scheduler_heartbeat?: string | null;
+  };
+  scheduler: {
+    running: boolean;
+    next_run_at?: string | null;
+    last_started_at?: string | null;
+    last_completed_at?: string | null;
+  };
+  integrations: LargeContextIntegrationStatus[];
+  providers: Array<Record<string, unknown>>;
+  last_run?: Record<string, unknown> | null;
+}
+
 export const REQUIRED_INTEGRATION_IDS: RequiredIntegrationId[] = [
   'filesystem',
   'google',
@@ -85,7 +119,7 @@ const NOTION_REDIRECT_URI = `http://localhost:${FLASK_PORT}/integrations/notion/
 const JIRA_REDIRECT_URI = `http://127.0.0.1:${FLASK_PORT}/integrations/jira/callback`;
 
 const GOOGLE_SCOPES =
-  'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email';
+  'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/userinfo.email';
 const GITHUB_SCOPES = 'repo read:user';
 const JIRA_SCOPES = 'offline_access read:me read:jira-user read:jira-work write:jira-work';
 
@@ -340,6 +374,60 @@ export async function updateJiraConfig(
     throw new Error(data.error || data.detail || 'Failed to update Jira configuration');
   }
   return data as JiraConfigResponse;
+}
+
+export async function fetchLargeContextSyncStatus(): Promise<LargeContextSyncStatusResponse> {
+  const response = await fetch(`${BACKEND_URL}/integrations/large-context-sync/status`);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || data.detail || 'Failed to load large context sync status');
+  }
+  return data as LargeContextSyncStatusResponse;
+}
+
+export async function updateLargeContextIntegrationConfig(
+  integrationId: string,
+  enabled: boolean,
+  intervalMinutes: number,
+): Promise<LargeContextIntegrationStatus> {
+  const response = await fetch(
+    `${BACKEND_URL}/integrations/large-context-sync/integrations/${encodeURIComponent(integrationId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabled,
+        interval_minutes: intervalMinutes,
+      }),
+    },
+  );
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || data.detail || 'Failed to update sync settings');
+  }
+  return data.integration as LargeContextIntegrationStatus;
+}
+
+export async function runLargeContextIntegrationSync(
+  integrationId: string,
+): Promise<{ ok: true } | { ok: false; busy?: boolean; error: string }> {
+  const response = await fetch(`${BACKEND_URL}/integrations/large-context-sync/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mode: 'integrations',
+      integration_ids: [integrationId],
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (response.ok) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    busy: response.status === 409,
+    error: data.error || data.detail || 'Failed to start large context sync',
+  };
 }
 
 export function getRequiredIntegrations(

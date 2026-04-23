@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -25,6 +25,24 @@ class LargeContextProviderState(BaseModel):
     last_error: Optional[str] = None
     status: str = "idle"
     last_snapshot_path: Optional[str] = None
+
+
+class LargeContextIntegrationSyncState(BaseModel):
+    integration_id: str
+    enabled: bool = True
+    interval_minutes: int = Field(default=60, ge=30)
+    status: str = "idle"
+    last_started_at: Optional[str] = None
+    last_completed_at: Optional[str] = None
+    last_success_at: Optional[str] = None
+    last_error: Optional[str] = None
+
+
+class LargeContextIntegrationStatus(LargeContextIntegrationSyncState):
+    display_name: str
+    provider_ids: List[str] = Field(default_factory=list)
+    connected: bool = False
+    next_run_at: Optional[str] = None
 
 
 class LargeContextRunSummary(BaseModel):
@@ -105,10 +123,21 @@ class ProviderSnapshot(BaseModel):
     watch_items: List[str] = Field(default_factory=list)
 
 
+ManualRunMode = Literal["all_connected_live", "providers", "integrations"]
+
+
 class ManualRunRequest(BaseModel):
+    mode: Optional[ManualRunMode] = None
+    provider_ids: List[str] = Field(default_factory=list)
+    integration_ids: List[str] = Field(default_factory=list)
     providers: Optional[List[str]] = None
 
 
 class LargeContextSyncConfigUpdate(BaseModel):
+    enabled: bool
+    interval_minutes: int = Field(ge=30)
+
+
+class LargeContextIntegrationConfigUpdate(BaseModel):
     enabled: bool
     interval_minutes: int = Field(ge=30)

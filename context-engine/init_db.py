@@ -150,6 +150,21 @@ def create_schema(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS large_context_integration_controls (
+            integration_id TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            interval_minutes INTEGER NOT NULL DEFAULT 60,
+            status TEXT NOT NULL DEFAULT 'idle',
+            last_started_at TEXT,
+            last_completed_at TEXT,
+            last_success_at TEXT,
+            last_error TEXT
+        );
+        """
+    )
+
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS large_context_sync_runs (
             run_id TEXT PRIMARY KEY,
             started_at TEXT NOT NULL,

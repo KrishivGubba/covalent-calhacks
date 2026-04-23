@@ -12,10 +12,15 @@ from logger import get_logger
 
 from .dao import LargeContextSyncDAO
 from .graph_projection import LargeContextGraphProjector
+from .integration_groups import build_live_integration_provider_map
 from .models import LargeContextRunSummary
 from .storage import LargeContextSnapshotStorage
 
 log = get_logger()
+
+
+class LargeContextSyncBusyError(RuntimeError):
+    """Raised when a large-context sync is already running."""
 
 
 class LargeContextSyncEngine:
@@ -38,9 +43,26 @@ class LargeContextSyncEngine:
         self.projector = projector
         self.providers = list(providers)
         self._run_lock = threading.Lock()
+        self.integration_provider_map = build_live_integration_provider_map(self.providers)
+        self.provider_integration_map = {
+            provider_id: integration_id
+            for integration_id, provider_ids in self.integration_provider_map.items()
+            for provider_id in provider_ids
+        }
 
-    def sync_once(self, provider_subset: Optional[list[str]] = None) -> LargeContextRunSummary:
-        with self._run_lock:
+    @property
+    def is_running(self) -> bool:
+        return self._run_lock.locked()
+
+    def sync_once(
+        self,
+        provider_subset: Optional[list[str]] = None,
+        blocking: bool = True,
+    ) -> LargeContextRunSummary:
+        acquired = self._run_lock.acquire(blocking=blocking)
+        if not acquired:
+            raise LargeContextSyncBusyError("Large context sync is already running")
+        try:
             config = self.dao.get_config()
             provider_lookup = {provider.provider_id: provider for provider in self.providers}
             if provider_subset:
@@ -50,6 +72,15 @@ class LargeContextSyncEngine:
                 providers = [provider_lookup[provider_id] for provider_id in provider_subset]
             else:
                 providers = list(self.providers)
+            integration_attempts: dict[str, dict[str, list[str]]] = {}
+            for provider in providers:
+                integration_id = self.provider_integration_map.get(provider.provider_id)
+                if not integration_id:
+                    continue
+                integration_attempts.setdefault(
+                    integration_id,
+                    {"success": [], "failure": [], "disconnected": []},
+                )
 
             run = LargeContextRunSummary(
                 run_id=str(uuid.uuid4()),
@@ -65,6 +96,11 @@ class LargeContextSyncEngine:
             provider_states = self.dao.get_provider_states()
             any_success = False
             errors: dict[str, str] = {}
+            for integration_id in integration_attempts:
+                self.dao.mark_integration_started(
+                    integration_id,
+                    started_at=run.started_at,
+                )
 
             for provider in providers:
                 run.providers_attempted.append(provider.provider_id)
@@ -104,6 +140,7 @@ class LargeContextSyncEngine:
                         status="disconnected",
                         last_error="Integration is not connected",
                     )
+                    self._record_integration_result(integration_attempts, provider.provider_id, "disconnected")
                     continue
 
                 try:
@@ -146,6 +183,7 @@ class LargeContextSyncEngine:
                     )
                     run.providers_succeeded.append(provider.provider_id)
                     any_success = True
+                    self._record_integration_result(integration_attempts, provider.provider_id, "success")
                     log.info(f"Large context sync provider {provider.provider_id} completed successfully")
                 except Exception as exc:
                     completed_at = datetime.now(timezone.utc).isoformat()
@@ -160,6 +198,13 @@ class LargeContextSyncEngine:
                         last_error=message,
                     )
                     run.providers_failed.append(provider.provider_id)
+                    self._record_integration_result(integration_attempts, provider.provider_id, "failure")
+
+            self._mark_integrations_completed(
+                integration_attempts,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                errors=errors,
+            )
 
             run.completed_at = datetime.now(timezone.utc).isoformat()
             if run.providers_failed and not any_success:
@@ -177,3 +222,54 @@ class LargeContextSyncEngine:
                 f"succeeded={len(run.providers_succeeded)}, failed={len(run.providers_failed)})"
             )
             return run
+        finally:
+            self._run_lock.release()
+
+    def _record_integration_result(
+        self,
+        integration_attempts: dict[str, dict[str, list[str]]],
+        provider_id: str,
+        result_key: str,
+    ) -> None:
+        integration_id = self.provider_integration_map.get(provider_id)
+        if not integration_id or integration_id not in integration_attempts:
+            return
+        integration_attempts[integration_id][result_key].append(provider_id)
+
+    def _mark_integrations_completed(
+        self,
+        integration_attempts: dict[str, dict[str, list[str]]],
+        *,
+        completed_at: str,
+        errors: dict[str, str],
+    ) -> None:
+        for integration_id, attempt in integration_attempts.items():
+            if attempt["success"] and attempt["failure"]:
+                status = "partial_success"
+                last_error = "; ".join(
+                    f"{provider_id}: {errors.get(provider_id, 'Unknown error')}"
+                    for provider_id in attempt["failure"]
+                )
+            elif attempt["success"]:
+                status = "synced"
+                last_error = None
+            elif attempt["failure"]:
+                status = "error"
+                last_error = "; ".join(
+                    f"{provider_id}: {errors.get(provider_id, 'Unknown error')}"
+                    for provider_id in attempt["failure"]
+                )
+            elif attempt["disconnected"]:
+                status = "disconnected"
+                last_error = "Integration is not connected"
+            else:
+                status = "idle"
+                last_error = None
+
+            self.dao.mark_integration_completed(
+                integration_id,
+                completed_at=completed_at,
+                status=status,
+                last_error=last_error,
+                mark_success=bool(attempt["success"]),
+            )

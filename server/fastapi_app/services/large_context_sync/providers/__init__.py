@@ -17,7 +17,7 @@ from .slack import SlackLargeContextProvider
 def build_default_provider_registry(integration_dao: IntegrationDAO) -> List[LargeContextProvider]:
     return [
         GitHubLargeContextProvider(integration_dao),
-        GoogleWorkspaceLargeContextProvider(),
+        GoogleWorkspaceLargeContextProvider(integration_dao),
         NotionLargeContextProvider(),
         SlackLargeContextProvider(),
         JiraLargeContextProvider(integration_dao),

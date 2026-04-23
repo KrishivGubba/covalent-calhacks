@@ -6,7 +6,13 @@ import json
 from contextlib import closing
 from typing import Any, Dict, Iterable, Optional
 
-from .models import LargeContextProviderState, LargeContextRunSummary, LargeContextSyncConfig, ProviderRegistryInfo
+from .models import (
+    LargeContextIntegrationSyncState,
+    LargeContextProviderState,
+    LargeContextRunSummary,
+    LargeContextSyncConfig,
+    ProviderRegistryInfo,
+)
 
 
 class LargeContextSyncDAO:
@@ -20,7 +26,22 @@ class LargeContextSyncDAO:
         return self._conn_factory(self.db_path)
 
     def initialize(self, markdown_root: str, providers: Iterable[ProviderRegistryInfo]) -> None:
+        providers = list(providers)
         with closing(self._conn()) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS large_context_integration_controls (
+                    integration_id TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    interval_minutes INTEGER NOT NULL DEFAULT 60,
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    last_started_at TEXT,
+                    last_completed_at TEXT,
+                    last_success_at TEXT,
+                    last_error TEXT
+                )
+                """
+            )
             conn.execute(
                 """
                 INSERT OR IGNORE INTO large_context_sync_config
@@ -37,6 +58,15 @@ class LargeContextSyncDAO:
                 """,
                 (markdown_root,),
             )
+            config_row = conn.execute(
+                """
+                SELECT enabled, interval_minutes
+                FROM large_context_sync_config
+                WHERE id = 1
+                """
+            ).fetchone()
+            default_enabled = bool(config_row[0]) if config_row else True
+            default_interval = config_row[1] if config_row else 60
             for provider in providers:
                 conn.execute(
                     """
@@ -45,6 +75,22 @@ class LargeContextSyncDAO:
                     VALUES (?, ?, 'idle')
                     """,
                     (provider.provider_id, int(provider.supports_live_sync)),
+                )
+            live_integrations = sorted(
+                {
+                    provider.integration_provider_key
+                    for provider in providers
+                    if provider.supports_live_sync and provider.integration_provider_key
+                }
+            )
+            for integration_id in live_integrations:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO large_context_integration_controls
+                        (integration_id, enabled, interval_minutes, status)
+                    VALUES (?, ?, ?, 'idle')
+                    """,
+                    (integration_id, int(default_enabled), default_interval),
                 )
             conn.commit()
 
@@ -80,6 +126,61 @@ class LargeContextSyncDAO:
             conn.commit()
         return self.get_config()
 
+    def get_integration_controls(self) -> Dict[str, LargeContextIntegrationSyncState]:
+        with closing(self._conn()) as conn:
+            rows = conn.execute(
+                """
+                SELECT integration_id, enabled, interval_minutes, status, last_started_at,
+                       last_completed_at, last_success_at, last_error
+                FROM large_context_integration_controls
+                """
+            ).fetchall()
+        return {
+            row[0]: LargeContextIntegrationSyncState(
+                integration_id=row[0],
+                enabled=bool(row[1]),
+                interval_minutes=row[2],
+                status=row[3],
+                last_started_at=row[4],
+                last_completed_at=row[5],
+                last_success_at=row[6],
+                last_error=row[7],
+            )
+            for row in rows
+        }
+
+    def update_integration_control(
+        self,
+        integration_id: str,
+        *,
+        enabled: bool,
+        interval_minutes: int,
+    ) -> LargeContextIntegrationSyncState:
+        with closing(self._conn()) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE large_context_integration_controls
+                SET enabled = ?, interval_minutes = ?
+                WHERE integration_id = ?
+                """,
+                (int(enabled), interval_minutes, integration_id),
+            )
+            conn.commit()
+        if cursor.rowcount == 0:
+            raise ValueError(f"Unknown large-context integration: {integration_id}")
+        return self.get_integration_controls()[integration_id]
+
+    def bulk_update_integration_controls(self, *, enabled: bool, interval_minutes: int) -> None:
+        with closing(self._conn()) as conn:
+            conn.execute(
+                """
+                UPDATE large_context_integration_controls
+                SET enabled = ?, interval_minutes = ?
+                """,
+                (int(enabled), interval_minutes),
+            )
+            conn.commit()
+
     def touch_scheduler_heartbeat(self, heartbeat_at: str) -> None:
         with closing(self._conn()) as conn:
             conn.execute(
@@ -91,6 +192,52 @@ class LargeContextSyncDAO:
                 (heartbeat_at,),
             )
             conn.commit()
+
+    def mark_integration_started(self, integration_id: str, *, started_at: str) -> None:
+        with closing(self._conn()) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE large_context_integration_controls
+                SET last_started_at = ?, status = 'running', last_error = NULL
+                WHERE integration_id = ?
+                """,
+                (started_at, integration_id),
+            )
+            conn.commit()
+        if cursor.rowcount == 0:
+            raise ValueError(f"Unknown large-context integration: {integration_id}")
+
+    def mark_integration_completed(
+        self,
+        integration_id: str,
+        *,
+        completed_at: str,
+        status: str,
+        last_error: Optional[str] = None,
+        mark_success: bool = False,
+    ) -> None:
+        with closing(self._conn()) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE large_context_integration_controls
+                SET last_completed_at = ?,
+                    last_success_at = CASE WHEN ? THEN ? ELSE last_success_at END,
+                    last_error = ?,
+                    status = ?
+                WHERE integration_id = ?
+                """,
+                (
+                    completed_at,
+                    int(mark_success),
+                    completed_at,
+                    last_error,
+                    status,
+                    integration_id,
+                ),
+            )
+            conn.commit()
+        if cursor.rowcount == 0:
+            raise ValueError(f"Unknown large-context integration: {integration_id}")
 
     def get_provider_states(self) -> Dict[str, LargeContextProviderState]:
         with closing(self._conn()) as conn:

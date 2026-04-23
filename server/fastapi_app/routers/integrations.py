@@ -28,7 +28,7 @@ FLASK_PORT = int(os.environ.get('VITE_FLASK_PORT', '15001'))
 # Google OAuth config
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 GOOGLE_REDIRECT_URI = f'http://127.0.0.1:{FLASK_PORT}/integrations/google/callback'
-GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email'
+GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/userinfo.email'
 
 # GitHub OAuth config
 GITHUB_CLIENT_ID = os.environ.get('GITHUB_CLIENT_ID', '')

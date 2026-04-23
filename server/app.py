@@ -274,7 +274,7 @@ AUTH0_REDIRECT_URI = f'http://localhost:{FLASK_PORT}/callback'
 # Google OAuth config (token exchange happens via Lambda to keep secret secure)
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 GOOGLE_REDIRECT_URI = f'http://127.0.0.1:{FLASK_PORT}/integrations/google/callback'
-GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email'
+GOOGLE_SCOPES = 'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/userinfo.email'
 
 # GitHub OAuth config (token exchange via Lambda to keep client_secret secure)
 GITHUB_CLIENT_ID = os.environ.get('GITHUB_CLIENT_ID', '')
@@ -451,7 +451,7 @@ FULL CONTEXT DATA (JSON):
             {
                 "id": "google",
                 "name": "Google Workspace",
-                "description": "Calendar, Drive, Mail",
+                "description": "Docs, Drive, Mail, Calendar",
                 "connected": statuses.get("google", False),
             },
         ]
@@ -928,7 +928,7 @@ def integrations_status():
         {
             "id": "google",
             "name": "Google Workspace",
-            "description": "Calendar, Drive, Mail",
+            "description": "Docs, Drive, Mail, Calendar",
             "icon": "🔷",
             "connected": statuses.get("google", False),
         },

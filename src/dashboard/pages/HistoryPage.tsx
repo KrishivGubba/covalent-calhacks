@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { formatSystemTimestamp } from '../../shared/dateTime';
 
 const FLASK_PORT = import.meta.env.VITE_FLASK_PORT || '15001';
 const BACKEND_URL = `http://localhost:${FLASK_PORT}`;
@@ -128,7 +129,7 @@ const HistoryPage: React.FC = () => {
 
   const formatTimestamp = (timestamp: string): string => {
     try {
-      return new Date(timestamp).toLocaleString(undefined, {
+      return formatSystemTimestamp(timestamp, {
         year: 'numeric',
         month: 'numeric',
         day: 'numeric',
