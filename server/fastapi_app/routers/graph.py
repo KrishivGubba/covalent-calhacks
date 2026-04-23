@@ -34,65 +34,97 @@ def _fetch_graph_data_sync():
     return raw_nodes, raw_actions, raw_data
 
 
+def _build_graph_payload(raw_nodes, raw_actions, raw_data):
+    """Convert raw graph tables into a summarized UI-friendly payload."""
+    actions_per_node = defaultdict(list)
+    for _action_uuid, action_name, node_uuid in raw_actions:
+        if action_name:
+            actions_per_node[node_uuid].append(action_name)
+
+    data_per_node = defaultdict(list)
+    for _data_uuid, node_uuid, key, dtype, category in raw_data:
+        label = (key or "").strip() or (dtype or "").strip() or "Untitled data"
+        data_per_node[node_uuid].append({
+            "label": label,
+            "category": category,
+        })
+
+    node_parent = {}
+    node_label = {}
+    children_map = defaultdict(list)
+
+    for uuid, metadata, parent_uuid, _children_arr in raw_nodes:
+        node_parent[uuid] = parent_uuid
+        node_label[uuid] = metadata or "Untitled"
+        if parent_uuid:
+            children_map[parent_uuid].append(uuid)
+
+    def get_depth(uuid):
+        depth = 0
+        current_uuid = uuid
+        seen = set()
+        while current_uuid in node_parent and node_parent[current_uuid] is not None:
+            parent_uuid = node_parent[current_uuid]
+            if parent_uuid in seen:
+                break
+            seen.add(parent_uuid)
+            depth += 1
+            current_uuid = parent_uuid
+        return depth
+
+    def get_path_labels(uuid):
+        path = []
+        current_uuid = uuid
+        seen = set()
+        while current_uuid in node_label and current_uuid not in seen:
+            seen.add(current_uuid)
+            path.append(node_label[current_uuid])
+            parent_uuid = node_parent.get(current_uuid)
+            if parent_uuid is None:
+                break
+            current_uuid = parent_uuid
+        path.reverse()
+        return path
+
+    nodes = []
+    edges = []
+    for uuid, metadata, parent_uuid, _children_arr in raw_nodes:
+        action_names = actions_per_node.get(uuid, [])
+        data_entries = data_per_node.get(uuid, [])
+        nodes.append({
+            "id": uuid,
+            "label": metadata or "Untitled",
+            "parent_id": parent_uuid,
+            "depth": get_depth(uuid),
+            "child_count": len(children_map.get(uuid, [])),
+            "action_count": len(action_names),
+            "data_count": len(data_entries),
+            "action_previews": action_names[:2],
+            "data_previews": data_entries[:2],
+            "path_labels": get_path_labels(uuid),
+        })
+        if parent_uuid and parent_uuid in node_parent:
+            edges.append({"from": parent_uuid, "to": uuid})
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "stats": {
+            "total_nodes": len(raw_nodes),
+            "total_actions": len(raw_actions),
+            "total_data": len(raw_data),
+        },
+    }
+
+
 @router.get("/data")
 async def get_graph_data():
     """
-    Return full graph data (nodes, edges, actions, data entries) for UI visualization.
+    Return summarized graph data for UI visualization.
     """
     try:
         raw_nodes, raw_actions, raw_data = await asyncio.to_thread(_fetch_graph_data_sync)
-        
-        # Build actions-per-node lookup
-        actions_per_node = defaultdict(list)
-        for action_uuid, action_name, node_uuid in raw_actions:
-            actions_per_node[node_uuid].append({"uuid": action_uuid, "name": action_name})
-        
-        # Build data-per-node lookup
-        data_per_node = defaultdict(list)
-        for data_uuid, node_uuid, key, dtype, category in raw_data:
-            data_per_node[node_uuid].append({
-                "uuid": data_uuid,
-                "key": key,
-                "type": dtype,
-                "category": category,
-            })
-        
-        # Build depth lookup
-        node_parent = {}
-        for uuid, metadata, parent_uuid, children_arr in raw_nodes:
-            node_parent[uuid] = parent_uuid
-        
-        def get_depth(uuid, depth=0):
-            parent = node_parent.get(uuid)
-            if parent is None:
-                return depth
-            return get_depth(parent, depth + 1)
-        
-        # Build node list and edge list
-        nodes = []
-        edges = []
-        for uuid, metadata, parent_uuid, children_arr in raw_nodes:
-            depth = get_depth(uuid)
-            nodes.append({
-                "id": uuid,
-                "label": metadata or "Untitled",
-                "parent_id": parent_uuid,
-                "depth": depth,
-                "actions": actions_per_node.get(uuid, []),
-                "data": data_per_node.get(uuid, []),
-            })
-            if parent_uuid and parent_uuid in node_parent:
-                edges.append({"from": parent_uuid, "to": uuid})
-        
-        return {
-            "nodes": nodes,
-            "edges": edges,
-            "stats": {
-                "total_nodes": len(raw_nodes),
-                "total_actions": len(raw_actions),
-                "total_data": len(raw_data),
-            },
-        }
+        return _build_graph_payload(raw_nodes, raw_actions, raw_data)
         
     except Exception as e:
         import traceback
