@@ -1,13 +1,15 @@
 """Slack large-context provider.
 
-Pulls the latest conversations from Slack channels/DMs the bot has access to
-and turns them into the shared large-context snapshot shape.
+Pulls the latest conversations from Slack and turns them into the shared
+large-context snapshot shape.
 
 Design notes
 ------------
-* We use a **bot token**, so we can only see public/private channels the bot
-  has been invited to plus DMs involving the bot. That is a Slack platform
-  limitation, not a bug.
+* We authenticate with a **user OAuth token** (``xoxp-...``), not a bot token.
+  That way the provider sees *exactly* what the signed-in human sees: every
+  public/private channel they're a member of, plus all their DMs and group
+  DMs. The Slack App still has a bot user for installation purposes, but we
+  don't rely on it here.
 * Slack generates *a lot* of messages. We deliberately do **not** persist raw
   messages as entities. Instead, per channel, we:
     * Collapse every ``thread_ts`` into a single ``slack_thread`` entity.
@@ -207,7 +209,7 @@ class SlackLargeContextProvider(LargeContextProvider):
         watch_items: List[str] = []
 
         since_marker = fetch_result.metadata.get("backfill_since")
-        bot_user_id = workspace.get("user_id")
+        self_user_id = workspace.get("user_id")
 
         for channel_record in channel_records:
             channel = channel_record.get("channel") or {}
@@ -261,7 +263,7 @@ class SlackLargeContextProvider(LargeContextProvider):
                     thread_entity=thread_entity,
                     thread_messages=thread_messages,
                     channel_display=channel_display,
-                    bot_user_id=bot_user_id,
+                    self_user_id=self_user_id,
                     since_marker=since_marker,
                     open_questions=open_questions,
                     watch_items=watch_items,
@@ -364,6 +366,11 @@ class SlackLargeContextProvider(LargeContextProvider):
         *,
         include_bootstrap: bool,
     ) -> List[Dict[str, Any]]:
+        # With a user token, ``conversations.list`` returns every public
+        # channel in the workspace (``is_member`` tells us whether the user is
+        # actually in it) plus only the private channels / DMs / group DMs the
+        # user is in. Filter to the set the user actively participates in so
+        # we don't scrape random public channels they ignore.
         try:
             all_channels = client.list_all_conversations(
                 types=("public_channel", "private_channel", "mpim", "im"),
@@ -373,7 +380,7 @@ class SlackLargeContextProvider(LargeContextProvider):
             log.warning(f"Slack conversations.list failed: {exc.error}")
             return []
 
-        member_channels = [
+        user_channels = [
             channel
             for channel in all_channels
             if channel.get("is_im")
@@ -381,7 +388,7 @@ class SlackLargeContextProvider(LargeContextProvider):
             or channel.get("is_member")
         ]
         ranked = sorted(
-            member_channels,
+            user_channels,
             key=lambda channel: self._channel_activity_sort_key(channel),
             reverse=True,
         )
@@ -636,7 +643,7 @@ class SlackLargeContextProvider(LargeContextProvider):
         thread_entity: SnapshotEntity,
         thread_messages: List[Dict[str, Any]],
         channel_display: str,
-        bot_user_id: Optional[str],
+        self_user_id: Optional[str],
         since_marker: Optional[str],
         open_questions: List[str],
         watch_items: List[str],
@@ -645,7 +652,7 @@ class SlackLargeContextProvider(LargeContextProvider):
             return
         parent = thread_messages[0]
         mentions = self._collect_mentions(thread_messages)
-        if bot_user_id and bot_user_id in mentions:
+        if self_user_id and self_user_id in mentions:
             open_questions.append(
                 f"Slack thread mentions you in {channel_display}: {thread_entity.title}"
             )
