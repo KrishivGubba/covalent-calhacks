@@ -25,6 +25,9 @@ Endpoints:
     POST /integrations/jira/exchange - Exchange auth code for tokens
     POST /integrations/jira/refresh - Refresh access token
 
+    Slack OAuth (protected by Auth0 JWT):
+    POST /integrations/slack/exchange - Exchange auth code for user token (xoxp-...)
+
 Expected request body for /invoke:
 {
     "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",  # Bedrock inference profile ID
@@ -131,6 +134,10 @@ NOTION_CLIENT_SECRET = os.environ.get("NOTION_CLIENT_SECRET", "")
 # Jira OAuth configuration (for token exchange - uses client_id/client_secret)
 JIRA_CLIENT_ID = os.environ.get("JIRA_CLIENT_ID", "")
 JIRA_CLIENT_SECRET = os.environ.get("JIRA_CLIENT_SECRET", "")
+
+# Slack OAuth configuration (token exchange via oauth.v2.access; secret stays server-side)
+SLACK_CLIENT_ID = os.environ.get("SLACK_CLIENT_ID", "")
+SLACK_CLIENT_SECRET = os.environ.get("SLACK_CLIENT_SECRET", "")
 
 # GitHub PAT for proxying private release assets to the Tauri updater
 GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
@@ -1268,6 +1275,106 @@ def handle_jira_refresh(body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ========================
+# Slack OAuth Handlers
+# ========================
+
+def handle_slack_exchange(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Exchange a Slack OAuth v2 auth code for a user OAuth token (xoxp-...).
+
+    Body: {
+        "code": "auth_code_from_slack",
+        "redirect_uri": "http://localhost:{FLASK_PORT}/integrations/slack/callback"
+    }
+
+    We use Slack's ``oauth.v2.access`` endpoint with form-encoded params.
+    The flow is configured for a user-token install (no bot scopes), so the
+    primary token lives at ``authed_user.access_token``. We surface that as the
+    top-level ``access_token`` for the desktop app, while passing through the
+    workspace metadata it needs for display.
+    """
+    if not SLACK_CLIENT_ID or not SLACK_CLIENT_SECRET:
+        return create_response(500, {"error": "Slack OAuth not configured on server (missing client_id or client_secret)"})
+
+    code = body.get("code")
+    redirect_uri = body.get("redirect_uri")
+    if not code or not redirect_uri:
+        return create_response(400, {"error": "code and redirect_uri are required"})
+
+    form_body = urllib.parse.urlencode({
+        "client_id": SLACK_CLIENT_ID,
+        "client_secret": SLACK_CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            "https://slack.com/api/oauth.v2.access",
+            data=form_body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        if not result.get("ok"):
+            err = result.get("error") or "token_exchange_failed"
+            logger.error(f"Slack token exchange error: {result}")
+            return create_response(400, {
+                "error": err,
+                "error_description": result.get("error_description") or err,
+            })
+
+        authed_user = result.get("authed_user") or {}
+        user_token = authed_user.get("access_token")
+        if not user_token:
+            logger.error("Slack token exchange returned no user token; ensure the app requests user_scope")
+            return create_response(400, {
+                "error": "missing_user_token",
+                "error_description": "Slack did not return a user token. Make sure the Slack App requests user scopes (User Token Scopes), not just bot scopes.",
+            })
+
+        team = result.get("team") or {}
+        enterprise = result.get("enterprise") or {}
+
+        logger.info("Slack token exchange successful")
+        return create_response(200, {
+            "access_token": user_token,
+            "token_type": authed_user.get("token_type") or "user",
+            "scope": authed_user.get("scope"),
+            "refresh_token": authed_user.get("refresh_token"),
+            "expires_in": authed_user.get("expires_in"),
+            "user_id": authed_user.get("id"),
+            "team_id": team.get("id"),
+            "team_name": team.get("name"),
+            "enterprise_id": (enterprise or {}).get("id") if enterprise else None,
+            "enterprise_name": (enterprise or {}).get("name") if enterprise else None,
+            "app_id": result.get("app_id"),
+            "is_enterprise_install": result.get("is_enterprise_install", False),
+            "bot_access_token": result.get("access_token"),
+            "bot_user_id": result.get("bot_user_id"),
+        })
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        logger.error(f"Slack token exchange failed: {e.code} - {error_body}")
+        try:
+            error_json = json.loads(error_body)
+            return create_response(400, {
+                "error": error_json.get("error", "token_exchange_failed"),
+                "error_description": error_json.get("error_description", error_body),
+            })
+        except json.JSONDecodeError:
+            return create_response(400, {"error": "token_exchange_failed", "error_description": error_body})
+    except Exception as e:
+        logger.error(f"Slack token exchange error: {e}")
+        return create_response(500, {"error": "internal_error", "error_description": str(e)})
+
+
+# ========================
 # App Update Proxy
 # ========================
 
@@ -1663,7 +1770,21 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 return create_response(400, {"error": "Invalid JSON in request body"})
 
         return handle_jira_refresh(body)
-    
+
+    # Slack OAuth token exchange
+    if path == "/integrations/slack/exchange" or path.endswith("/integrations/slack/exchange"):
+        if http_method != "POST":
+            return create_response(405, {"error": "Method not allowed. Use POST."})
+
+        body = event.get("body", "{}")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except json.JSONDecodeError:
+                return create_response(400, {"error": "Invalid JSON in request body"})
+
+        return handle_slack_exchange(body)
+
     # Default: treat as invoke for backward compatibility
     if http_method == "POST":
         body = event.get("body", "{}")

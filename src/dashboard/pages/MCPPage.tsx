@@ -308,7 +308,7 @@ const MCPPage: React.FC<MCPPageProps> = ({ isAuthenticated }) => {
     try {
       if (id === 'filesystem') {
         await handleConnectFilesystem();
-      } else if (id === 'google' || id === 'github' || id === 'notion' || id === 'jira') {
+      } else if (id === 'google' || id === 'github' || id === 'notion' || id === 'jira' || id === 'slack') {
         const result = await connectOAuthIntegration(id);
         if (!result.ok) throw new Error(result.error);
       } else {

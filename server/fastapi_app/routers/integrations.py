@@ -44,6 +44,19 @@ JIRA_CLIENT_ID = os.environ.get('JIRA_CLIENT_ID', '')
 JIRA_REDIRECT_URI = f'http://127.0.0.1:{FLASK_PORT}/integrations/jira/callback'
 JIRA_SCOPES = 'offline_access read:me read:jira-user read:jira-work write:jira-work'
 
+# Slack OAuth config (user-token install; Slack requires localhost redirect for non-https URIs)
+SLACK_CLIENT_ID = os.environ.get('SLACK_CLIENT_ID', '')
+SLACK_REDIRECT_URI = f'http://localhost:{FLASK_PORT}/integrations/slack/callback'
+# User scopes only — bot user is not used for sync. Keep these in lockstep with the
+# Slack App config and the frontend authorize URL builder.
+SLACK_USER_SCOPES = (
+    'channels:history,channels:read,'
+    'groups:history,groups:read,'
+    'mpim:history,mpim:read,'
+    'im:history,im:read,'
+    'users:read,team:read'
+)
+
 # Lambda Gateway URL
 LAMBDA_GATEWAY_URL = os.environ.get('LAMBDA_GATEWAY_URL', 'https://gtfrn4otol.execute-api.us-east-1.amazonaws.com')
 
@@ -52,6 +65,7 @@ google_auth_pending = {}
 github_auth_pending = {}
 notion_auth_pending = {}
 jira_auth_pending = {}
+slack_auth_pending = {}
 
 
 def _get_filesystem_description(integration_dao) -> str:
@@ -1043,6 +1057,212 @@ async def jira_disconnect(integration_dao=Depends(integration_dao_dependency)):
     """
     deleted = integration_dao.delete_token("jira")
     log.info(f"🔌 Jira disconnected (deleted={deleted})")
+    return {"ok": True, "deleted": deleted > 0}
+
+
+# ==================== Slack ====================
+
+class SlackStartRequest(BaseModel):
+    state: Optional[str] = None
+    auth_token: Optional[str] = None
+
+
+@router.post("/slack/start")
+async def slack_start(body: SlackStartRequest):
+    """
+    Called by frontend before opening Slack OAuth.
+    Stores the state and Auth0 access token so the callback can call the
+    Lambda exchange endpoint with the user's identity.
+    """
+    if not SLACK_CLIENT_ID:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Slack OAuth is not configured on the server (missing SLACK_CLIENT_ID)"},
+        )
+    if not body.state:
+        return JSONResponse(status_code=400, content={"error": "state is required"})
+    if not body.auth_token:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "auth_token is required (user must be logged in)"},
+        )
+
+    slack_auth_pending[body.state] = {
+        "auth_token": body.auth_token,
+        "status": "pending",
+    }
+    log.info(f"💬 Slack auth start: stored state={body.state[:8]}...")
+    return {"ok": True}
+
+
+@router.get("/slack/callback")
+async def slack_callback(
+    code: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    error_description: Optional[str] = Query(None),
+    integration_dao=Depends(integration_dao_dependency),
+):
+    """
+    Slack OAuth redirect target. Exchanges code for a user token via Lambda.
+    """
+
+    def render_error(message: str, status_code: int = 200) -> HTMLResponse:
+        return HTMLResponse(content=f"""
+            <html><body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fff;">
+                <div style="text-align: center;">
+                    <h1 style="color: #ef4444;">Slack Login Failed</h1>
+                    <p style="color: #a1a1aa;">{message}</p>
+                </div>
+            </body></html>
+        """, status_code=status_code)
+
+    if not state:
+        return render_error("Missing state parameter", status_code=400)
+    if state not in slack_auth_pending:
+        return render_error("Invalid or expired state. Please try again.", status_code=400)
+
+    if error:
+        slack_auth_pending[state]["status"] = "error"
+        slack_auth_pending[state]["error"] = error
+        slack_auth_pending[state]["error_description"] = error_description or error
+        log.error(f"💬 Slack callback error: {error} - {error_description}")
+        return render_error(error_description or error)
+
+    if not code:
+        slack_auth_pending[state]["status"] = "error"
+        slack_auth_pending[state]["error"] = "no_code"
+        slack_auth_pending[state]["error_description"] = "No authorization code received"
+        return render_error("No authorization code received")
+
+    auth_token = slack_auth_pending[state].get("auth_token")
+    if not auth_token:
+        slack_auth_pending[state]["status"] = "error"
+        slack_auth_pending[state]["error"] = "no_auth_token"
+        slack_auth_pending[state]["error_description"] = "Auth token not found - user must be logged in"
+        return render_error("Please log in first.")
+
+    try:
+        log.info(f"💬 Exchanging Slack code via Lambda (state={state[:8]}...)...")
+        token_response = http_requests.post(
+            f"{LAMBDA_GATEWAY_URL}/integrations/slack/exchange",
+            json={
+                "code": code,
+                "redirect_uri": SLACK_REDIRECT_URI,
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {auth_token}",
+            },
+            timeout=15,
+        )
+        token_data = token_response.json()
+
+        if not token_response.ok or "error" in token_data:
+            err = token_data.get("error", "token_exchange_failed")
+            err_desc = token_data.get("error_description", "Token exchange failed")
+            slack_auth_pending[state]["status"] = "error"
+            slack_auth_pending[state]["error"] = err
+            slack_auth_pending[state]["error_description"] = err_desc
+            log.error(f"💬 Slack token exchange failed: {err} - {err_desc}")
+            return render_error(err_desc)
+
+        access_token = token_data.get("access_token")
+        if not access_token:
+            slack_auth_pending[state]["status"] = "error"
+            slack_auth_pending[state]["error"] = "missing_access_token"
+            slack_auth_pending[state]["error_description"] = "Slack did not return an access token"
+            return render_error("Slack did not return an access token. Check Slack App user scopes.")
+
+        # Slack only returns expires_in / refresh_token if token rotation is enabled.
+        expires_in = token_data.get("expires_in")
+        expires_at: Optional[str] = None
+        if expires_in:
+            try:
+                expires_at = (datetime.utcnow() + timedelta(seconds=int(expires_in))).isoformat()
+            except (TypeError, ValueError):
+                expires_at = None
+
+        team_name = token_data.get("team_name")
+        team_id = token_data.get("team_id")
+        provider_metadata = {
+            "team_id": team_id,
+            "team": team_name,
+            "user_id": token_data.get("user_id"),
+            "enterprise_id": token_data.get("enterprise_id"),
+            "enterprise_name": token_data.get("enterprise_name"),
+            "app_id": token_data.get("app_id"),
+            "is_enterprise_install": token_data.get("is_enterprise_install", False),
+        }
+
+        integration_dao.save_token(
+            provider="slack",
+            access_token=access_token,
+            refresh_token=token_data.get("refresh_token"),
+            expires_at=expires_at,
+            scopes=token_data.get("scope") or SLACK_USER_SCOPES,
+            provider_metadata=provider_metadata,
+        )
+
+        slack_auth_pending[state]["status"] = "ready"
+        slack_auth_pending[state]["team_name"] = team_name
+        slack_auth_pending[state]["team_id"] = team_id
+        log.info(f"✅ Slack connected successfully (team={team_name})")
+
+        return HTMLResponse(content="""
+            <html><body style="font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fff;">
+                <div style="text-align: center;">
+                    <h1 style="color: #C5F467;">Slack Connected!</h1>
+                    <p style="color: #a1a1aa;">You can close this window and return to Covalent.</p>
+                </div>
+            </body></html>
+        """)
+
+    except Exception as e:
+        log.error(f"Slack OAuth error: {e}")
+        import traceback
+        traceback.print_exc()
+        slack_auth_pending[state]["status"] = "error"
+        slack_auth_pending[state]["error"] = "exception"
+        slack_auth_pending[state]["error_description"] = str(e)
+        return render_error(f"An error occurred: {e}")
+
+
+@router.get("/slack/check")
+async def slack_check(state: Optional[str] = Query(None)):
+    """
+    Polled by frontend after starting Slack OAuth.
+    Returns: { "status": "pending" | "ready" | "error", ... }
+    """
+    if not state:
+        return JSONResponse(status_code=400, content={"status": "error", "error": "missing state"})
+    if state not in slack_auth_pending:
+        return JSONResponse(status_code=400, content={"status": "error", "error": "invalid_state"})
+
+    pending = slack_auth_pending[state]
+    status = pending.get("status", "pending")
+
+    if status == "ready":
+        team_name = pending.get("team_name")
+        team_id = pending.get("team_id")
+        del slack_auth_pending[state]
+        return {"status": "ready", "team_name": team_name, "team_id": team_id}
+    if status == "error":
+        error = pending.get("error")
+        error_desc = pending.get("error_description")
+        del slack_auth_pending[state]
+        return {"status": "error", "error": error, "error_description": error_desc}
+    return {"status": "pending"}
+
+
+@router.post("/slack/disconnect")
+@router.delete("/slack/disconnect")
+async def slack_disconnect(integration_dao=Depends(integration_dao_dependency)):
+    """
+    Disconnect Slack integration (delete tokens).
+    """
+    deleted = integration_dao.delete_token("slack")
+    log.info(f"🔌 Slack disconnected (deleted={deleted})")
     return {"ok": True, "deleted": deleted > 0}
 
 

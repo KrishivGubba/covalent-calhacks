@@ -8,9 +8,10 @@ export type IntegrationId =
   | 'github'
   | 'notion'
   | 'jira'
+  | 'slack'
   | 'perplexity';
 
-export type OAuthProvider = 'google' | 'github' | 'notion' | 'jira';
+export type OAuthProvider = 'google' | 'github' | 'notion' | 'jira' | 'slack';
 export type RequiredIntegrationId = 'filesystem' | 'google' | 'github' | 'notion';
 
 export interface JiraAccessibleResource {
@@ -112,16 +113,22 @@ const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const GITHUB_CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID || '';
 const NOTION_CLIENT_ID = import.meta.env.VITE_NOTION_CLIENT_ID || '';
 const JIRA_CLIENT_ID = import.meta.env.VITE_JIRA_CLIENT_ID || '';
+const SLACK_CLIENT_ID = import.meta.env.VITE_SLACK_CLIENT_ID || '';
 
 const GOOGLE_REDIRECT_URI = `http://127.0.0.1:${FLASK_PORT}/integrations/google/callback`;
 const GITHUB_REDIRECT_URI = `http://127.0.0.1:${FLASK_PORT}/integrations/github/callback`;
 const NOTION_REDIRECT_URI = `http://localhost:${FLASK_PORT}/integrations/notion/callback`;
 const JIRA_REDIRECT_URI = `http://127.0.0.1:${FLASK_PORT}/integrations/jira/callback`;
+// Slack only allows http://localhost (not 127.0.0.1) for non-https redirect URIs.
+const SLACK_REDIRECT_URI = `http://localhost:${FLASK_PORT}/integrations/slack/callback`;
 
 const GOOGLE_SCOPES =
   'openid https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/userinfo.email';
 const GITHUB_SCOPES = 'repo read:user';
 const JIRA_SCOPES = 'offline_access read:me read:jira-user read:jira-work write:jira-work';
+// Slack user-token scopes — must mirror SLACK_USER_SCOPES on the FastAPI router.
+const SLACK_USER_SCOPES =
+  'channels:history,channels:read,groups:history,groups:read,mpim:history,mpim:read,im:history,im:read,users:read,team:read';
 
 const PKCE_PROVIDERS: OAuthProvider[] = ['google', 'github'];
 const POLL_INTERVAL_MS = 1500;
@@ -139,6 +146,9 @@ function getMissingOAuthConfigError(provider: OAuthProvider): string | null {
   }
   if (provider === 'jira' && !JIRA_CLIENT_ID) {
     return 'Jira OAuth is not configured. Set VITE_JIRA_CLIENT_ID and rebuild the app.';
+  }
+  if (provider === 'slack' && !SLACK_CLIENT_ID) {
+    return 'Slack OAuth is not configured. Set VITE_SLACK_CLIENT_ID and rebuild the app.';
   }
   return null;
 }
@@ -213,6 +223,18 @@ function buildOAuthUrl(provider: OAuthProvider, state: string, codeChallenge?: s
     authUrl.searchParams.set('response_type', 'code');
     authUrl.searchParams.set('state', state);
     authUrl.searchParams.set('owner', 'user');
+    return authUrl.toString();
+  }
+
+  if (provider === 'slack') {
+    // Slack OAuth v2 — request user scopes only so we get a user token (xoxp-).
+    // ``scope`` (bot scopes) is intentionally empty.
+    const authUrl = new URL('https://slack.com/oauth/v2/authorize');
+    authUrl.searchParams.set('client_id', SLACK_CLIENT_ID);
+    authUrl.searchParams.set('redirect_uri', SLACK_REDIRECT_URI);
+    authUrl.searchParams.set('user_scope', SLACK_USER_SCOPES);
+    authUrl.searchParams.set('scope', '');
+    authUrl.searchParams.set('state', state);
     return authUrl.toString();
   }
 

@@ -70,6 +70,13 @@ PROVIDER_CONFIGS: Dict[str, IntegrationProviderConfig] = {
         auth_kind="oauth",
         configurable=True,
     ),
+    "slack": IntegrationProviderConfig(
+        provider_id="slack",
+        name="Slack",
+        description="Read Slack DMs and channels you have access to",
+        icon="💬",
+        auth_kind="oauth",
+    ),
 }
 
 
