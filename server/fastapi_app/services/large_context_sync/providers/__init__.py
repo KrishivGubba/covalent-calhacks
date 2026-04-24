@@ -19,7 +19,7 @@ def build_default_provider_registry(integration_dao: IntegrationDAO) -> List[Lar
         GitHubLargeContextProvider(integration_dao),
         GoogleWorkspaceLargeContextProvider(integration_dao),
         NotionLargeContextProvider(),
-        SlackLargeContextProvider(),
+        SlackLargeContextProvider(integration_dao),
         JiraLargeContextProvider(integration_dao),
     ]
 

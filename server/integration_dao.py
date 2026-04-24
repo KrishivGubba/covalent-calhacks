@@ -33,7 +33,7 @@ from security.key_manager import get_db_encryption_key
 
 
 # Known integration providers
-PROVIDERS = ["google", "github", "notion", "jira", "filesystem"]
+PROVIDERS = ["google", "github", "notion", "jira", "slack", "filesystem"]
 
 
 class IntegrationDAO:
