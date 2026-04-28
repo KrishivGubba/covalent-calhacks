@@ -86,6 +86,7 @@ const REQUIRED_INTEGRATION_LABELS: Record<RequiredIntegrationId, string> = {
   google: 'Google Workspace',
   github: 'GitHub',
   notion: 'Notion',
+  slack: 'Slack',
 };
 
 function normalizeMultilineList(input: string): string[] {
@@ -718,7 +719,9 @@ const OnboardingApp: React.FC = () => {
         <div className="onb-step-card-header">
           <h2>Connect required integrations</h2>
           <span className={`onb-badge ${integrationsComplete ? 'ok' : 'warn'}`}>
-            {integrationsComplete ? 'All connected' : '4 required'}
+            {integrationsComplete
+              ? 'All connected'
+              : `${REQUIRED_INTEGRATION_IDS.length} required`}
           </span>
         </div>
         <p>
@@ -890,7 +893,7 @@ const OnboardingApp: React.FC = () => {
             <strong>{permissionsComplete ? 'Done' : 'Missing'}</strong>
           </li>
           <li className={integrationsComplete ? 'ok' : 'warn'}>
-            <span>Filesystem, Google, GitHub, Notion integrations</span>
+            <span>Filesystem, Google, GitHub, Notion, Slack integrations</span>
             <strong>{integrationsComplete ? 'Done' : 'Missing'}</strong>
           </li>
           <li className={profileComplete ? 'ok' : 'warn'}>
@@ -1027,7 +1030,7 @@ const OnboardingApp: React.FC = () => {
               <div className="onb-summary-item">
                 <strong>Integrations</strong>
                 <span className={`onb-summary-item-status ${integrationsComplete ? 'ok' : 'pending'}`}>
-                  {REQUIRED_INTEGRATION_IDS.filter((id) => requiredIntegrations[id]?.connected).length}/4 connected
+                  {REQUIRED_INTEGRATION_IDS.filter((id) => requiredIntegrations[id]?.connected).length}/{REQUIRED_INTEGRATION_IDS.length} connected
                 </span>
               </div>
               <div className="onb-summary-item">

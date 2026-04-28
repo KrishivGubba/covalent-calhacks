@@ -12,7 +12,7 @@ export type IntegrationId =
   | 'perplexity';
 
 export type OAuthProvider = 'google' | 'github' | 'notion' | 'jira' | 'slack';
-export type RequiredIntegrationId = 'filesystem' | 'google' | 'github' | 'notion';
+export type RequiredIntegrationId = 'filesystem' | 'google' | 'github' | 'notion' | 'slack';
 
 export interface JiraAccessibleResource {
   cloud_id: string;
@@ -107,6 +107,7 @@ export const REQUIRED_INTEGRATION_IDS: RequiredIntegrationId[] = [
   'google',
   'github',
   'notion',
+  'slack',
 ];
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
@@ -460,6 +461,7 @@ export function getRequiredIntegrations(
     google: integrations.find((i) => i.id === 'google') ?? null,
     github: integrations.find((i) => i.id === 'github') ?? null,
     notion: integrations.find((i) => i.id === 'notion') ?? null,
+    slack: integrations.find((i) => i.id === 'slack') ?? null,
   };
 }
 
