@@ -81,7 +81,7 @@ class BatchEmbeddingResponse:
 # Available models (for reference)
 MODELS = {
     # Claude 4.6 (latest)
-    "claude-4.6-sonnet": "us.anthropic.claude-sonnet-4-6-v1:0",
+    "claude-4.6-sonnet": "us.anthropic.claude-sonnet-4-6",
     # Claude 4.5
     "claude-4.5-sonnet": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "claude-4.5-haiku": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -122,7 +122,7 @@ class GatewayClient:
         print(response.content)
     """
     
-    DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-6-v1:0"
+    DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-6"
     DEFAULT_MAX_TOKENS = 4096
     DEFAULT_TEMPERATURE = 0.7
     DEFAULT_TIMEOUT = 60  # seconds

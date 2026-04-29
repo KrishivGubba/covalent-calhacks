@@ -11,12 +11,12 @@ models:
   # Model for action creation and learning decisions
   action_creation:
     provider: "bedrock"  # Options: google, openai, bedrock, qwen
-    model_name: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    model_name: "us.anthropic.claude-sonnet-4-6"
     
   # Model for data condensation/cleanup
   data_condensation:
     provider: "bedrock"  # Options: google, openai, bedrock, qwen
-    model_name: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    model_name: "us.anthropic.claude-sonnet-4-6"
     
   # Model for node traversal and validation
   traversal:
@@ -33,7 +33,7 @@ models:
   # Model for graph structure operations (creating nodes, splitting, etc.)
   graph_operations:
     provider: "bedrock"  # Options: google, openai, bedrock, qwen
-    model_name: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    model_name: "us.anthropic.claude-sonnet-4-6"
 
 # Provider-specific settings
 provider_settings:

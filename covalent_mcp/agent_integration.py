@@ -38,7 +38,7 @@ async def create_agent_with_mcp_tools():
     # Initialize LLM via AWS Bedrock
     region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
     llm = ChatBedrockConverse(
-        model="us.anthropic.claude-sonnet-4-6-v1:0",
+        model="us.anthropic.claude-sonnet-4-6",
         region_name=region,
     )
     

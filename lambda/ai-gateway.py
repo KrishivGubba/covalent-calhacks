@@ -94,8 +94,9 @@ DEFAULT_BUDGET_LIMIT = float(os.environ.get("DEFAULT_BUDGET_LIMIT", "10.00"))
 # Prices are per token (not per 1K). Multiply by token count to get cost.
 # Source: AWS Bedrock pricing as of 2025. Update when pricing changes.
 MODEL_PRICING = {
-    # Claude 4.6 (inference profiles) — pricing matches 4.5 Sonnet; update if AWS publishes different rates.
-    "us.anthropic.claude-sonnet-4-6-v1:0":           {"input": 3.00 / 1_000_000, "output": 15.00 / 1_000_000},
+    # Claude 4.6 (inference profiles, no -v1:0 suffix per Bedrock model card) — pricing matches 4.5 Sonnet; update if AWS publishes different rates.
+    "us.anthropic.claude-sonnet-4-6":               {"input": 3.00 / 1_000_000, "output": 15.00 / 1_000_000},
+    "global.anthropic.claude-sonnet-4-6":           {"input": 3.00 / 1_000_000, "output": 15.00 / 1_000_000},
     # Claude 4.5 (inference profiles)
     "us.anthropic.claude-sonnet-4-5-20250929-v1:0": {"input": 3.00 / 1_000_000, "output": 15.00 / 1_000_000},
     "us.anthropic.claude-haiku-4-5-20251001-v1:0":  {"input": 1.00 / 1_000_000, "output": 5.00 / 1_000_000},
@@ -265,8 +266,9 @@ def authenticate_request(event: Dict[str, Any]) -> tuple[Optional[Dict], Optiona
 # Allowed models (security: only allow specific models)
 # Use inference profile format (us. prefix) for newer models
 ALLOWED_MODELS = {
-    # Claude 4.6 (inference profiles)
-    "us.anthropic.claude-sonnet-4-6-v1:0",
+    # Claude 4.6 (inference profiles, no -v1:0 suffix per Bedrock model card)
+    "us.anthropic.claude-sonnet-4-6",
+    "global.anthropic.claude-sonnet-4-6",
     # Claude 4.5 (inference profiles)
     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
