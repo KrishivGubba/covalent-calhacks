@@ -76,6 +76,7 @@ PROVIDER_CONFIGS: Dict[str, IntegrationProviderConfig] = {
         description="Read Slack DMs and channels you have access to",
         icon="💬",
         auth_kind="oauth",
+        required_onboarding=True,
     ),
 }
 
