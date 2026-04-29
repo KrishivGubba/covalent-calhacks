@@ -95,7 +95,7 @@ def get_gateway_client() -> GatewayClient:
     if _gateway_client is None:
         _gateway_client = GatewayClient(
             access_token=access_token,
-            default_model="claude-4-sonnet",
+            default_model="claude-4.6-sonnet",
             default_max_tokens=4096,
             default_temperature=0.0,
         )
@@ -132,10 +132,10 @@ TOP_K_TOOLS = 25  # Number of relevant tools/resources to select
 # When any of these is exhausted we return an error to the caller instead of
 # forcing a (potentially incomplete) plan.
 
-MAX_RESEARCH_TURNS = int(os.getenv("RESEARCH_MAX_TURNS", "8"))
-MAX_RESOURCE_READS = int(os.getenv("RESEARCH_MAX_READS", "12"))
+MAX_RESEARCH_TURNS = int(os.getenv("RESEARCH_MAX_TURNS", "20"))
+MAX_RESOURCE_READS = int(os.getenv("RESEARCH_MAX_READS", "20"))
 RESEARCH_WALL_CLOCK_S = float(os.getenv("RESEARCH_WALL_CLOCK_S", "90"))
-MAX_DRAFT_ATTEMPTS = int(os.getenv("RESEARCH_MAX_DRAFTS", "4"))
+MAX_DRAFT_ATTEMPTS = int(os.getenv("RESEARCH_MAX_DRAFTS", "6"))
 
 # Outer plan->execute->continue meta-loop budget. Caps how many iterations of
 # (plan, approve, execute) we'll run against a single higher-level task before
