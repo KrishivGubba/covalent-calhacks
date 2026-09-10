@@ -1,4 +1,46 @@
-# Logs
+# ---- Secrets & credentials (NEVER commit) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+**/google_credentials.json
+**/oauth_secrets.json
+**/calendar_credentials.json
+**/*credentials*.json
+**/github_token.json
+service_account*.json
+
+# ---- Local databases / synced user data ----
+*.db
+*.db-shm
+*.db-wal
+context-engine/graph_visualization.html
+context-engine/graph_static.png
+
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+.venv*
+build-venv
+*.spec
+
+# ---- Node / frontend ----
+node_modules
+dist
+dist-ssr
+dist-servers/
+*.local
+
+# ---- Rust / Tauri build output ----
+target/
+build/
+src-tauri/servers/
+src-tauri/.env
+
+# ---- Logs & runtime ----
 logs
 *.log
 npm-debug.log*
@@ -6,13 +48,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+*.pid
+server/flask_server.pid
+server/flask_server.log
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
+# ---- Editor / OS ----
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -23,53 +63,9 @@ dist-ssr
 *.sln
 *.sw?
 
-
-CLAUDE.md 
-
-# ignore the database
-*.db
-*.db-shm
-*.db-wal
-*.pyc
-
-
-.env*
-.venv*
-
-.env
-
-__pycache__/
-*.pyc
-*.pyo
-
-*.md 
-*.MD 
-
-
-*.cursorrules
-*.cursor/*
-
-
-*.pid 
-server/flask_server.pid 
-server/flask_server.log
-context-engine/graph.db-shm
-context-engine/graph.db-wal
-context-engine/graph_visualization.html
-context-engine/graph_static.png
-
-covalent_mcp/toolclasses/github/github_token.json
-covalent_mcp/toolclasses/google/oauth_secrets.json
-2026-02-08-this-session-is-being-continued-from-a-previous-co.txt
-
-build-venv
+# ---- AI assistant local config ----
+CLAUDE.md
+.claude/settings.local.json
 .codex/
-restart.sh
-
-dist/
-dist-servers/
-src-tauri/servers/
-src-tauri/.env
-build/
-*.spec
-claude_api_usage_report_2026-02-12.txt
+*.cursorrules
+.cursor/

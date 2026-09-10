@@ -1,0 +1,14 @@
+# Consolidates multiple git identities per contributor.
+# Affects display only (git shortlog/blame); history is unchanged.
+
+Krishiv Gubba <kgubba@wisc.edu> <158531751+KrishivGubba@users.noreply.github.com>
+Krishiv Gubba <kgubba@wisc.edu> <krishivgubba@Krishivs-MacBook-Pro.local>
+Krishiv Gubba <kgubba@wisc.edu> KrishivGubba <158531751+KrishivGubba@users.noreply.github.com>
+
+Ritesh Neela <diamondfox2264@gmail.com> <105359447+rit-123@users.noreply.github.com>
+Ritesh Neela <diamondfox2264@gmail.com> rit-123 <diamondfox2264@gmail.com>
+
+Siddharth Ghantasala <siddharthghantasala@gmail.com> <siddstar666@gmail.com>
+Siddharth Ghantasala <siddharthghantasala@gmail.com> [UWSid] <siddstar666@gmail.com>
+Siddharth Ghantasala <siddharthghantasala@gmail.com> siddharthghantasala-cell <siddharthghantasala@gmail.com>
+Siddharth Ghantasala <siddharthghantasala@gmail.com>

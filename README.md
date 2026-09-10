@@ -29,9 +29,19 @@ Covalent.ai is an autonomous desktop agent that continuously monitors your scree
 ### Backend
 - **Flask**: Lightweight Python web server
 - **SQLite**: Persistent graph database
-- **Google Gemini**: Text embeddings (text-embedding-004)
-- **Claude Sonnet 4.5**: Action generation and orchestration
-- **Anthropic API**: LLM inference
+- **AWS Lambda + Terraform**: AI gateway, auth, and per-user budget enforcement
+- **Auth0**: User authentication
+
+### Models
+Model selection is configured per-task in `model_config.yml` rather than hardcoded:
+
+| Task | Provider | Model |
+|---|---|---|
+| Embeddings | Google | `gemini-embedding-001` |
+| Action creation & learning | Bedrock | `claude-sonnet-4-6` |
+| Data condensation | Bedrock | `claude-sonnet-4-6` |
+| Node traversal | Google | `gemini-2.5-flash` |
+| Fit validation | OpenAI | `gpt-5-nano` |
 
 ### Context Engine
 - **NumPy**: Vector operations and cosine similarity
@@ -40,7 +50,10 @@ Covalent.ai is an autonomous desktop agent that continuously monitors your scree
 
 ### Action Execution
 - **LangGraph**: Agentic workflow orchestration
-- **Composio**: MCP (Model Context Protocol) integrations
+- **Custom MCP server** (`covalent_mcp/`): first-party Model Context Protocol
+  implementation with a pluggable tool-class system. Integrations: Google
+  (Gmail/Calendar/Docs/Drive), GitHub, Jira, Notion, Slack, filesystem,
+  Perplexity and Tavily search.
 - **LangChain**: Agent creation and tool binding
 
 ---
@@ -136,33 +149,41 @@ def screen_controller(state):
 
 ```
 covalent-calhacks/
-├── context-engine/           # Core intelligence engine
+├── covalent_mcp/            # First-party MCP server + integrations
+│   ├── server.py            # MCP server (stdio)
+│   ├── server_http.py       # MCP server (HTTP transport)
+│   ├── client.py            # MCP client
+│   ├── agent_integration.py # Tool routing into the agent loop
+│   └── toolclasses/         # Pluggable integrations
+│       ├── google/          # Gmail, Calendar, Docs, Drive
+│       ├── github/  jira/  notion/  slack/
+│       ├── filesystem/  perplexity_search/  tavily_search/
+│       └── _template.py     # Scaffold for new integrations
+│
+├── context-engine/          # Core intelligence engine
 │   ├── graph.py             # Knowledge graph & retrieval
 │   ├── graph_dao.py         # Database access layer
 │   └── init_db.py           # Database initialization
 │
+├── lambda/                  # AWS AI gateway
+│   ├── ai-gateway.py        # Model routing + auth
+│   ├── perplexity-gateway.py
+│   ├── budget_metadata.py   # Per-user budget enforcement
+│   └── terraform/           # Infrastructure as code
+│
 ├── server/                  # Flask backend
-│   ├── app.py              # API endpoints
-│   └── start_server.sh     # Server startup script
+├── src/                     # React frontend (Vite)
+├── src-tauri/               # Tauri native shell (Rust)
+├── executor/                # Screen control automation
+├── llm-interactions/        # Prompt & interaction layer
+├── tests/                   # Test suite
+├── .github/workflows/       # CI: signed release builds, Lambda deploy
 │
-├── src/                     # React frontend
-│   ├── components/
-│   │   ├── FloatingAssistant.tsx
-│   │   ├── ControlButtons.tsx
-│   │   └── Header.tsx
-│   └── App.tsx
-│
-├── src-tauri/              # Tauri native wrapper
-│   └── src/
-│       └── main.rs         # Rust backend
-│
-├── executor/               # Screen control automation
-│   ├── main.py
-│   └── action_run.py
-│
-├── LLMGraph.py            # LangGraph orchestration
-├── GSuite_router.py       # GSuite routing logic
-└── requirements.txt       # Python dependencies
+├── action_executor.py       # Action execution engine
+├── LLMGraph_claude.py       # LangGraph orchestration
+├── GSuite_router.py         # GSuite routing logic
+├── model_config.yml         # Per-task model selection
+└── requirements.txt         # Python dependencies
 ```
 
 ---
@@ -172,56 +193,61 @@ covalent-calhacks/
 ### Prerequisites
 - Python 3.9+
 - Node.js 18+
-- Rust (for Tauri)
-- API Keys:
-  - `GOOGLE_API_KEY` (for Gemini embeddings)
-  - `ANTHROPIC_API_KEY` (for Claude)
-  - `COMPOSIO_API_KEY` (for MCP integrations)
+- Rust toolchain (for Tauri)
+- macOS (screen-control executor targets darwin)
 
 ### Installation
 
-1. **Clone the repository**
+**1. Clone**
 ```bash
-git clone https://github.com/yourusername/covalent-calhacks.git
+git clone https://github.com/KrishivGubba/covalent-calhacks.git
 cd covalent-calhacks
 ```
 
-2. **Set up Python environment**
+**2. Python environment**
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements-lock.txt
 ```
 
-3. **Initialize the database**
+**3. Configure environment**
 ```bash
-cd context-engine
-python init_db.py
+cp .env.example .env
+```
+Then fill in `.env`. At minimum you need `ANTHROPIC_API_KEY` plus the Google
+OAuth credentials (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`) for the GSuite
+integrations. See `.env.example` for the full list, grouped by subsystem.
+
+For the Google integrations you also need an OAuth client config from the
+[Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+(Desktop app credentials):
+```bash
+cp covalent_mcp/toolclasses/google/oauth_secrets.example.json \
+   covalent_mcp/toolclasses/google/oauth_secrets.json
+```
+Fill in your `client_id` / `client_secret`. On first run the OAuth flow writes
+`google_credentials.json` next to it — that file holds a live refresh token.
+
+> **Note:** `.env`, `oauth_secrets.json`, and `google_credentials.json` are all
+> gitignored and must stay that way. They hold live credentials — never commit them.
+
+**4. Initialize the database**
+```bash
+cd context-engine && python init_db.py && cd ..
 ```
 
-4. **Configure environment variables**
-```bash
-# Create .env file
-GOOGLE_API_KEY=your_gemini_key
-ANTHROPIC_API_KEY=your_claude_key
-COMPOSIO_API_KEY=your_composio_key
-USER_ID=your_user_id
-GOOGLE_AUTH_CONFIG_ID=your_auth_config
-```
-
-5. **Install frontend dependencies**
+**5. Frontend dependencies**
 ```bash
 npm install
 ```
 
-6. **Start the backend**
+**6. Run**
 ```bash
-cd server
-python app.py
-```
+# backend
+cd server && python app.py
 
-7. **Start the frontend**
-```bash
+# frontend (separate terminal)
 npm run tauri dev
 ```
 
@@ -313,15 +339,40 @@ CREATE TABLE data_table (
 
 ---
 
-## 🤝 Contributing
+## 👥 Team & Contributions
 
-Contributions are welcome! Please read our contributing guidelines and submit PRs.
+Covalent was built by four people over ~500 commits. Rough ownership, derived
+from `git shortlog` and per-directory commit history:
+
+| Contributor | Commits | Primary areas |
+|---|---:|---|
+| **hem8705** | 256 | Tauri shell (`src-tauri/`), Flask backend, React UI, Google Docs MCP |
+| **Krishiv Gubba** | 146 | MCP server & integrations (`covalent_mcp/`), AWS Lambda AI gateway (`lambda/`), CI/CD & signed release pipeline |
+| **Ritesh Neela** | 95 | Context engine (`context-engine/`), Agent-S screen-control fork |
+| **Siddharth Ghantasala** | 29 | LangGraph orchestration, executor routing |
+
+Verify any of this yourself:
+```bash
+git shortlog -sne HEAD
+git log --author="kgubba@wisc.edu" --oneline
+```
+
+### Krishiv's contributions in detail
+- **`covalent_mcp/`** — first-party MCP server (stdio + HTTP transports) and the
+  pluggable `toolclasses/` system. Built the Google (Gmail/Calendar/Docs/Drive),
+  GitHub, Jira, Notion, and Slack integrations, including the OAuth flows for each.
+- **`lambda/`** — AWS AI gateway routing model calls across Bedrock/Google/OpenAI,
+  with Auth0-backed authentication and per-user budget enforcement (DynamoDB),
+  provisioned via Terraform.
+- **CI/CD** — GitHub Actions for signed/notarized macOS release builds and the
+  auto-updater, plus automated Lambda deploys.
 
 ---
 
 ## 🏆 Acknowledgments
 
-Built during CalHacks 2025. Inspired by the vision of AI that doesn't wait for prompts—it anticipates your needs.
+Started at CalHacks 2025 and developed well beyond the hackathon. Inspired by the
+vision of AI that doesn't wait for prompts—it anticipates your needs.
 
 ---
 
