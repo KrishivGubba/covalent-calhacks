@@ -6,34 +6,33 @@ A desktop agent that watches what you're working on and acts before you ask.
 
 ## What we were trying to build
 
-Every AI assistant we used had the same problem: you have to stop what you're
+Every AI assistant we used had the same problem. You have to stop what you're
 doing, figure out what you want, and describe it. The tool is only as good as
-your ability to articulate the request — which means it's useless in exactly the
-moments you're busiest.
+your ability to articulate the request, which means it doesn't help much when
+you're in the middle of something.
 
 Real work doesn't look like that. It's the same handful of workflows over and
 over: an email comes in about scheduling, you check a calendar, you draft a
-reply, you update a tracker. You already know the steps. Typing them into a chat
-box is pure overhead.
+reply, you update a tracker. You already know the steps.
 
-**So we wanted an agent with no prompt box at all.** Covalent runs in the
+So we wanted an agent with no prompt box at all. Covalent runs in the
 background, watches the screen, and builds a persistent semantic model of how
-you actually work. When it recognizes a situation it has seen before, it
-proposes the next action — already filled in with the right context — and
-executes it on approval.
+you work. When it recognizes a situation it has seen before, it proposes the
+next action with the right context already filled in, and executes it on
+approval.
 
-The bet was that a *hierarchical* memory would make this work where flat vector
-search wouldn't. Knowing you're "reading an email" isn't enough to act. You need
-to know it's a recruiting email, in the Summer 2026 pipeline, from a candidate
-you already scheduled once. So context lives in a tree: broad parent nodes pass
+We thought a hierarchical memory would make this work where flat vector search
+wouldn't. Knowing you're "reading an email" isn't enough to act on. You need to
+know it's a recruiting email, in the Summer 2026 pipeline, from a candidate you
+already scheduled once. So context lives in a tree. Broad parent nodes pass
 their meaning down to specific children, and a node's embedding is built from
 its whole ancestor chain. Retrieval walks the tree instead of scanning a flat
-list, which means a suggestion arrives with the full situation attached.
+list, so a suggestion comes with the situation attached.
 
-The second bet: an agent is only as useful as what it can actually touch. So
-actions run through real integrations (Gmail, Calendar, Docs, Drive, GitHub,
-Jira, Notion, Slack) — and when no API exists, it falls back to driving the GUI
-directly. Anything you can do on screen, it can do.
+The other thing we cared about was what the agent could actually touch. Actions
+run through real integrations (Gmail, Calendar, Docs, Drive, GitHub, Jira,
+Notion, Slack). When there's no API for something, it falls back to driving the
+GUI.
 
 ---
 
@@ -48,7 +47,7 @@ screen capture → semantic summary → graph traversal → action proposal → 
 2. **Locate.** `traverse_with_confidence()` embeds the summary and walks the
    knowledge graph for the best-matching node, returning a confidence score. Low
    confidence means the agent stays quiet rather than guessing.
-3. **Learn.** `learn_with_structure()` folds new information into the graph —
+3. **Learn.** `learn_with_structure()` folds new information into the graph,
    creating, splitting, or merging nodes as the picture of your workflow sharpens.
 4. **Propose.** With the node's full ancestor context, the action model drafts a
    concrete next step and the tool calls to accomplish it.
@@ -110,7 +109,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-lock.txt
 npm install
 
-cp .env.example .env          # fill in keys — see the file for the full list
+cp .env.example .env          # fill in keys, see the file for the list
 cd context-engine && python init_db.py && cd ..
 ```
 
@@ -123,7 +122,7 @@ cp covalent_mcp/toolclasses/google/oauth_secrets.example.json \
 ```
 
 On first run the OAuth flow writes `google_credentials.json` alongside it. That
-file and `.env` hold live credentials and are gitignored — keep them that way.
+file and `.env` hold live credentials and are gitignored. Keep them that way.
 
 Run it:
 
@@ -139,10 +138,10 @@ npm run tauri dev              # frontend, separate terminal
 Four of us built Covalent over ~500 commits, starting at CalHacks 2025 and
 continuing well past it.
 
-The system was designed together — the graph model, the agent loop, and the
-execution split between MCP tools and screen control were all worked out
-collaboratively before the code got written. Commit counts show who typed what,
-not who shaped it.
+A lot of the system was designed together before any of it got written. The
+graph model, the agent loop, and the split between MCP tools and screen control
+came out of whiteboard sessions, so the counts below track who wrote each part
+rather than who worked out the design.
 
 | | Commits | Led |
 |---|---:|---|
@@ -155,19 +154,20 @@ not who shaped it.
 
 I owned three surfaces end to end:
 
-- **`covalent_mcp/`** — the first-party MCP server (stdio and HTTP transports)
-  and the pluggable `toolclasses/` system that made adding an integration a
-  contained job rather than a refactor. Built the Google (Gmail, Calendar, Docs,
-  Drive), GitHub, Jira, Notion, and Slack integrations, including each OAuth flow.
-- **`lambda/`** — the AWS gateway that routes model calls across Bedrock, Google,
+- **`covalent_mcp/`**: the first-party MCP server (stdio and HTTP transports)
+  and the pluggable `toolclasses/` system, which meant adding a new integration
+  didn't require touching the rest of the layer. Built the Google (Gmail,
+  Calendar, Docs, Drive), GitHub, Jira, Notion, and Slack integrations,
+  including each OAuth flow.
+- **`lambda/`**: the AWS gateway that routes model calls across Bedrock, Google,
   and OpenAI behind one interface, with Auth0 authentication and per-user budget
   enforcement in DynamoDB. Provisioned with Terraform.
-- **CI/CD** — GitHub Actions for signed and notarized macOS release builds, the
+- **CI/CD**: GitHub Actions for signed and notarized macOS release builds, the
   auto-updater, and automated Lambda deploys.
 
-Beyond that I was in the design of the parts I didn't write — the graph schema
-and traversal strategy, and how proposed actions get routed to executors were
-worked out jointly at the whiteboard.
+I also worked on the design of parts I didn't write. The graph schema, the
+traversal strategy, and how proposed actions get routed to executors were worked
+out jointly.
 
 Verify any of this directly:
 
